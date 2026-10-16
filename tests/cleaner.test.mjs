@@ -282,6 +282,57 @@ test('standalone CLI reads shared basic config and redacts provider-reflected cr
   assert.ok(result.stdout.includes('[已隐藏凭据]'));
 });
 
+test('OCR helper emits parseable UTF-8 JSON with Chinese text under a cp1252 stdout encoding', {
+  skip: !process.env.STUDIO_OCR_PYTHON && !existsSync(path.resolve('.venv-ocr', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'))
+    ? 'Prepare the private OCR runtime to run the helper encoding regression'
+    : false,
+}, async (t) => {
+  const dir = await temporaryDirectory();
+  const inputPath = path.join(dir, 'fake.png');
+  const fakeModulePath = path.join(dir, 'rapidocr.py');
+  const python = process.env.STUDIO_OCR_PYTHON
+    || path.resolve('.venv-ocr', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const helperPath = path.resolve('scripts/ocr_materials.py');
+  await writeFile(inputPath, 'fake image');
+  await writeFile(fakeModulePath, [
+    'class Result:',
+    '    txts = ["中文识别结果"]',
+    'class RapidOCR:',
+    '    def __init__(self, params=None):',
+    '        pass',
+    '    def __call__(self, image):',
+    '        return Result()',
+  ].join('\n'), 'utf8');
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(python, [helperPath, 'image', inputPath], {
+      cwd: path.resolve('.'),
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'cp1252',
+        PYTHONPATH: [dir, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+    child.once('error', reject);
+    child.once('close', (code) => resolve({
+      code,
+      stdout: Buffer.concat(stdout),
+      stderr: Buffer.concat(stderr).toString('utf8'),
+    }));
+  });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(result.stdout.every((byte) => byte < 0x80), 'JSON escapes keep stdout writable in cp1252');
+  const parsed = JSON.parse(result.stdout.toString('utf8'));
+  assert.equal(parsed.pages[0].text, '中文识别结果');
+});
+
 test('real RapidOCR helper OCRs every page of a local scanned PDF', {
   skip: !process.env.STUDIO_OCR_PYTHON && !existsSync(path.resolve('.venv-ocr/bin/python'))
     ? 'Prepare the independent OCR environment to run the local RapidOCR integration sample'
@@ -335,7 +386,7 @@ test('missing OCR runtime fails explicitly and never calls the model', async (t)
       { title: 'scan', body: '', files: [file] },
       { config: server.config, ocrPythonPath: path.join(dir, 'missing-python') },
     ),
-    (error) => error.code === 'OCR_RUNTIME_MISSING',
+    (error) => error.code === 'OCR_RUNTIME_MISSING' && /Start\.command \/ Start\.cmd/.test(error.message) && /scripts\/prepare\.mjs/.test(error.message),
   );
   assert.equal(server.requests.length, 0);
 });

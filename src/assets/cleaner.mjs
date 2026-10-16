@@ -103,7 +103,7 @@ function collectChildOutput(child, signal, timeoutMs) {
       spawnFailed = true;
       clearTimeout(timeout);
       clearTimeout(killTimer);
-      reject(new CleanerError('OCR_RUNTIME_MISSING', '独立 OCR Python 环境不可用；请按 docs/清洗脚本来源.md 安装'));
+      reject(new CleanerError('OCR_RUNTIME_MISSING', '本地 OCR 环境尚未准备；请通过 Start.command / Start.cmd 自动准备，或运行 node scripts/prepare.mjs 后重试'));
     });
     child.once('close', (code) => {
       clearTimeout(timeout);
@@ -130,7 +130,7 @@ async function runOcr(args, options) {
     await access(python);
     await access(helperPath);
   } catch {
-    fail('OCR_RUNTIME_MISSING', '独立 OCR Python 环境不可用；请按 docs/清洗脚本来源.md 安装');
+    fail('OCR_RUNTIME_MISSING', '本地 OCR 环境尚未准备；请通过 Start.command / Start.cmd 自动准备，或运行 node scripts/prepare.mjs 后重试');
   }
   checkAbort(options.signal);
   const child = spawn(python, [helperPath, ...args], {

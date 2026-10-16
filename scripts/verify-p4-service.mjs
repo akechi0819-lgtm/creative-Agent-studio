@@ -139,6 +139,32 @@ async function browserJson(page, pathname, { method = 'GET', body } = {}) {
   }, { requestPath: pathname, requestMethod: method, requestBody: body });
 }
 
+async function persistedCanvasNodeState(page, projectId) {
+  return page.evaluate(async (targetProjectId) => {
+    const keysResponse = await fetch('/__studio/storage/app_state', { cache: 'no-store', credentials: 'same-origin' });
+    if (!keysResponse.ok) return { status: keysResponse.status, values: [], projectIds: [], nodeIds: [] };
+    const keys = await keysResponse.json();
+    const values = await Promise.all(keys.map(async (key) => {
+      const response = await fetch(`/__studio/storage/app_state/${encodeURIComponent(key)}`, { cache: 'no-store', credentials: 'same-origin' });
+      return response.ok ? await response.text() : '';
+    }));
+    const canvasIndex = keys.indexOf('infinite-canvas:canvas_store');
+    if (canvasIndex < 0) return { status: keysResponse.status, values, projectIds: [], nodeIds: [] };
+    try {
+      const state = JSON.parse(values[canvasIndex]).state;
+      const projects = Array.isArray(state?.projects) ? state.projects : [];
+      return {
+        status: keysResponse.status,
+        values,
+        projectIds: projects.map((project) => project.id),
+        nodeIds: projects.find((project) => project.id === targetProjectId)?.nodes?.map((node) => node.id) ?? [],
+      };
+    } catch {
+      return { status: keysResponse.status, values, projectIds: [], nodeIds: [] };
+    }
+  }, projectId);
+}
+
 function observePage(page, origin) {
   page.on('pageerror', (error) => browserErrors.push(error.message));
   page.on('request', (request) => {
@@ -306,21 +332,15 @@ try {
   const { verifyQrBrowser } = await import('./p4-qr-browser.mjs');
   await verifyQrBrowser({ root, canvasInstance, callCanvasTool });
 
-  const persistedAppState = await firstCanvasPage.evaluate(async () => {
-    const keysResponse = await fetch('/__studio/storage/app_state', { cache: 'no-store', credentials: 'same-origin' });
-    if (!keysResponse.ok) return { status: keysResponse.status, values: [] };
-    const keys = await keysResponse.json();
-    const values = await Promise.all(keys.map(async (key) => {
-      const response = await fetch(`/__studio/storage/app_state/${encodeURIComponent(key)}`, { cache: 'no-store', credentials: 'same-origin' });
-      return response.ok ? await response.text() : '';
-    }));
-    return { status: keysResponse.status, values };
-  });
+  const persistedAppState = await waitFor(async () => {
+    if (!canvasStorageWrites.has('app_state') || !canvasStorageWrites.has('image_files')) return null;
+    const state = await persistedCanvasNodeState(firstCanvasPage, task.id);
+    return state.status === 200 && state.nodeIds.includes(importedNodeId) ? state : null;
+  }, 'Canvas did not persist the imported image node and original image bytes through the local storage service.', 15_000);
   assert.equal(persistedAppState.status, 200, 'Canvas app state must be readable from its isolated storage service.');
+  assert.ok(persistedAppState.projectIds.includes(task.id) && persistedAppState.nodeIds.includes(importedNodeId), 'The server-side Canvas project must contain the imported image node before closing the browser context.');
   const persistedAppStateText = JSON.stringify(persistedAppState.values);
   assert.ok(!persistedAppStateText.includes(fakeBasicKey) && !persistedAppStateText.includes(fakeImageKey), 'Fictional provider keys must not persist in Canvas browser storage.');
-  await waitFor(() => canvasStorageWrites.has('app_state') && canvasStorageWrites.has('image_files'),
-    'Canvas did not persist both project state and image bytes through the local storage service.', 15_000);
   assert.ok(canvasStorageWrites.has('app_state'), 'Canvas project state must be saved through the local storage service.');
   assert.ok(canvasStorageWrites.has('image_files'), 'Canvas image bytes must be saved through the local storage service.');
 

@@ -44,9 +44,9 @@ async function waitForConnection(manager, taskId, page, diagnostics) {
   throw new Error(`隔离浏览器未连接到当前任务 Canvas; state=${JSON.stringify(await manager.state(taskId))}; location=${JSON.stringify(location)}; diagnostics=${JSON.stringify(diagnostics)}`);
 }
 
-async function persistedCanvasProjectIds(page) {
-  return page.evaluate(async () => {
-    const diagnostics = { storageStatus: null, keys: [], projectIds: [] };
+async function persistedCanvasProject(page, projectId) {
+  return page.evaluate(async (targetProjectId) => {
+    const diagnostics = { storageStatus: null, keys: [], projectIds: [], nodeIds: [] };
     const options = { cache: 'no-store', credentials: 'same-origin' };
     const keysResponse = await fetch('/__studio/storage/app_state', options).catch(() => null);
     diagnostics.storageStatus = keysResponse?.status ?? null;
@@ -59,16 +59,17 @@ async function persistedCanvasProjectIds(page) {
     try {
       const state = JSON.parse(await valueResponse.text()).state;
       diagnostics.projectIds = state?.projects?.map((project) => project.id) ?? [];
+      diagnostics.nodeIds = state?.projects?.find((project) => project.id === targetProjectId)?.nodes?.map((node) => node.id) ?? [];
     } catch {}
     return diagnostics;
-  });
+  }, projectId);
 }
 
-async function waitForPersistedCanvasProject(page, projectId) {
+async function waitForPersistedCanvasProject(page, projectId, nodeId) {
   let state;
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    state = await persistedCanvasProjectIds(page);
-    if (state.projectIds.includes(projectId)) return state;
+    state = await persistedCanvasProject(page, projectId);
+    if (state.projectIds.includes(projectId) && (!nodeId || state.nodeIds.includes(nodeId))) return state;
     await page.waitForTimeout(100);
   }
   return state;
@@ -236,22 +237,34 @@ test('Canvas manager binds isolated browser projects, selection hashes, and same
     assert.equal(storedConfig.config.channels[0].apiKey, '');
     assert.ok(!new URL(firstPage.url()).hash.includes('studioBootstrap='));
     assert.equal(new URL(firstPage.url()).pathname, `/canvas/${firstTask.id}`, 'the task opens its bound Canvas project route');
-    const persistedProjectState = await waitForPersistedCanvasProject(firstPage, firstTask.id);
-    assert.ok(persistedProjectState.projectIds.includes(firstTask.id), `the browser project is persisted before reload: ${JSON.stringify(persistedProjectState)}`);
+    const persistedProjectState = await waitForPersistedCanvasProject(firstPage, firstTask.id, imageNodeId);
+    assert.ok(persistedProjectState.projectIds.includes(firstTask.id) && persistedProjectState.nodeIds.includes(imageNodeId), `the browser project and imported image node are persisted before reload: ${JSON.stringify(persistedProjectState)}`);
 
     let releaseCanvasStoreRead;
     let markCanvasStoreRead;
+    let markCanvasStoreReadContinued;
+    let canvasStoreReadBlocked = false;
+    let canvasStoreRouteError;
     const canvasStoreReadStarted = new Promise((resolve) => { markCanvasStoreRead = resolve; });
+    const canvasStoreReadContinued = new Promise((resolve) => { markCanvasStoreReadContinued = resolve; });
     const canvasStoreReadGate = new Promise((resolve) => { releaseCanvasStoreRead = resolve; });
     const canvasStoreRoute = '**/__studio/storage/app_state/**';
     await firstPage.route(canvasStoreRoute, async (route) => {
       const request = route.request();
       const pathname = decodeURIComponent(new URL(request.url()).pathname);
-      if (request.method() === 'GET' && pathname.endsWith('/infinite-canvas:canvas_store')) {
+      const isCanvasStoreRead = request.method() === 'GET' && pathname.endsWith('/infinite-canvas:canvas_store');
+      if (isCanvasStoreRead) {
+        canvasStoreReadBlocked = true;
         markCanvasStoreRead();
         await canvasStoreReadGate;
       }
-      await route.continue();
+      try {
+        await route.continue();
+      } catch (error) {
+        canvasStoreRouteError = error;
+      } finally {
+        if (isCanvasStoreRead) markCanvasStoreReadContinued();
+      }
     });
     try {
       await firstPage.reload({ waitUntil: 'domcontentloaded' });
@@ -270,16 +283,18 @@ test('Canvas manager binds isolated browser projects, selection hashes, and same
         await firstPage.waitForTimeout(50);
       }
       assert.ok(unreadyTargets.length > 0 && unreadyTargets.every((target) => !target.hasCanvas), `the connected browser must stay unready while app_state hydrate is blocked: ${JSON.stringify(unreadyTargets)}`);
-      await assert.rejects(options.tool('canvas_get_state', {}, options.config, {}), /尚未连接/);
+      await assert.rejects(options.tool('canvas_get_state', {}, options.config, {}), /未连接/);
     } finally {
       releaseCanvasStoreRead();
+      if (canvasStoreReadBlocked) await canvasStoreReadContinued;
       await firstPage.unroute(canvasStoreRoute);
     }
+    if (canvasStoreRouteError) throw canvasStoreRouteError;
     firstState = await waitForConnection(manager, firstTask.id, firstPage, diagnostics);
     assert.equal(firstState.projectId, firstTask.id, 'reload recovers the same project through its HttpOnly session');
     const restoredOptions = await manager.executionOptions(firstTask.id);
     const restoredSnapshot = await restoredOptions.tool('canvas_get_state', {}, restoredOptions.config, {});
-    assert.ok(restoredSnapshot.nodes.some((node) => node.id === imageNodeId), 'the bridge advertises readiness only after the stored image node is restored');
+    assert.ok(restoredSnapshot.nodes.some((node) => node.id === imageNodeId), `the bridge advertises readiness only after the stored image node is restored; received ${JSON.stringify(restoredSnapshot.nodes.map((node) => ({ id: node.id, type: node.type, storageKey: node.metadata?.storageKey })))}`);
 
     assert.equal(secondState.projectId, secondTask.id);
     assert.equal((await manager.state(firstTask.id)).projectId, firstTask.id, 'opening another task never cross-binds the first Canvas');

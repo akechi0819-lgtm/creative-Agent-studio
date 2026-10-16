@@ -65,7 +65,7 @@ def main() -> int:
             model_root = Path(__file__).resolve().parent.parent / ".studio-runtime" / "rapidocr-models"
             engine = RapidOCR(params={"Global.model_root_dir": str(model_root)})
             result = run_image(engine, args.file) if args.kind == "image" else run_pdf(engine, args.file)
-        sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        sys.stdout.write(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
         return 0
     except Exception:
         # Keep local paths, model download URLs, and library diagnostics out of caller output.
