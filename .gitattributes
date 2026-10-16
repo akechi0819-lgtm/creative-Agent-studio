@@ -1,0 +1,4 @@
+# Keep source hashes and generated bundles reproducible across platforms.
+* text=auto eol=lf
+# The Windows thin entry uses the native batch-file line ending.
+*.cmd text eol=crlf
