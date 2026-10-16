@@ -1,0 +1,100 @@
+name: Release bundles
+
+on:
+  pull_request:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release package version
+        required: true
+        default: p5-prebuild
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }} on its native runner
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: win32-x64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - name: Build the self-contained native bundle
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_NUMBER: ${{ github.run_number }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            VERSION="$REF_NAME"
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            VERSION="p5-pr.${PR_NUMBER}.${RUN_NUMBER}"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          node scripts/package-release.mjs \
+            --target "$TARGET" \
+            --version "$VERSION" \
+            --output "$RUNNER_TEMP_DIR/release-output"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-output/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Check package license evidence before publication
+        run: |
+          python3 - <<'PY'
+          import glob, json, sys, zipfile
+          archives = glob.glob('release-assets/**/*.zip', recursive=True)
+          if len(archives) != 3:
+              raise SystemExit(f'Expected three platform archives, found {len(archives)}')
+          for archive in archives:
+              with zipfile.ZipFile(archive) as bundle:
+                  matches = [name for name in bundle.namelist() if name.endswith('/THIRD-PARTY-LICENSES.json')]
+                  if len(matches) != 1:
+                      raise SystemExit(f'{archive}: third-party license inventory is missing or ambiguous')
+                  inventory = json.loads(bundle.read(matches[0]))
+                  gate = inventory.get('releaseLicenseGate', {})
+                  if gate.get('status') != 'evidence-complete' or gate.get('blockers'):
+                      raise SystemExit(f'{archive}: release license evidence is blocked: {gate.get("blockers")}')
+          print('All native package license evidence gates passed.')
+          PY
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" release-assets/* --verify-tag --generate-notes --title "Creative Agent Studio $TAG"

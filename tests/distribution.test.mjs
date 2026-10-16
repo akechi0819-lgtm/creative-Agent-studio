@@ -1,0 +1,141 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, lstat } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import {
+  RELEASE_TARGETS, assertCleanStatus, assertNativeTarget, copyAllowlistedFiles,
+  hashFile, isReleasePathAllowed, materializeBundleSymlinks, normalizeTargetId,
+  writeBundleManifest,
+} from '../src/launcher/distribution.mjs';
+
+async function temporaryDirectory() { return mkdtemp(path.join(os.tmpdir(), 'cas-distribution-test-')); }
+
+test('release targets are fixed and reject cross-platform builds', () => {
+  assert.deepEqual(Object.keys(RELEASE_TARGETS).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
+  assert.equal(assertNativeTarget('darwin-arm64', { platform: 'darwin', arch: 'arm64' }).runner, 'macos-15');
+  assert.throws(() => assertNativeTarget('win32-x64', { platform: 'darwin', arch: 'arm64' }), /禁止跨平台打包/);
+  assert.throws(() => normalizeTargetId('linux-x64'), /不支持的 Release 平台/);
+});
+
+test('source allowlist includes runtime helpers and excludes user/company/development paths', () => {
+  assert.equal(isReleasePathAllowed('src/workspace/python-helper.py'), true);
+  assert.equal(isReleasePathAllowed('scripts/requirements-workspace.lock.txt'), true);
+  assert.equal(isReleasePathAllowed('src/creative/tasks.mjs'), true);
+  assert.equal(isReleasePathAllowed('src/company/connector.mjs'), false);
+  assert.equal(isReleasePathAllowed('node_modules/pkg/index.js'), false);
+  assert.equal(isReleasePathAllowed('.studio-runtime/private.json'), false);
+  assert.equal(isReleasePathAllowed('docs/evidence/private.json'), false);
+  assert.equal(isReleasePathAllowed('../secrets.txt'), false);
+});
+
+test('dirty source status blocks all package creation', () => {
+  assert.doesNotThrow(() => assertCleanStatus(''));
+  assert.throws(() => assertCleanStatus('?? node_modules\n M package.json'), /拒绝从脏工作树打包/);
+});
+
+test('allowlisted staging copies tracked files only and never follows the development node_modules link', async t => {
+  const fixture = await temporaryDirectory();
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const source = path.join(fixture, 'source');
+  const destination = path.join(fixture, 'stage');
+  const devModules = path.join(fixture, 'development-node-modules');
+  await mkdir(source, { recursive: true });
+  await mkdir(path.join(source, 'src/creative'), { recursive: true });
+  await mkdir(path.join(source, 'src/workspace'), { recursive: true });
+  await mkdir(path.join(source, 'scripts'), { recursive: true });
+  await mkdir(devModules, { recursive: true });
+  await writeFile(path.join(devModules, 'secret.json'), 'personal');
+  await symlink(devModules, path.join(source, 'node_modules'), 'dir');
+  for (const file of ['package.json', 'package-lock.json', 'scripts/web.mjs', 'release/launcher.mjs']) {
+    await mkdir(path.dirname(path.join(source, file)), { recursive: true });
+    await writeFile(path.join(source, file), 'safe');
+  }
+  await writeFile(path.join(source, 'src/creative/tasks.mjs'), 'export const source = true;');
+  await writeFile(path.join(source, 'src/workspace/python-helper.py'), '# helper');
+  const copied = await copyAllowlistedFiles(source, destination, [
+    'package.json', 'package-lock.json', 'scripts/web.mjs', 'release/launcher.mjs',
+    'src/creative/tasks.mjs', 'src/workspace/python-helper.py', 'node_modules/secret.json',
+  ]);
+  assert.ok(copied.includes('src/workspace/python-helper.py'));
+  assert.equal(copied.some(file => file.startsWith('node_modules/')), false);
+  await assert.rejects(lstat(path.join(destination, 'node_modules')));
+  await assert.rejects(readFile(path.join(destination, 'node_modules/secret.json')));
+});
+
+test('allowlisted source symlinks are rejected instead of copying their target', async t => {
+  const fixture = await temporaryDirectory();
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const source = path.join(fixture, 'source');
+  const destination = path.join(fixture, 'stage');
+  const secret = path.join(fixture, 'private-secret');
+  await mkdir(path.join(source, 'src/assets'), { recursive: true });
+  await mkdir(path.join(source, 'scripts'), { recursive: true });
+  await writeFile(secret, 'should not leak');
+  await symlink(secret, path.join(source, 'src/assets/cleaner.mjs'));
+  for (const file of ['package.json', 'package-lock.json', 'scripts/web.mjs', 'release/launcher.mjs']) {
+    await mkdir(path.dirname(path.join(source, file)), { recursive: true });
+    await writeFile(path.join(source, file), 'safe');
+  }
+  await assert.rejects(copyAllowlistedFiles(source, destination, [
+    'package.json', 'package-lock.json', 'scripts/web.mjs', 'release/launcher.mjs', 'src/assets/cleaner.mjs',
+  ]), /必须是普通文件/);
+});
+
+test('bundle links are materialized as in-tree copies and outside links fail closed', async t => {
+  const fixture = await temporaryDirectory();
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const root = path.join(fixture, 'bundle');
+  const privateTarget = path.join(root, 'runtime/node');
+  await mkdir(privateTarget, { recursive: true });
+  await writeFile(path.join(privateTarget, 'node.exe'), 'runtime');
+  await symlink(privateTarget, path.join(root, 'runtime/node-link'), 'dir');
+  await materializeBundleSymlinks(root);
+  assert.equal(await readFile(path.join(root, 'runtime/node-link/node.exe'), 'utf8'), 'runtime');
+  assert.equal((await lstat(path.join(root, 'runtime/node-link'))).isSymbolicLink(), false);
+  await writeBundleManifest(root, 'win32-x64', 'test.1');
+  assert.equal((await readFile(path.join(root, 'release-manifest.json'), 'utf8')).includes('runtime/node-link/node.exe'), true);
+
+  const outside = path.join(fixture, 'outside-secret');
+  await writeFile(outside, 'private');
+  await symlink(outside, path.join(root, 'runtime/external-link'));
+  await assert.rejects(materializeBundleSymlinks(root), /指向 staging 外部/);
+});
+
+test('manifest hashes individual packaged files', async t => {
+  const fixture = await temporaryDirectory();
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await writeFile(path.join(fixture, 'app.bin'), 'release bytes');
+  const manifest = await writeBundleManifest(fixture, 'darwin-arm64', 'v1.2.3');
+  assert.equal(manifest.files[0].sha256, await hashFile(path.join(fixture, 'app.bin')));
+  assert.equal(manifest.target, 'darwin-arm64');
+});
+
+test('compiled macOS launcher points to the native bundled Node path without opening its GUI', async t => {
+  if (process.platform !== 'darwin') return t.skip('osacompile is available only on macOS runners.');
+  const fixture = await temporaryDirectory();
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const source = await readFile(new URL('../release/macos-launcher.applescript', import.meta.url), 'utf8');
+  const architecture = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const nodeDirectory = `node-v22.23.3-darwin-${architecture}`;
+  const resolved = source.replaceAll('__NODE_DIRECTORY__', nodeDirectory);
+  assert.ok(!resolved.includes('__NODE_DIRECTORY__'));
+  const sourcePath = path.join(fixture, 'launcher.applescript');
+  const appPath = path.join(fixture, 'Creative Agent Studio.app');
+  await writeFile(sourcePath, resolved);
+  execFileSync('osacompile', ['-o', appPath, sourcePath], { stdio: 'pipe' });
+  const compiledSource = execFileSync('osadecompile', [path.join(appPath, 'Contents/Resources/Scripts/main.scpt')], { encoding: 'utf8' });
+  assert.ok(compiledSource.includes(nodeDirectory));
+  assert.ok(compiledSource.includes('/.studio-runtime/node/'));
+});
+
+test('Windows archive writer includes hidden runtime files and checks every manifest entry', async () => {
+  const source = await readFile(new URL('../scripts/package-release.mjs', import.meta.url), 'utf8');
+  assert.match(source, /Get-ChildItem -LiteralPath \$source -Force -File -Recurse/);
+  assert.match(source, /ZipFileExtensions\]::CreateEntryFromFile/);
+  assert.match(source, /foreach \(\$file in \$manifest\.files\)/);
+  assert.match(source, /\.studio-runtime\/node\/node-v22\.23\.3-win-x64\/node\.exe/);
+  assert.match(source, /\.venv-ocr\/Scripts\/python\.exe/);
+  assert.doesNotMatch(source, /Compress-Archive/);
+});

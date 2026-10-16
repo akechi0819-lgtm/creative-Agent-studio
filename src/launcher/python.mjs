@@ -131,6 +131,8 @@ function runtimePaths(root) {
     venvBackups: path.join(runtime, 'python-venv-backups'),
     requirements: path.join(root, 'scripts', 'requirements-cleaner-ocr.txt'),
     lock: path.join(root, 'scripts', 'requirements-cleaner-ocr.lock.txt'),
+    workspaceRequirements: path.join(root,'scripts','requirements-workspace.txt'),
+    workspaceLock: path.join(root,'scripts','requirements-workspace.lock.txt'),
   };
 }
 
@@ -280,9 +282,12 @@ function parsePinnedPackages(contents, source) {
 }
 
 async function dependencySpec(paths) {
-  const [requirementsText, lockText] = await Promise.all([
+  const [ocrRequirements, ocrLock, workspaceRequirements, workspaceLock] = await Promise.all([
     fs.readFile(paths.requirements, 'utf8'), fs.readFile(paths.lock, 'utf8'),
+    fs.readFile(paths.workspaceRequirements,'utf8'), fs.readFile(paths.workspaceLock,'utf8'),
   ]);
+  const requirementsText=ocrRequirements+'\n'+workspaceRequirements;
+  const lockText=ocrLock+'\n'+workspaceLock;
   const requirements = parsePinnedPackages(requirementsText, path.basename(paths.requirements));
   const packages = parsePinnedPackages(lockText, path.basename(paths.lock));
   for (const [name, packageSpec] of Object.entries(requirements)) {
@@ -305,7 +310,7 @@ function healthArguments(paths, spec) {
   return JSON.stringify({
     version: [3, 12, 0],
     packages: spec.packages,
-    imports: spec.imports ?? ['rapidocr', 'onnxruntime', 'cv2', 'numpy', 'pypdfium2'],
+    imports: spec.imports ?? ['rapidocr', 'onnxruntime', 'cv2', 'numpy', 'pypdfium2', 'openpyxl', 'docx'],
     venv: paths.venv,
   });
 }
@@ -513,7 +518,7 @@ async function createVenv(uv, venvPath, systemPython, paths, projectRoot) {
 
 async function syncDependencies(uv, pythonPath, paths, projectRoot) {
   const env = environmentFor(paths);
-  await run(uv, ['pip', 'sync', '--no-config', '--python', pythonPath, '--require-hashes', paths.lock], {
+  await run(uv, ['pip', 'sync', '--no-config', '--python', pythonPath, '--require-hashes', paths.lock, paths.workspaceLock], {
     cwd: projectRoot, env,
   });
   await run(uv, ['pip', 'check', '--python', pythonPath], {

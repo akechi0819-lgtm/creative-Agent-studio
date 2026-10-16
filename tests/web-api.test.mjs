@@ -135,6 +135,29 @@ test('config API masks keys, persists private mode, and explicitly clears an omi
   assert.equal((await readConfigRecord({ root: f.root })).revision, 3);
 });
 
+test('config API copies an explicitly shared custom base key and never returns plaintext', async (t) => {
+  const f = await fixture(t);
+  const secret = 'fixture-shared-base-secret';
+  const saved = await f.request('/api/config', {
+    method: 'POST',
+    json: {
+      expectedRevision: 1,
+      base: { source: 'custom', baseUrl: 'https://provider.invalid/v1', model: 'fixture-chat', apiKey: secret },
+      image: { model: 'fixture-image', useBaseCredentials: true },
+    },
+  });
+
+  assert.equal(saved.response.status, 200, JSON.stringify(saved.data));
+  assert.equal(saved.data.config.base.apiKey, undefined);
+  assert.equal(saved.data.config.image.apiKey, undefined);
+  assert.equal(saved.data.config.image.baseUrl, 'https://provider.invalid/v1');
+  assert.equal(saved.data.config.image.apiKeyConfigured, true);
+  assert.equal(JSON.stringify(saved.data).includes(secret), false);
+  const record = await readConfigRecord({ root: f.root });
+  assert.equal(record.image.apiKey, secret);
+  assert.equal(record.image.baseUrl, record.base.baseUrl);
+});
+
 test('config save remains successful while reporting an active Canvas sync failure', async (t) => {
   const fakeKey = 'fake-image-key-for-sync-status';
   let syncCall = null;
@@ -1470,4 +1493,22 @@ test('Canvas bootstrap ticket is only returned by the explicit open route; image
   assert.equal(preview.response.status, 200);
   assert.equal(preview.response.headers.get('content-type'), 'image/png');
   assert.deepEqual(Buffer.from(preview.data), png);
+});
+
+test('one explicit delivery decision records the displayed set and exports without per-page forms',async t=>{
+ const f=await fixture(t,{canvas:{assertFresh:async()=>{}}});
+ const {task}=await prepareTask(f.root);
+ const payload={expectedRevision:task.revision,version:task.sheetVersion,images:task.execution.pages.map(page=>({page:page.page,sha256:page.image.sha256}))};
+ const result=await f.request(`/api/tasks/${task.id}/approve-and-export`,{method:'POST',json:payload});
+ assert.equal(result.response.status,200,JSON.stringify(result.data));
+ assert.equal(result.data.task.finalApproval.by,'本机用户');assert.equal(result.data.task.exports.length,1);
+ assert.equal(result.data.task.reviews.at(-1).reviewer,'本机用户');assert.ok(result.data.export.downloadUrl);
+ const repeat=await f.request(`/api/tasks/${task.id}/approve-and-export`,{method:'POST',json:payload});assert.equal(repeat.response.status,409);assert.equal((await readTask(task.id,f.root)).exports.length,1);
+});
+
+test('changed Canvas invalidates combined delivery approval before a package can escape',async t=>{
+ let calls=0;const f=await fixture(t,{canvas:{assertFresh:async()=>{if(++calls===2)throw Object.assign(new Error('changed fixture'),{code:'ERR_CANVAS_STALE_REVIEW',status:409});}}});
+ const {task}=await prepareTask(f.root);
+ const result=await f.request(`/api/tasks/${task.id}/approve-and-export`,{method:'POST',json:{expectedRevision:task.revision,version:task.sheetVersion,images:task.execution.pages.map(page=>({page:page.page,sha256:page.image.sha256}))}});
+ assert.equal(result.response.status,409);const current=await readTask(task.id,f.root);assert.equal(current.finalApproval,null);assert.equal(current.exports.length,0);
 });

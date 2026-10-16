@@ -35,6 +35,8 @@ async function makeFixture(t, { python = true, models = true } = {}) {
   await fs.mkdir(path.join(root, 'scripts'), { recursive: true });
   await fs.writeFile(path.join(root, 'scripts', 'requirements-cleaner-ocr.txt'), REQUIREMENTS);
   await fs.writeFile(path.join(root, 'scripts', 'requirements-cleaner-ocr.lock.txt'), LOCK);
+  await fs.writeFile(path.join(root, 'scripts', 'requirements-workspace.txt'), '# fixture Office requirements\n');
+  await fs.writeFile(path.join(root, 'scripts', 'requirements-workspace.lock.txt'), '# fixture Office lock\n');
   await fs.writeFile(path.join(root, 'scripts', 'ocr_materials.py'), '# fixture helper\n');
   const paths = pythonInternals.runtimePaths(root);
   if (python) {
@@ -351,4 +353,16 @@ test('does not report ready for a dependency lock edited during model preparatio
   const result=await pythonInternals.prepareWithOperations({root},operations);
   assert.equal(result.pythonVersion,'3.12.0');
   assert.equal(JSON.parse(await fs.readFile(paths.pythonState,'utf8')).status,'ready');
+});
+
+
+test('Office requirements are included in the shared Python fingerprint and package validation',async t=>{
+  const {paths}=await makeFixture(t);
+  const before=await pythonInternals.fingerprint(paths);
+  await fs.writeFile(paths.workspaceRequirements,'openpyxl==3.1.5\n');
+  await assert.rejects(pythonInternals.dependencySpec(paths),/固定依赖锁缺少/);
+  await fs.writeFile(paths.workspaceLock,'openpyxl==3.1.5 \\\n    --hash=sha256:'+'0'.repeat(64)+'\n');
+  const spec=await pythonInternals.dependencySpec(paths);
+  assert.equal(spec.packages.openpyxl.version,'3.1.5');
+  assert.notEqual(await pythonInternals.fingerprint(paths),before);
 });

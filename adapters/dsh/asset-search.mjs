@@ -204,6 +204,7 @@ export function taskSourcesForPrompt(sources = []) {
       purpose: boundedText(source.purpose, 1000),
       factBoundary: boundedText(source.factBoundary, 1000),
       filesCount: Array.isArray(source.files) ? source.files.length : 0,
+      ...((source.decision === 'retained' || (source.type === 'current_attachment' && source.decision !== 'excluded')) ? {files:(source.files || []).slice(0,100).map(file=>({order:file.order,name:boundedText(file.name,100),mediaType:boundedText(file.mimeType,80)}))} : {}),
       imageFiles: source.decision === 'excluded' ? [] : (source.files || []).filter(file => /\.(png|jpe?g|webp)$/iu.test(file.name || '')).slice(0, 30).map(file => ({ order: file.order, name: boundedText(file.name, 100), mediaType: boundedText(file.mimeType, 80) })),
     };
     if (source.asset) {
@@ -258,7 +259,7 @@ export function taskSheetsForPrompt(sheets = []) {
       copy: boundedText(page.copy, 4000),
       prompt: boundedText(page.prompt, 4000),
       size: boundedText(page.size, 40),
-      referenceImages: (Array.isArray(page.referenceImages) ? page.referenceImages : []).slice(0,12).map(ref => ({sourceId: ref.sourceId, fileOrder: ref.fileOrder})),
+      referenceImages: (Array.isArray(page.referenceImages) ? page.referenceImages : []).slice(0,12).map(ref => ({sourceId: ref.sourceId, fileOrder: ref.fileOrder, ...(ref.role ? {role:ref.role} : {})})),
       sourceIds: Array.isArray(page.sourceIds) ? page.sourceIds.slice(0, 20) : [],
     })),
   }];

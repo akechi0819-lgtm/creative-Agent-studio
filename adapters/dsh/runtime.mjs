@@ -11,13 +11,16 @@ import Attachments from '@deepseek-ai/dsh-attachment-local';
 import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection';
 import * as PiAi from '@deepseek-ai/dsh-llm-pi-ai';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { registerWorkspaceTools } from './workspace-tools.mjs';
 import { readFile, mkdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { readTask, readTaskOutputImageBytes, setBrief, setReferences, setSheet, recordReview, taskDirectory, withTask, assertNoCredentials } from '../../src/creative/tasks.mjs';
+import { readTask, readTaskOutputImageBytes, setBrief, setReferences, setSheet, recordReview, taskDirectory, withTask, assertNoCredentials, readTaskSourceFileBytes } from '../../src/creative/tasks.mjs';
 import { queryAssets } from '../../src/assets/library.mjs';
 import { compactLegacyAssetSearchResults, findAssetCandidates, taskSourcesForPrompt, taskSheetsForPrompt } from './asset-search.mjs';
 import { validateModelId } from '../../src/web/model-id.mjs';
+import { withProtectedTaskState } from '../../src/web/script-state.mjs';
+import { referenceProposal } from '../../src/web/dialogue.mjs';
 import { validateQuestions } from '../../src/web/clarifications.mjs';
 
 const textOf = message => (message?.content || []).filter(x => x.type === 'text').map(x => x.text).join('\n').trim();
@@ -292,17 +295,17 @@ const PERSONA = `你是 Creative Agent Studio 的创作伙伴，面向内容运�
 只描述实际执行与结果，不输出内部推理。先从用户聊天描述和可选参考图理解受众、目标、形式与风格；首次完整创作支持1—5张，单张与多页（包括两张海报）均使用制作单、界面确认和执行流程，形式和张数不是新任务入口预设。只有描述与参考仍无法判定形式或张数且会影响首次创作时才追问。
 信息缺失且确实会影响下一步时，必须调用 studio_ask_questions 以点选方式追问，最多3题、每题2—6个选项；不要让用户填写长作文或五段表单。只问当前缺失且会影响需求整理的问题，不要重复已提供的信息。信息充分时直接继续，不追问。事实来源或引用不明确时，不强迫用户补来源；可以留待人工核对或不引用，并说明边界。
 调用追问工具后，只简短提示用户点选回答，不要在回复里复述问题或改成长篇填空题。工具只保存待答问题，不代表人工确认。
-首次完整创作的需求、参考及制作单须由用户在界面明确确认。用户明确要求修改已有成品或本次上传图片时，该指令仅授权本次局部操作，不代表确认完整制作单，也不代表批准最终成品。不要把聊天里的首次创作同意当成已完成界面版本确认。
+文档读取、表格整理、文件生成与批量图片处理直接按用户意图使用通用文件工具，不套海报页数或制作单。需要样张时先交付样张等待人工反馈，再继续批量。首次海报创作的需求、参考及制作单由用户在左侧对话卡片确认。用户明确要求修改已有成品或本次上传图片时，该指令仅授权本次局部操作，不代表确认完整制作单，也不代表批准最终成品。用户可明确回复确认当前展示版本，只有宿主记录的确认才有效；模型不可自行批准或声称已批准。
 参考图中识别出的内容、事实和归因属于待核推断，不得当作已确认事实，也不得自动标记为保留来源。只有用户明确确认的事实与人工保留的来源可以写入制作单；历史素材仅作参考，不能冒充当前事实。没有参考时允许用户明确确认空清单。
-制作单必须显式列出每页实际要传给绘图模型的图片 referenceImages:[{sourceId,fileOrder}]，从已人工保留来源的 imageFiles 索引选择，最多12张；同时把来源列入该页和整单 sourceIds。仅在文案中写“参考图”或 sourceIds 不会传图片。用户要求参考版式、沿用视觉或使用Logo时，选择对应实际图片；Logo须来自用户提供并保留的文件，不得凭空借用历史素材品牌。没有视觉参考时明确使用纯文字生图，不虚构图像引用。
+制作单必须显式列出每页实际要传给绘图模型的图片 referenceImages:[{sourceId,fileOrder,role:"content"或"style"或"both"}]，从已人工保留来源的 imageFiles 索引选择，最多12张；同时把来源列入该页和整单 sourceIds。仅在文案中写“参考图”或 sourceIds 不会传图片。用户要求参考版式、沿用视觉或使用Logo时，选择对应实际图片；Logo须来自用户提供并保留的文件，不得凭空借用历史素材品牌。没有视觉参考时明确使用纯文字生图，不虚构图像引用。
 本次任务DNA采用已保存快照，未启用时不注入。DNA与临时需求冲突时说明冲突并请用户决定，不自动记忆或保存。
-用户需要修改需求/参考时可写入候选，说明旧确认已撤销。已确认需求与参考后才可整理制作单，调用写制作单工具，界面会供用户编辑并确认。
+需求足够清楚时（含不使用参考的情况），或用户讨论保留、排除、内容参考或风格参考时，调用 studio_propose_references 展示完整参考选择方案，等待用户回复确认。不得把提出方案当成人工保留。用户需要修改需求/参考时可写入候选，说明旧确认已撤销。已确认需求与参考后才可整理制作单，调用写制作单工具，展示短方案供用户确认；修改意见通过对话提交。
 首次创作仍按需求、参考和制作单流程等待用户在界面确认。用户明确要求裁切、分割、拼接、贴图、替换二维码/图片元素或像素缩放时，优先调用 studio_canvas_operation，缺少Canvas节点时先导入本任务附件。实际看图；精确覆盖旧元素前调用 studio_canvas_detect_regions 取得suggestedBounds，不估算像素框；使用原始图片字节机械处理，完成后读图检查；不需要用户报工具名，不把机械处理交给生图重画。其他需要重新绘制内容或风格的已有成品修改，调用 studio_edit_pages 处理指定页的局部修改；不要重建整套制作单、重置素材或重复追问用户已经给出的页码范围。已有成品可以直接作为 base 或 style 图片，无需导入来源库。本次上传图片需要生成新内容或改变画风时，使用 studio_edit_pages 的 mode=uploaded-images：image 是要改的底图，styleImages 只借鉴画风，不从图片推断事实；例如“把第二张按第一张画风改”，第二张选 image，第一张选 styleImages。上传图无需先导入素材库、保留来源或确认完整制作单。只有目标图片不清楚时才追问；新增事实确实影响局部修改时，只问该处所需信息。用户只询问能力或讨论方案时，只解释，不执行。局部修改失败时如实说明，不重试、不转为全量制作单。
 局部修改需要变更文字时，edit item 的 copy 必须提供修改后的完整准确文案；仅调整视觉且保留原文时可省略 copy。
 如需描述已有成品的具体视觉细节，先调用 studio_read_page_image 读取对应页的有损预览；工具不可用或读取失败时，明确说明没有看见原图，不要假装已检查。
 首次完整创作须先由界面确认制作单，再调用共享执行器；用户明确授权的局部修改可按本次指令调用共享执行器。最终成品批准仍须用户在界面明确确认。不能谎报完成、生成占位成品或自动付费重试。不要虚构引用、服务状态或审核观察。`;
 
-/** Official DSH services and loop; no shell/fs tools or unrestricted model writes. */
+/** Official DSH services and loop; task-local file tools are registered only for chat. */
 export async function createDshContext({root,config,referenceImageMode=false}) {
   const ctx = new Context();
   const home = path.join(root,'web','dsh');
@@ -345,12 +348,15 @@ export function createStudioAgent({root,readConfig}) {
     let chatImageBytes=0,readPageImageCount=0,regionReadCount=0;
     let clarificationAsked=false;
     const toolNames=[];
+    let workspaceTools;
+    let scriptStateConflict=false;
     try {
       ctx=await createDshContext({root,config,referenceImageMode:mode==='chat'});
       function tool(name,description,parameters,execute,{render,finalizeContent,strictRoot=false}={}){
         toolNames.push(name);
         let definition;
         definition=defineTool({name,description,parameters,output:{schema:{type:'object',additionalProperties:true},render:render||((_args,value)=>[{type:'text',text:json(value)}])},...(finalizeContent?{finalizeContent:(exec,result)=>finalizeContent(exec,result,definition.parameters)}:{}),async execute(args,exec){
+          if(scriptStateConflict)throw Object.assign(new Error('脚本已改变受保护状态，本轮停止。'),{code:'ERR_SCRIPT_STATE_CONFLICT'});
           signal?.throwIfAborted();exec.signal.throwIfAborted();await emit('tool',description.split('。')[0]);
           return execute(args,exec);
         }});
@@ -374,6 +380,29 @@ export function createStudioAgent({root,readConfig}) {
         return {stagedCount:additions.length};
       };
       if(mode==='chat'){
+        if(taskId && task) {
+          workspaceTools=await registerWorkspaceTools(ctx,{
+            workspaceRoot:path.join(taskDirectory(taskId,root),'workspace'),
+            pythonPath:process.env.STUDIO_OCR_PYTHON || path.resolve(import.meta.dirname,'../../.venv-ocr',process.platform==='win32'?'Scripts/python.exe':'bin/python'),
+            ocrPythonPath:process.env.STUDIO_OCR_PYTHON || path.resolve(import.meta.dirname,'../../.venv-ocr',process.platform==='win32'?'Scripts/python.exe':'bin/python'),
+            onProgress:message=>{if(scriptStateConflict)throw new Error('本轮已停止');return emit('tool',message);},
+            withProtectedState:run=>withProtectedTaskState({taskId,root,onConflict:()=>{scriptStateConflict=true;handle?.agent.cancel({kind:'user'});}},run),
+            readFrozenSource:async({sourceId,fileOrder,signal:readSignal})=>{
+              readSignal?.throwIfAborted();
+              const current=await readTask(taskId,root);
+              const file=await readTaskSourceFileBytes(taskId,sourceId,fileOrder,{root,sources:current.sources,allowCurrentAttachment:true});
+              readSignal?.throwIfAborted();
+              return file;
+            },
+          });
+          toolNames.push(...workspaceTools.toolNames);
+        }
+
+        tool('studio_propose_references','按用户自然语言整理保留或排除参考、说明用于内容还是风格。只展示方案，等待真实用户确认，不改变人工选择。payload={items:[{id:当前来源ID,decision:retained或excluded,purpose:具体内容或风格用途}]}，必须包含当前全部来源。',payloadParameter,async({payload})=>{
+          const items=referenceProposal(task,JSON.parse(payload).items);
+          await emit('reference-proposal',{items});
+          return {status:'awaiting_user',revision,items};
+        });
         tool('studio_read_task','读取当前任务与人工确认状态',{},async()=>{const current=await readTask(taskId,root);return {task:modelTask(current)};});
         if (taskId && task && typeof canvasState === 'function' && typeof canvasOperation === 'function') {
           tool('studio_canvas_state','读取当前任务 Canvas 的节点索引、选中项、位置和尺寸。执行机械操作前先读取，不能臆造节点 ID；displaySize 仅画布展示尺寸，naturalSize 才是实际图片像素。此工具不生成图片。',{},async()=>canvasState({expectedRevision:revision}),{strictRoot:true});
@@ -494,11 +523,11 @@ export function createStudioAgent({root,readConfig}) {
           const staged=await addAssetSources(selections);
           return {...staged,taskRevision:revision};
         });
-        tool('studio_write_sheet','根据已确认需求和用户明确保留的来源生成可编辑制作单，等待人工版本确认。形式和张数由聊天描述与可选参考图在对话中判读，入口不预设；支持1—5页，包括两张海报，单张和多页共用同一流程。参考图识别结果不得当作已确认事实或自动保留来源；sourceIds仅填写用户人工保留的来源。payload格式：{title:字符串,sourceIds:[人工保留来源ID],pages:[{page:从1连续的整数,copy:准确文案,prompt:完整绘图指令,size:例如3:4,sourceIds:[人工保留来源ID],referenceImages:[{sourceId:来源ID,fileOrder:来源内图片order}]}]}。pages包含1—5项。',payloadParameter,async({payload})=>{
+        tool('studio_write_sheet','根据已确认需求和用户明确保留的来源生成制作方案，等待人工版本确认。形式和张数由聊天描述与可选参考图在对话中判读，入口不预设；支持1—5页，包括两张海报，单张和多页共用同一流程。参考图识别结果不得当作已确认事实或自动保留来源；sourceIds仅填写用户人工保留的来源。payload格式：{title:字符串,sourceIds:[人工保留来源ID],pages:[{page:从1连续的整数,copy:准确文案,prompt:完整绘图指令,size:例如3:4,sourceIds:[人工保留来源ID],referenceImages:[{sourceId:来源ID,fileOrder:来源内图片order,role:content或style或both}]}]}。pages包含1—5项。',payloadParameter,async({payload})=>{
           if(localEditRequested||pageEditCallbackInvoked) return {ok:false,status:'blocked',code:'local_edit_prevents_full_sheet',summary:'本轮已经请求对指定图片做局部修改，不能回退写全量制作单。请如实说明局部修改结果；若用户另需完整创作，在新一轮按完整工作流处理。'};
           const sheet=JSON.parse(payload);
           const current=await readTask(taskId,root);
-          if(!current.inputConfirmation)throw new Error('需求和参考尚未人工确认，请在工作台确认后再整理制作单。');
+          if(!current.inputConfirmation)throw new Error('需求和参考尚未人工确认，请在左侧对话确认当前需求与参考后再整理制作单。');
           return mutate(()=>setSheet(taskId,sheet,{root,expectedRevision:revision,inputRevision:current.inputConfirmation.revision}));
         });
         if (typeof editPages === 'function' && taskId && task && (availableEditPages(task).length || currentAttachmentImages(task).length)) {
@@ -605,7 +634,7 @@ export function createStudioAgent({root,readConfig}) {
       const webContract=await readFile(path.resolve(import.meta.dirname,'creative-studio-web.md'),'utf8');
       let historicalSessionEvents=[];
       const setup=agentCtx=>{
-        agentCtx.systemPrompt.section({name:'studio:web-entry-contract',order:5,interpolate:false,text:webContract+'\n本次是独立Web工作台入口，使用已注册业务工具；无需shell、CLI 或 Codex。人工确认按钮由 Web 宿主处理，模型没有代确认工具。'});
+        agentCtx.systemPrompt.section({name:'studio:web-entry-contract',order:5,interpolate:false,text:webContract+'\n本次是独立Web工作台入口，使用已注册工具；用户无需了解CLI或工具名。必要人工决定由左侧对话卡片与宿主记录，模型没有代确认工具。'});
         agentCtx.systemPrompt.section({name:'studio:asset-search-contract',order:6,interpolate:false,text:'用户明确要求检索素材或历史参考时，必须实际调用 studio_search_assets，再按工具返回的真实命中数、展示数和新增待选择数回复；不得空口说已查或无素材。检索先使用一个简短主题关键词（例如 KET），不要把受众、引流目标、手帐风格等拼成一个长精确短语。该工具会自动把命中项加入任务的待选择参考；这不等于用户保留。'});
         agentCtx.tools.restrict({allow:toolNames});
         if(mode==='chat') agentCtx.on('agent/pre-step',async({agent,step,signal:turnSignal},next)=>{
@@ -658,6 +687,7 @@ export function createStudioAgent({root,readConfig}) {
       const timer=setTimeout(()=>handle.agent.cancel({kind:'user'}),180000);
       try{await handle.agent.whenIdle();}finally{clearTimeout(timer);}
       signal?.throwIfAborted();
+      if(scriptStateConflict)throw Object.assign(new Error('脚本改变了受保护任务或配置记录，本轮已停止，请检查任务状态。'),{code:'ERR_SCRIPT_STATE_CONFLICT'});
       const events=handle.agent.session.snapshotEvents();
       const latestTurn=events.filter(e=>e.type==='turn/start').at(-1)?.seq ?? 0;
       const finalText=events.filter(e=>e.seq>=latestTurn&&e.type==='assistant/message').map(e=>textOf(e.data.message)).filter(Boolean).at(-1);
@@ -669,7 +699,12 @@ export function createStudioAgent({root,readConfig}) {
       if(mode==='review'&&!reviewCalled)throw new Error('模型未记录实际读图结论，本页仍待审核。');
       if(mode==='check'&&!probeCalled)throw new Error('模型未完成工具调用能力检查。');
       await emit('status','本轮处理完成');
-      return {text:finalText,...(taskId?{task:await readTask(taskId,root)}:{}),...(mode==='check'?{tools:true,textCapability:true,vision:visionChecked}:{})};
+      const artifacts=workspaceTools ? await workspaceTools.listArtifacts() : {artifacts:[]};
+      const deliverables=artifacts.artifacts.map(file=>{
+        const fileUrl=`/api/tasks/${encodeURIComponent(taskId)}/workspace-artifacts/${encodeURIComponent(file.path)}?sha256=${file.sha256}`;
+        return {name:file.name,mimeType:file.mimeType,size:file.size,sha256:file.sha256,fileUrl,downloadUrl:`${fileUrl}&download=1`};
+      });
+      return {text:finalText,...(deliverables.length?{deliverables}:{}),...(taskId?{task:await readTask(taskId,root)}:{}),...(mode==='check'?{tools:true,textCapability:true,vision:visionChecked}:{})};
     }catch(error){
       if(signal?.aborted)throw signal.reason ?? error;
       // Provider response bodies/headers and credentials never cross into UI/logs.
