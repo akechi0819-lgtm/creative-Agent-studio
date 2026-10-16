@@ -580,7 +580,9 @@ export function App() {
       child.opener = null;
       child.location.replace(opened.openUrl);
       navigated = true;
-      const deadline = Date.now() + 8000;
+      // A cold Canvas tab loads its editor and local database before connecting.
+      notify('正在打开并连接当前任务的 Canvas，请稍候…');
+      const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => window.setTimeout(resolve, 400));
         const current = await api.task(id);

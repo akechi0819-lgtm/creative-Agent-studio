@@ -106,7 +106,7 @@ async function liveServer(root) {
   return null;
 }
 
-async function acquirePrepareLock(root, onProgress) {
+export async function acquirePrepareLock(root, onProgress = () => {}) {
   const lockPath = path.join(root, '.studio-runtime', 'prepare.lock');
   const owner = { pid: process.pid, token: randomUUID(), startedAt: new Date().toISOString() };
   const startedWaiting = Date.now();
@@ -170,6 +170,7 @@ export async function prepareWorkspace({
   nodePath = process.execPath,
   npmPath,
   force = false,
+  includePython = true,
   onProgress = () => {},
   operations = {},
 } = {}) {
@@ -261,7 +262,14 @@ export async function prepareWorkspace({
       await writeState(statePath, state);
     }
 
-    const pythonResult = await python({root, nodePath, onProgress, beforeChange: ensureOffline});
+    let pythonResult = null;
+    if (includePython) {
+      pythonResult = await python({root, nodePath, onProgress, beforeChange: ensureOffline});
+      state.python = {fingerprint: pythonResult.fingerprint, pythonExecutable: pythonResult.pythonExecutable, status: 'ready'};
+    } else {
+      state.python = {status: 'deferred', reason: 'release-first-start'};
+      onProgress({phase: 'deferred', message: 'Python/OCR 将在运行包首次启动时准备。'});
+    }
     for (const target of npmTargets) {
       if (await dependencyFingerprint(path.join(root, target)) !== state.dependencies[target].fingerprint) {
         throw new Error(`${target} 依赖清单在准备期间变化；未将过期检查标记为就绪。`);
@@ -272,18 +280,20 @@ export async function prepareWorkspace({
         throw new Error(`${target.id} 源码在准备期间变化；下次只重建变更的组件。`);
       }
     }
-    state.python = {fingerprint: pythonResult.fingerprint, pythonExecutable: pythonResult.pythonExecutable};
     state.status = 'ready';
     state.completedAt = new Date().toISOString();
     state.fingerprint = createHash('sha256').update(JSON.stringify({
       dependencies: Object.fromEntries(Object.entries(state.dependencies).map(([id, value]) => [id, value.fingerprint])),
       builds: Object.fromEntries(Object.entries(state.builds).map(([id, value]) => [id, value.fingerprint])),
-      python: pythonResult.fingerprint,
+      python: pythonResult?.fingerprint ?? 'deferred',
     })).digest('hex');
     await writeState(statePath, state);
-    const skipped = !actions.dependenciesInstalled.length && !actions.buildsRun.length && pythonResult.skipped;
-    onProgress({phase: skipped ? 'skip' : 'ready', message: skipped ? '依赖、构建与 OCR 已验证复用，无需安装。' : '必要准备已完成，其余环境保持复用。'});
-    return {root, nodePath, npmPath: npmCli, fingerprint: state.fingerprint, skipped, ...actions, python: pythonResult};
+    const skipped = !actions.dependenciesInstalled.length && !actions.buildsRun.length && (!includePython || pythonResult.skipped);
+    const message = includePython
+      ? (skipped ? '依赖、构建与 OCR 已验证复用，无需安装。' : '必要准备已完成，其余环境保持复用。')
+      : 'Node 依赖与构建已完成；Python/OCR 将在首次启动时准备。';
+    onProgress({phase: skipped ? 'skip' : 'ready', message});
+    return {root, nodePath, npmPath: npmCli, fingerprint: state.fingerprint, skipped, ...actions, python: pythonResult, pythonDeferred: !includePython};
   } catch (error) {
     if (state && activeStep) {
       const entry = state[activeStep.section][activeStep.id];
@@ -296,4 +306,4 @@ export async function prepareWorkspace({
   }
 }
 
-export const preparationInternals = Object.freeze({resolveNpmCli, dependencyFingerprint, liveServer});
+export const preparationInternals = Object.freeze({resolveNpmCli, dependencyFingerprint, liveServer, acquirePrepareLock});

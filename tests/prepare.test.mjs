@@ -86,6 +86,15 @@ test('existing developer dependencies and complete outputs are adopted without a
   const state=JSON.parse(await fs.readFile(path.join(f.root,'.studio-runtime/prepare-state.json'),'utf8'));
   assert.equal(state.status,'ready');assert.equal(Object.keys(state.dependencies).length,4);assert.equal(Object.keys(state.builds).length,5);
 });
+test('release preparation can defer Python without calling its operation or claiming it is ready',async t=>{
+  const f=await fixture(t);let pythonCalls=0;
+  f.operations.python=async()=>{pythonCalls+=1;throw new Error('Python must remain deferred');};
+  const result=await f.run({includePython:false});
+  const state=JSON.parse(await fs.readFile(path.join(f.root,'.studio-runtime/prepare-state.json'),'utf8'));
+  assert.equal(result.pythonDeferred,true);assert.equal(result.python,null);assert.equal(pythonCalls,0);
+  assert.deepEqual(state.python,{status:'deferred',reason:'release-first-start'});
+  assert.equal(result.skipped,true);
+});
 test('backend-only edits cause no installation or build; frontend-only edits rebuild only their component',async t=>{
   const f=await fixture(t);await f.run();await put(f.root,'src/business.mjs','export const changed=true;');await f.run();
   assert.deepEqual(f.builds,[]);await put(f.root,'web/src/main.js','export const ui=2;');await f.run();

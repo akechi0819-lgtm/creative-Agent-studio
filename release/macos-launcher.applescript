@@ -10,7 +10,11 @@ on run
 	set nodePath to packageRoot & "/.studio-runtime/node/" & nodeDirectoryName & "/bin/node"
 	set launcherPath to packageRoot & "/release/launcher.mjs"
 	try
-		display notification "正在启动或检查本机工作台…" with title "Creative Agent Studio"
+		if actionName is "start" then
+			display notification "首次启动会准备 Python/OCR，可能下载依赖…" with title "Creative Agent Studio"
+		else
+			display notification "正在检查本机工作台…" with title "Creative Agent Studio"
+		end if
 		set resultText to do shell script quoted form of nodePath & " " & quoted form of launcherPath & " " & actionName
 		display dialog resultText buttons {"关闭"} default button 1 with title "Creative Agent Studio"
 	on error errorText number errorNumber

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from contextlib import redirect_stdout
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -62,7 +63,7 @@ def main() -> int:
         with redirect_stdout(sys.stderr):
             from rapidocr import RapidOCR
 
-            model_root = Path(__file__).resolve().parent.parent / ".studio-runtime" / "rapidocr-models"
+            model_root = Path(os.environ["STUDIO_RAPIDOCR_MODEL_DIR"]) if os.environ.get("STUDIO_RAPIDOCR_MODEL_DIR") else Path(__file__).resolve().parent.parent / ".studio-runtime" / "rapidocr-models"
             engine = RapidOCR(params={"Global.model_root_dir": str(model_root)})
             result = run_image(engine, args.file) if args.kind == "image" else run_pdf(engine, args.file)
         sys.stdout.write(json.dumps(result, ensure_ascii=True, separators=(",", ":")))

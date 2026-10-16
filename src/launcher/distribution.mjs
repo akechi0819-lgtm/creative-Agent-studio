@@ -10,12 +10,6 @@ export const RELEASE_TARGETS = Object.freeze({
     nodeSha256: '72d5d8832b41c9d9646197af614ffd751406ea4d215060eb91b98864e1919a3e',
     nodeRelative: '.studio-runtime/node/node-v22.23.3-darwin-arm64/bin/node',
   }),
-  'darwin-x64': Object.freeze({
-    id: 'darwin-x64', platform: 'darwin', arch: 'x64', runner: 'macos-15-intel',
-    nodeArchive: 'node-v22.23.3-darwin-x64.tar.xz',
-    nodeSha256: 'ac41874c3352937119cfec39e1a98c578fe58ce8a86d7e785b89a4706015f305',
-    nodeRelative: '.studio-runtime/node/node-v22.23.3-darwin-x64/bin/node',
-  }),
   'win32-x64': Object.freeze({
     id: 'win32-x64', platform: 'win32', arch: 'x64', runner: 'windows-2025',
     nodeArchive: 'node-v22.23.3-win-x64.zip',
@@ -49,7 +43,7 @@ const ALLOWED_FILES = new Set([
   'release/NOTICE-third-party.md',
   'release/licenses/Apache-2.0.txt', 'release/licenses/CC-BY-4.0.txt',
   'release/licenses/LGPL-3.0.txt', 'release/licenses/MPL-2.0.txt',
-  'release/launcher.mjs', 'release/macos-launcher.applescript',
+  'release/launcher.mjs', 'release/prepare-python.mjs', 'release/macos-launcher.applescript',
   'release/windows-start.vbs', 'release/windows-start.ps1',
 ]);
 
@@ -64,7 +58,7 @@ const ALLOWED_PREFIXES = Object.freeze([
 ]);
 
 const FORBIDDEN_SOURCE_PATH = /(?:^|\/)(?:\.git|\.p0-state|\.studio-runtime|\.venv-ocr|node_modules|company|browser-profile|evidence)(?:\/|$)/i;
-const FORBIDDEN_BUNDLE_PATH = /(?:^|\/)(?:\.git|\.p0-state|company|browser-profile|evidence|user-data|sessions)(?:\/|$)/i;
+const FORBIDDEN_BUNDLE_PATH = /(?:^|\/)(?:\.git|\.p0-state|company|browser-profile|evidence|user-data|sessions|\.venv-ocr|rapidocr-models|python-venv-stage|python-venv-backups|python-runtime-state\.json)(?:\/|$)/i;
 const FORBIDDEN_BUNDLE_ROOTS = new Set(['config', 'tasks', 'materials', 'exports', 'history', 'logs']);
 const NODE_VERSION = '22.23.3';
 const PYTHON_VERSION = '3.12.15';
@@ -156,7 +150,8 @@ export async function hashFile(file) {
 
 function forbiddenBundlePath(relative) {
   const normalized = relative.split(path.sep).join('/');
-  return FORBIDDEN_BUNDLE_PATH.test(normalized) || FORBIDDEN_BUNDLE_ROOTS.has(normalized.split('/')[0]);
+  const firstStartRuntime = /^(?:\.venv-ocr(?:\/|$)|\.studio-runtime\/(?:python|rapidocr-models)(?:\/|$))/i.test(normalized);
+  return firstStartRuntime || FORBIDDEN_BUNDLE_PATH.test(normalized) || FORBIDDEN_BUNDLE_ROOTS.has(normalized.split('/')[0]);
 }
 
 async function walkFiles(root, relative = '', files = []) {
@@ -250,7 +245,12 @@ export async function writeBundleManifest(root, targetId, version) {
     platform: target.platform,
     architecture: target.arch,
     nodeVersion: NODE_VERSION,
-    pythonVersion: PYTHON_VERSION,
+    pythonRuntime: {
+      version: PYTHON_VERSION,
+      bundled: false,
+      preparedOnFirstStart: true,
+      lockFiles: ['scripts/requirements-cleaner-ocr.lock.txt', 'scripts/requirements-workspace.lock.txt'],
+    },
     files: entries,
   };
   await writeFile(path.join(root, 'release-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644, flag: 'wx' });
@@ -268,65 +268,6 @@ export async function pruneBuildState(root) {
   await Promise.all(remove.map(relative => rm(path.join(root, relative), { recursive: true, force: true })));
   const runtime = path.join(root, '.studio-runtime');
   await mkdir(runtime, { recursive: true });
-}
-
-export async function validatePortablePython(root) {
-  const realRoot = await realpath(path.resolve(root));
-  const runtime = path.join(root, '.studio-runtime');
-  const pythonHome = path.join(runtime, 'python');
-  const venv = path.join(root, '.venv-ocr');
-  const statePath = path.join(runtime, 'python-runtime-state.json');
-  const state = JSON.parse(await readFile(statePath, 'utf8'));
-  if (state.status !== 'ready' || state.runtimeSource !== 'project-managed-python') {
-    throw new Error('OCR 包必须包含 P4 校验过的项目私有 Python 3.12 运行时。');
-  }
-  const basePrefix = await realpath(path.resolve(state.basePrefix));
-  const realPythonHome = await realpath(pythonHome);
-  const relativePrefix = path.relative(realRoot, basePrefix);
-  if (relativePrefix.startsWith('..') || path.isAbsolute(relativePrefix) || !pathWithin(realPythonHome, basePrefix)) {
-    throw new Error('OCR Python 基础解释器不在项目私有运行时内。');
-  }
-  const suffix = process.platform === 'win32' ? 'python.exe' : 'bin/python3.12';
-  const basePython = path.join(basePrefix, suffix);
-  const actualPython = await realpath(basePython);
-  if (!pathWithin(realPythonHome, actualPython)) {
-    throw new Error('OCR Python 解释器解析到包外路径。');
-  }
-  const venvPython = path.join(venv, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
-  await stat(venvPython).catch(() => { throw new Error('预构建 Python 虚拟环境缺少运行入口。'); });
-  const config = await readFile(path.join(venv, 'pyvenv.cfg'), 'utf8');
-  const rootReferences = new Set([path.resolve(root), realRoot]);
-  const configEntries = config.split(/\r?\n/).flatMap(line => {
-    const separator = line.indexOf('=');
-    return separator < 0 ? [] : [{
-      key: line.slice(0, separator).trim(),
-      value: line.slice(separator + 1).trim(),
-    }];
-  });
-  const configHome = configEntries.find(entry => entry.key === 'home')?.value;
-  if (!configHome || configEntries.find(entry => entry.key === 'relocatable')?.value.toLowerCase() !== 'true') {
-    throw new Error('OCR Python 虚拟环境缺少私有 base 路径或 uv relocatable 标记。');
-  }
-  const realConfigHome = await realpath(path.resolve(configHome)).catch(() => {
-    throw new Error('OCR Python 虚拟环境的 base 路径不存在。');
-  });
-  if (!pathWithin(realPythonHome, realConfigHome)) throw new Error('OCR Python 虚拟环境的 base 路径不在包内私有运行时。');
-  const normalizeReference = value => value.replaceAll('\\', '/').toLowerCase();
-  const referencesStagingPath = value => [...rootReferences].some(reference =>
-    normalizeReference(value).includes(normalizeReference(reference)));
-  const unexpectedReferences = configEntries.filter(entry => entry.key !== 'home' && referencesStagingPath(entry.value));
-  if (unexpectedReferences.length) {
-    throw new Error(`OCR Python 虚拟环境配置含 staging 路径元数据（键：${unexpectedReferences.map(entry => entry.key).join('、')}）。`);
-  }
-  const candidates = [path.join(venv, 'lib', 'python3.12', 'site-packages'), path.join(venv, 'Lib', 'site-packages')];
-  if (!(await Promise.all(candidates.map(candidate => lstat(candidate).then(info => info.isDirectory(), () => false)))).some(Boolean)) {
-    throw new Error('预构建 OCR/workspace Python 依赖中缺少 site-packages。');
-  }
-  return {
-    pythonRelative: path.relative(root, venvPython).split(path.sep).join('/'),
-    basePrefixRelative: path.relative(realRoot, basePrefix).split(path.sep).join('/'),
-    pythonVersion: PYTHON_VERSION,
-  };
 }
 
 export function pathWithin(root, candidate) {

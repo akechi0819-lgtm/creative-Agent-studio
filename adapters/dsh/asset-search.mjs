@@ -194,6 +194,7 @@ export function compactLegacyAssetSearchResults(session, events, { thresholdChar
 export function taskSourcesForPrompt(sources = []) {
   let currentAttachmentTextRemaining = CURRENT_ATTACHMENT_TEXT_LIMIT;
   let currentAttachmentFilesRemaining = Math.floor(CURRENT_ATTACHMENT_TEXT_LIMIT / CURRENT_ATTACHMENT_FILE_LIMIT);
+  let referenceNumber = 0;
   return sources.map(source => {
     if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
     const compact = {
@@ -208,6 +209,7 @@ export function taskSourcesForPrompt(sources = []) {
       imageFiles: source.decision === 'excluded' ? [] : (source.files || []).filter(file => /\.(png|jpe?g|webp)$/iu.test(file.name || '')).slice(0, 30).map(file => ({ order: file.order, name: boundedText(file.name, 100), mediaType: boundedText(file.mimeType, 80) })),
     };
     if (source.asset) {
+      compact.referenceNumber = ++referenceNumber;
       compact.asset = { id: source.asset.id, revision: source.asset.revision };
       compact.summary = boundedText(source.summary, 1200);
       compact.tags = (Array.isArray(source.tags) ? source.tags : []).slice(0, 8).map(tag => boundedText(tag, 60)).filter(Boolean);

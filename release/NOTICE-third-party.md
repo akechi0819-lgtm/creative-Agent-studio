@@ -11,7 +11,7 @@
 
 ## LGPL-3.0-or-later：sharp/libvips
 
-- `@img/sharp-libvips-<平台>@1.3.4` 声明 LGPL-3.0-or-later；随包保留其 `README.md`、`versions.json` 和 `lib/` 中的本平台动态库。`README.md` 列出其依赖组件和许可证，`versions.json` 记录实际组件版本。macOS 包中的 `lib/libvips-cpp.8.18.7.dylib` 以独立文件保留，未静态合并或改写；Windows 及另一 Mac 架构以各自 runner 产出的文件为准。用户可替换相同 ABI 的动态库文件。打包器会拒绝缺少动态库、README 或版本清单的目标包。
+- `@img/sharp-libvips-<平台>@1.3.4` 声明 LGPL-3.0-or-later；随包保留其 `README.md`、`versions.json` 和 `lib/` 中的本平台动态库。`README.md` 列出其依赖组件和许可证，`versions.json` 记录实际组件版本。macOS 包中的 `lib/libvips-cpp.8.18.7.dylib` 以独立文件保留，未静态合并或改写；Windows 包使用对应 runner 产出的动态库。用户可替换相同 ABI 的动态库文件。打包器会拒绝缺少动态库、README 或版本清单的目标包。
 - 入口：[sharp-libvips 源码与构建仓库](https://github.com/lovell/sharp-libvips)、[sharp 安装说明](https://sharp.pixelplumbing.com/install/)。随包 `README.md` 的许可证表、`versions.json` 及 `THIRD-PARTY-LICENSES.json` 的包路径共同给出确切版本；具体 LGPL 组件以每个平台自身清单为准。LGPL-3.0 文本随包位于 `release/licenses/LGPL-3.0.txt`。
 - 如果未来改为静态链接、合并动态库、修改库代码，或无法提供上述相应版本的源代码获取入口，应暂停正式发布并重新核对义务。
 
@@ -20,15 +20,16 @@
 - `caniuse-lite@1.0.30001791` 的数据采用 CC BY 4.0。随包保留其原始 `LICENSE`（当该包进入最终依赖时），并在此注明：数据来源为 **Can I Use / caniuse.com**，上游项目要求将来源标为 caniuse.com。静态许可证文本为 `release/licenses/CC-BY-4.0.txt`。
 - 上游说明：[browserslist/caniuse-lite README](https://github.com/browserslist/caniuse-lite#license)。若生产依赖裁剪后该包不在归档内，本条仍保留作构建依赖来源记录。
 
-## Node.js 与 Python
+## Node.js 与首次启动准备的 Python/OCR
 
 - Node.js v22.23.3 是各平台官方归档，保留解压后的 Node 根目录 `LICENSE`；路径写入 `THIRD-PARTY-LICENSES.json` 和 `release-manifest.json`。上游：[Node.js v22.23.3](https://nodejs.org/dist/v22.23.3/)。
-- Python 3.12.15 为项目私有随包运行时。打包器要求在运行时目录找到 `LICENSE` 或 `LICENSE.txt`；各 Python 分发包的许可证字段、`*.dist-info/licenses/` 路径写入清单。锁定依赖由 `scripts/requirements-cleaner-ocr.lock.txt` 和 `scripts/requirements-workspace.lock.txt` 固定。
+- Python、Python 依赖和 RapidOCR ONNX 模型不包含在主 ZIP 中。首次启动时，共享准备器在用户数据目录建立应用私有环境并写入模型缓存；可复用兼容的本机 Python 3.12，缺少时使用项目锁定运行时，不修改系统 Python 或其他项目。依赖版本和 SHA-256 由 `scripts/requirements-cleaner-ocr.lock.txt`、`scripts/requirements-workspace.lock.txt` 固定。
+- 首次准备安装的 Python 分发包保留在用户数据目录的 `.venv-ocr/`，其 `*.dist-info/METADATA`、`licenses/` 和上游许可证随本机环境保存；包内 `THIRD-PARTY-LICENSES.json` 只清点实际随 ZIP 分发的文件，不声称已扫描首次准备后才下载的 Python 组件。
 
 ## RapidOCR / PaddleOCR 模型
 
-- OCR 运行时使用 RapidOCR 预先生成的 ONNX 模型，随包模型位于 `.studio-runtime/rapidocr-models/`；模型来源、版权归属、SHA-256 与许可声明见 `release/NOTICE-rapidocr-models.md`。RapidOCR 的官方模型许可说明分别记录项目代码与模型权利人，包内继续提供该声明。
-- RapidOCR Python 包及其依赖许可证由 `THIRD-PARTY-LICENSES.json` 的 Python 分发包记录和对应 `*.dist-info/licenses/` 路径定位。上游模型许可说明：[RapidOCR Model License and Attribution Statement](https://rapidai.github.io/RapidOCRDocs/main/en/model_licenses/)。
+- 首次启动准备的 RapidOCR ONNX 模型写入用户数据目录的 `.studio-runtime/rapidocr-models/`，不会进入 Release ZIP。模型来源、版权归属和上游许可入口见 `release/NOTICE-rapidocr-models.md`；具体文件由运行时准备器从上游获取。
+- RapidOCR Python 包及其依赖使用上述 SHA-256 锁文件安装。首次安装后可从用户数据目录的环境元数据查阅每个分发包的许可证文件；包内 `THIRD-PARTY-LICENSES.json` 不把这些未随包分发的内容列为已包含材料。
 
 ## Tesseract.js 语言模型
 

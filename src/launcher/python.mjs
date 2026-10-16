@@ -114,8 +114,8 @@ function pythonExecutable(venvPath) {
   return path.join(venvPath, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 }
 
-function runtimePaths(root) {
-  const runtime = path.join(root, '.studio-runtime');
+function runtimePaths(sourceRoot, runtimeRoot = sourceRoot) {
+  const runtime = path.join(runtimeRoot, '.studio-runtime');
   const uvDirectory = path.join(runtime, 'uv');
   return {
     runtime,
@@ -126,13 +126,13 @@ function runtimePaths(root) {
     modelState: path.join(runtime, 'rapidocr-model-state.json'),
     pythonRuntimeState: path.join(runtime, 'python-runtime-state.json'),
     pythonState: path.join(runtime, 'python-state.json'),
-    venv: path.join(root, '.venv-ocr'),
+    venv: path.join(runtimeRoot, '.venv-ocr'),
     venvStage: path.join(runtime, 'python-venv-stage'),
     venvBackups: path.join(runtime, 'python-venv-backups'),
-    requirements: path.join(root, 'scripts', 'requirements-cleaner-ocr.txt'),
-    lock: path.join(root, 'scripts', 'requirements-cleaner-ocr.lock.txt'),
-    workspaceRequirements: path.join(root,'scripts','requirements-workspace.txt'),
-    workspaceLock: path.join(root,'scripts','requirements-workspace.lock.txt'),
+    requirements: path.join(sourceRoot, 'scripts', 'requirements-cleaner-ocr.txt'),
+    lock: path.join(sourceRoot, 'scripts', 'requirements-cleaner-ocr.lock.txt'),
+    workspaceRequirements: path.join(sourceRoot, 'scripts', 'requirements-workspace.txt'),
+    workspaceLock: path.join(sourceRoot, 'scripts', 'requirements-workspace.lock.txt'),
   };
 }
 
@@ -601,9 +601,8 @@ function pathIsWithin(root, candidate) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-function runtimeIsUsable(health, paths, managedOnly) {
-  return health?.runtimeHealthy === true
-    && (!managedOnly || pathIsWithin(paths.pythonHome, health?.basePrefix ?? ''));
+function runtimeIsUsable(health) {
+  return health?.runtimeHealthy === true;
 }
 
 async function writeReadyStates(paths, { digest, spec, health, pythonPath, runtimeSource, uvVersion }) {
@@ -634,10 +633,11 @@ async function writeReadyStates(paths, { digest, spec, health, pythonPath, runti
   }
 }
 
-async function preparePythonCore({ root, onProgress = () => {}, nodePath = process.execPath, beforeChange, managedOnly = false }, injectedOperations = {}) {
+async function preparePythonCore({ root, runtimeRoot = root, onProgress = () => {}, nodePath = process.execPath, beforeChange }, injectedOperations = {}) {
   if (typeof root !== 'string' || !root.trim()) throw new Error('Python 准备器需要源码根目录。');
+  if (typeof runtimeRoot !== 'string' || !runtimeRoot.trim()) throw new Error('Python 准备器需要运行时目录。');
   const projectRoot = path.resolve(root);
-  const paths = runtimePaths(projectRoot);
+  const paths = runtimePaths(projectRoot, path.resolve(runtimeRoot));
   await fs.access(paths.requirements);
   await fs.access(paths.lock);
   const spec = await dependencySpec(paths);
@@ -655,7 +655,7 @@ async function preparePythonCore({ root, onProgress = () => {}, nodePath = proce
   };
 
   let health = await operations.inspectPython(pythonPath, paths, spec);
-  let runtimeReady = runtimeIsUsable(health, paths, managedOnly);
+  let runtimeReady = runtimeIsUsable(health);
   let dependenciesReady = runtimeReady && health?.dependenciesHealthy === true;
   const modelsReady = await modelStateReady(paths, modelDigest);
   const needsChanges = !runtimeReady || !dependenciesReady || !modelsReady;
@@ -693,9 +693,9 @@ async function preparePythonCore({ root, onProgress = () => {}, nodePath = proce
       const stagePaths = { ...paths, venv: paths.venvStage };
       const stagePython = pythonExecutable(paths.venvStage);
       let stageHealth = await operations.inspectPython(stagePython, stagePaths, spec);
-      if (!runtimeIsUsable(stageHealth, stagePaths, managedOnly)) {
+      if (!runtimeIsUsable(stageHealth)) {
         await preserveInvalidStage(paths);
-        const systemPython = managedOnly ? null : await operations.findSystemPython312();
+        const systemPython = await operations.findSystemPython312();
         report(onProgress, 'install', systemPython
           ? `使用本机 Python ${systemPython.version.join('.')} 创建项目私有 OCR 虚拟环境。`
           : `准备项目私有 Python ${PYTHON_VERSION}。`);
@@ -703,7 +703,7 @@ async function preparePythonCore({ root, onProgress = () => {}, nodePath = proce
         changed = true;
         stageHealth = await operations.inspectPython(stagePython, stagePaths, spec);
       }
-      if (!runtimeIsUsable(stageHealth, stagePaths, managedOnly)) throw new Error('新建 OCR Python 虚拟环境未通过 3.12 版本与项目路径检查。');
+      if (!runtimeIsUsable(stageHealth)) throw new Error('新建 OCR Python 虚拟环境未通过 3.12 版本与项目路径检查。');
       if (!stageHealth.dependenciesHealthy) {
         report(onProgress, 'install', '同步带 SHA-256 哈希的完整 OCR 固定依赖。');
         dependencyAttempted = true;
@@ -758,7 +758,9 @@ async function preparePythonCore({ root, onProgress = () => {}, nodePath = proce
     return {
       skipped: !changed,
       fingerprint: digest,
+      pythonPath,
       pythonExecutable: pythonPath,
+      modelRoot: paths.modelRoot,
       pythonVersion: health.version.join('.'),
       uvVersion: uvInfo?.version ?? null,
       runtimeSource,

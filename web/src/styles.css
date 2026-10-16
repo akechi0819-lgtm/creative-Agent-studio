@@ -536,3 +536,22 @@ h1, h2, h3, p { margin-top: 0; }
 .preview-gallery img {display:block;max-width:100%;height:auto;border-radius:8px}
 .preview-gallery figure {margin:12px 0}
 .preview-gallery figcaption {font-size:12px;color:#666}
+.source-preview { margin: 0 0 20px; }
+.source-preview h3 { margin: 0 0 10px; font-size: 14px; }
+.source-preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.source-preview-card { min-width: 0; display: grid; align-content: start; gap: 7px; border: 1px solid var(--line); border-radius: 9px; padding: 9px; background: #fff; }
+.source-preview-card.excluded { opacity: .58; }
+.source-preview-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.source-preview-number { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; border-radius: 6px; background: var(--surface-accent); color: var(--accent-dark); font-size: 10px; font-weight: 750; }
+.source-preview-status { border-radius: 5px; padding: 3px 6px; color: var(--muted); background: var(--surface-soft); font-size: 9px; white-space: nowrap; }
+.source-preview-status.retained { color: var(--accent-dark); background: var(--surface-accent); }
+.source-preview-status.pending { color: #8c5a09; background: #fff1d9; }
+.source-preview-title { min-width: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.source-preview-image-link { width: 100% !important; height: 125px; display: grid !important; place-items: center; overflow: hidden; border-radius: 7px; background: var(--surface-soft); }
+.source-preview-image-link img { width: 100%; height: 125px; min-height: 0; object-fit: contain; }
+.source-preview-type { min-width: 0; min-height: 125px; display: grid; align-content: center; justify-items: center; gap: 5px; overflow: hidden; border-radius: 7px; padding: 9px; background: var(--surface-soft); color: var(--muted); text-align: center; }
+.source-preview-type span { font-size: 13px; font-weight: 750; }
+.source-preview-type small { max-width: 100%; overflow: hidden; color: var(--muted-2); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.source-preview-card p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.source-preview-disclosure { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+.source-preview-disclosure > summary { width: fit-content; margin-bottom: 10px; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 650; }

@@ -28,6 +28,10 @@ function imageForPage(task, pageNumber) {
   const page = task?.execution?.pages?.find((item) => item.page === pageNumber && item.status === 'succeeded');
   const url = getImageUrl(page?.image);
   if (page && url) return { ...page.image, imageUrl: url, nodeId: page.imageNodeId, status: page.status };
+  return previousImageForPage(task, pageNumber);
+}
+
+function previousImageForPage(task, pageNumber) {
   const sheet = currentSheet(task);
   const previousVersion = sheet?.pageEdit?.pageBases?.find(entry => entry.page === pageNumber)?.version ?? sheet?.pageEdit?.baseVersion;
   const previous = task.executionHistory?.find(execution => execution.version === previousVersion)?.pages?.find(item => item.page === pageNumber && item.status === 'succeeded');
@@ -35,8 +39,10 @@ function imageForPage(task, pageNumber) {
   return previousUrl ? { ...previous.image, imageUrl: previousUrl, nodeId: previous.imageNodeId, isPrevious: true } : null;
 }
 
-function decisionLabel(decision) {
-  return ({ retained: '已保留', excluded: '已排除', pending: '待选择' })[decision];
+function decisionLabel(decision, proposed = false) {
+  return (proposed
+    ? { retained: '拟保留', excluded: '拟排除', pending: '待选择' }
+    : { retained: '已保留', excluded: '已排除', pending: '待选择' })[decision];
 }
 function isImageFile(file) { return /image\/(png|jpeg|webp|bmp)/i.test(file?.mimeType || file?.type || '') || /\.(png|jpe?g|webp|bmp)$/i.test(file?.name || ''); }
 function attachmentType(file) {
@@ -228,7 +234,7 @@ export function Workbench({
       </section>
       <section className="object-panel" aria-label="当前任务预览">
         <div className="object-header"><div><span className="eyebrow">当前任务预览</span><div className="object-title-row"><h2>{hasCurrentOutput ? '成品预览' : activeSheet ? '方案预览' : '任务预览'}</h2>{activeSheet && <span className={`version-chip ${sheetAuthorized(task) ? 'confirmed' : 'pending'}`}>v{activeSheet.version} · {sheetAuthorized(task) ? '已确认' : '待确认'}</span>}</div></div></div>
-        <div className="object-content"><ObjectPreview task={task} sheet={activeSheet} executionSucceeded={executionSucceeded} /></div>
+        <div className="object-content"><ObjectPreview task={task} sheet={activeSheet} executionSucceeded={executionSucceeded} hasCurrentOutput={hasCurrentOutput} /></div>
         <div className="object-footer">
           <span>{currentExport ? `版本 v${activeSheet?.version} · 素材包已就绪` : '图片预览与版本信息显示在这里；修改意见直接发在左侧对话。'}</span>
           {currentExport?.downloadUrl && <a className="button outline small" href={currentExport.downloadUrl} download>下载素材包</a>}
@@ -291,7 +297,7 @@ function Message({ proposalStale, onConfirmProposal,  message, sources = [], onR
         <strong>待确认需求与参考 · 任务版本 {message.referenceProposal.revision}</strong>
         <p>需求摘要：{proposalBrief || '未提供文字摘要'}</p>
         {message.referenceProposal.items?.length
-          ? message.referenceProposal.items.map((item) => <p key={item.id}>{sources.find((source) => source.id === item.id)?.title || item.id}：{decisionLabel(item.decision)} · {compactText(item.purpose, 160)}</p>)
+          ? message.referenceProposal.items.map((item) => <p key={item.id}>{sources.find((source) => source.id === item.id)?.title || item.id}：{decisionLabel(item.decision, true)} · {compactText(item.purpose, 160)}</p>)
           : <p>本次不使用参考素材。</p>}
         <small>{proposalStale ? '此方案已过期，请以最新讨论为准。' : '可以直接在对话中提出修改，或确认后继续。'}</small>
         <button type="button" className="button small primary" onClick={onConfirmProposal} disabled={answerDisabled || proposalStale}>确认参考方案并继续</button>
@@ -514,20 +520,34 @@ function SchemeDecisionCard({ task, sheet, busy, onConfirm }) {
   </details>;
 }
 
-function ObjectPreview({ task, sheet, executionSucceeded }) {
+function ObjectPreview({ task, sheet, executionSucceeded, hasCurrentOutput }) {
+  const candidates = <ReferenceCandidatePreview task={task} collapsed={hasCurrentOutput} />;
   if (!sheet) {
     const files = [...new Map((task.conversation || []).flatMap(message => message.deliverables || []).map(file => [file.downloadUrl || file.fileUrl, file])).values()];
-    return <div className="preview-gallery">{files.length ? files.map((file, index) => <article key={file.downloadUrl || index}>
-      <strong>{file.name || '任务文件'}</strong>
-      {isImageFile(file) && (file.imageUrl || file.fileUrl) && <a href={file.imageUrl || file.fileUrl} target="_blank" rel="noreferrer"><img src={file.imageUrl || file.fileUrl} alt={file.name || '任务图片'} /></a>}
-      <p><a className="button outline small" href={file.downloadUrl || file.fileUrl} download={file.name}>下载文件</a></p>
-    </article>) : <p>任务生成的图片和文件会显示在这里。</p>}</div>;
+    return <div className="preview-gallery">
+      {files.length ? <>
+        <h3>任务文件</h3>
+        {files.map((file, index) => (
+          <article key={file.downloadUrl || index}>
+            <strong>{file.name || '任务文件'}</strong>
+            {isImageFile(file) && (file.imageUrl || file.fileUrl) && <a href={file.imageUrl || file.fileUrl} target="_blank" rel="noreferrer"><img src={file.imageUrl || file.fileUrl} alt={file.name || '任务图片'} /></a>}
+            <p><a className="button outline small" href={file.downloadUrl || file.fileUrl} download={file.name}>下载文件</a></p>
+          </article>
+        ))}
+        {candidates}
+      </> : <>
+        {candidates}
+        {!task.sources?.some((source) => source.asset) && <p>任务生成的图片和文件会显示在这里。</p>}
+      </>}
+    </div>;
   }
   return <div className="preview-gallery">
+    {!hasCurrentOutput && candidates}
     <h3>{sheet.title || '本次制作方案'} · v{sheet.version}</h3>
     {(sheet.pages || []).map((page) => {
       const image = imageForPage(task, page.page);
       const currentImage = image && !image.isPrevious;
+      const previous = currentImage ? previousImageForPage(task, page.page) : null;
       return <article key={page.page}>
         <strong>第 {page.page} 页 · {page.size || '尺寸未注明'}{image?.isPrevious ? ' · 上一版' : ''}</strong>
         {image?.imageUrl ? <a href={image.imageUrl} target="_blank" rel="noreferrer"><img src={image.imageUrl} alt={`第 ${page.page} 页${image.isPrevious ? '上一版' : '当前'}图片`} /></a> : <p>{executionSucceeded ? '当前版本没有可预览的图片' : '方案尚未出图'}</p>}
@@ -537,7 +557,52 @@ function ObjectPreview({ task, sheet, executionSucceeded }) {
           <details><summary>查看画面细节</summary><p>{page.prompt || '暂无额外画面说明'}</p></details>
           {image?.isPrevious && <small>本次方案尚未生成新图，当前显示上一版。</small>}
         </>}
+        {previous?.imageUrl && <details><summary>查看上一版</summary><a href={previous.imageUrl} target="_blank" rel="noreferrer"><img src={previous.imageUrl} alt={`第 ${page.page} 页上一版图片`} /></a></details>}
+      </article>;
+    })}
+    {hasCurrentOutput && candidates}
+  </div>;
+}
+
+function ReferenceCandidatePreview({ task, collapsed }) {
+  const candidates = (task.sources || []).filter((source) => source.asset);
+  if (!candidates.length) return null;
+
+  const latestProposal = [...(task.conversation || [])].reverse().find((message) => message.referenceProposal)?.referenceProposal;
+  const currentProposal = latestProposal?.revision === task.revision ? latestProposal : null;
+  const purposes = new Map((currentProposal?.items || []).map((item) => [item.id, item]));
+  const cards = <div className="source-preview-grid">
+    {candidates.map((source, index) => {
+      const proposal = purposes.get(source.id);
+      const proposedDecision = proposal?.decision;
+      const decision = ['retained', 'excluded', 'pending'].includes(proposedDecision)
+        ? proposedDecision
+        : ['retained', 'excluded', 'pending'].includes(source.decision) ? source.decision : 'pending';
+      const purpose = compactText(proposal?.purpose || source.purpose || source.summary || source.asset?.summary || '', 140);
+      const imageFile = (source.files || []).find((file) => isImageFile(file) && file.fileUrl);
+      const firstFile = (source.files || [])[0];
+      const extension = String(firstFile?.name || '').split('.').at(-1)?.toUpperCase();
+      const fileType = ['PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'CSV', 'TXT', 'MD'].includes(extension) ? extension : '文件';
+      return <article className={`source-preview-card ${decision === 'excluded' ? 'excluded' : ''}`} key={source.id}>
+        <div className="source-preview-card-head">
+          <span className="source-preview-number">{index + 1}</span>
+          <span className={`source-preview-status ${decision}`}>{decisionLabel(decision, Boolean(proposal))}</span>
+        </div>
+        <strong className="source-preview-title" title={source.title || source.asset?.title || ''}>{source.title || source.asset?.title || '素材候选'}</strong>
+        {imageFile
+          ? <a className="source-preview-image-link" href={imageFile.fileUrl} target="_blank" rel="noreferrer" aria-label={`打开原图 ${imageFile.name || source.title || index + 1}`}><img src={imageFile.fileUrl} alt={imageFile.name || source.title || '参考素材'} /></a>
+          : <div className="source-preview-type"><span>{firstFile ? fileType : '文字资料'}</span>{firstFile?.name && <small>{firstFile.name}</small>}</div>}
+        {purpose && <p>{purpose}</p>}
       </article>;
     })}
   </div>;
+
+  if (collapsed) return <details className="source-preview-disclosure">
+    <summary>参考素材（{candidates.length}）</summary>
+    {cards}
+  </details>;
+  return <section className="source-preview" aria-label="参考候选素材">
+    <h3>参考候选素材</h3>
+    {cards}
+  </section>;
 }

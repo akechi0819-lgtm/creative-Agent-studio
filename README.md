@@ -5,7 +5,7 @@
 
 本批补齐左侧对话统一确认、文档／表格／批量文件工具、双 API 首次引导和按平台预构建运行包。当前为实施方自验证候选，独立验收结论及实际构建覆盖以 [P5 实施与验证](docs/P5实施与验证.md) 为准；P4 已通过的源码交付不能冒充 P5 运行包开箱验证。
 
-普通用户的目标入口是 GitHub Releases 对应平台的完整 ZIP，解压后保留整个目录，双击 macOS `.app` 或 Windows `Start.vbs`；源码 clone、`Start.command`／`Start.cmd` 继续用于开发和 Codex。首次配置按引导区分对话 API 与图片 API，模型列表检查不会自动付费出图。平台包、签名限制与许可证见 [P5 运行包](docs/P5运行包.md)。
+普通用户的目标入口是 GitHub Releases 对应平台的完整 ZIP，解压后保留整个目录，双击 macOS `.app` 或 Windows `Start.vbs`；源码 clone、`Start.command`／`Start.cmd` 继续用于开发和 Codex。首次启动会单独检查并准备兼容的 Python 及所需库，安装在应用数据目录，后续健康时复用，不修改系统默认 Python。首次配置按引导区分对话 API 与图片 API，模型列表检查不会自动付费出图。平台包、签名限制与许可证见 [P5 运行包](docs/P5运行包.md)。
 
 
 把创作想法变成海报或多页图文的本地工作台，提供独立 Web 工作台和 Codex 两种入口，共用素材、制作单、任务、Canvas、审核与导出。

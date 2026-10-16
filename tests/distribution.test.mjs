@@ -7,21 +7,31 @@ import test from 'node:test';
 import {
   RELEASE_TARGETS, assertCleanStatus, assertNativeTarget, copyAllowlistedFiles,
   hashFile, isReleasePathAllowed, materializeBundleSymlinks, normalizeTargetId,
-  validatePortablePython, writeBundleManifest,
+  writeBundleManifest,
 } from '../src/launcher/distribution.mjs';
 
 async function temporaryDirectory() { return mkdtemp(path.join(os.tmpdir(), 'cas-distribution-test-')); }
 
 test('release targets are fixed and reject cross-platform builds', () => {
-  assert.deepEqual(Object.keys(RELEASE_TARGETS).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
+  assert.deepEqual(Object.keys(RELEASE_TARGETS).sort(), ['darwin-arm64', 'win32-x64']);
   assert.equal(assertNativeTarget('darwin-arm64', { platform: 'darwin', arch: 'arm64' }).runner, 'macos-15');
   assert.throws(() => assertNativeTarget('win32-x64', { platform: 'darwin', arch: 'arm64' }), /禁止跨平台打包/);
   assert.throws(() => normalizeTargetId('linux-x64'), /不支持的 Release 平台/);
+  assert.throws(() => normalizeTargetId('darwin-x64'), /不支持的 Release 平台/);
+});
+
+test('release workflow builds only Apple silicon macOS and Windows x64 and expects two archives', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /target: darwin-arm64\s+runner: macos-15/);
+  assert.match(workflow, /target: win32-x64\s+runner: windows-2025/);
+  assert.match(workflow, /len\(archives\) != 2/);
+  assert.doesNotMatch(workflow, /darwin-x64|macos-15-intel/);
 });
 
 test('source allowlist includes runtime helpers and excludes user/company/development paths', () => {
   assert.equal(isReleasePathAllowed('src/workspace/python-helper.py'), true);
   assert.equal(isReleasePathAllowed('scripts/requirements-workspace.lock.txt'), true);
+  assert.equal(isReleasePathAllowed('release/prepare-python.mjs'), true);
   assert.equal(isReleasePathAllowed('src/creative/tasks.mjs'), true);
   assert.equal(isReleasePathAllowed('src/company/connector.mjs'), false);
   assert.equal(isReleasePathAllowed('node_modules/pkg/index.js'), false);
@@ -110,31 +120,23 @@ test('manifest hashes individual packaged files', async t => {
   const manifest = await writeBundleManifest(fixture, 'darwin-arm64', 'v1.2.3');
   assert.equal(manifest.files[0].sha256, await hashFile(path.join(fixture, 'app.bin')));
   assert.equal(manifest.target, 'darwin-arm64');
+  assert.deepEqual(manifest.pythonRuntime, {
+    version: '3.12.15', bundled: false, preparedOnFirstStart: true,
+    lockFiles: ['scripts/requirements-cleaner-ocr.lock.txt', 'scripts/requirements-workspace.lock.txt'],
+  });
 });
 
-test('portable Python validation allows its private base home but rejects other staging metadata', async t => {
+test('manifest refuses user-data Python environments and downloaded OCR model caches', async t => {
   const root = await temporaryDirectory();
   t.after(() => rm(root, { recursive: true, force: true }));
-  const pythonHome = path.join(root, '.studio-runtime/python');
-  const basePrefix = path.join(pythonHome, 'cpython-3.12.15');
-  const baseBin = process.platform === 'win32' ? basePrefix : path.join(basePrefix, 'bin');
-  const basePython = path.join(basePrefix, process.platform === 'win32' ? 'python.exe' : 'bin/python3.12');
-  const venv = path.join(root, '.venv-ocr');
-  const venvPython = path.join(venv, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
-  const sitePackages = path.join(venv, process.platform === 'win32' ? 'Lib/site-packages' : 'lib/python3.12/site-packages');
-  await mkdir(baseBin, { recursive: true });
-  await writeFile(basePython, 'fixture-python');
-  await mkdir(path.dirname(venvPython), { recursive: true });
-  await writeFile(venvPython, 'fixture-venv-python');
-  await mkdir(sitePackages, { recursive: true });
-  const statePath = path.join(root, '.studio-runtime/python-runtime-state.json');
-  await writeFile(statePath, JSON.stringify({ status: 'ready', runtimeSource: 'project-managed-python', basePrefix }));
-  const configPath = path.join(venv, 'pyvenv.cfg');
-  await writeFile(configPath, `home = ${baseBin}\nrelocatable = true\n`);
-
-  await assert.doesNotReject(validatePortablePython(root), 'the bundled base home is an expected staging path');
-  await writeFile(configPath, `home = ${baseBin}\nrelocatable = true\ncommand = uv venv ${root}\n`);
-  await assert.rejects(validatePortablePython(root), /键：command/);
+  for (const relative of ['.venv-ocr/python', '.studio-runtime/python/python3.12', '.studio-runtime/rapidocr-models/model.onnx']) {
+    const file = path.join(root, relative);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, 'must not ship');
+    await assert.rejects(writeBundleManifest(root, 'darwin-arm64', 'v1'), /不允许进入 Release/);
+    await rm(path.dirname(file), { recursive: true, force: true });
+    if (relative.startsWith('.studio-runtime/')) await rm(path.join(root, '.studio-runtime'), { recursive: true, force: true });
+  }
 });
 
 test('compiled macOS launcher points to the native bundled Node path without opening its GUI', async t => {
@@ -155,12 +157,30 @@ test('compiled macOS launcher points to the native bundled Node path without ope
   assert.ok(compiledSource.includes('/.studio-runtime/node/'));
 });
 
-test('Windows archive writer includes hidden runtime files and checks every manifest entry', async () => {
+test('Windows archive writer includes hidden app files, checks the first-start runtime contract, and excludes Python assets', async () => {
   const source = await readFile(new URL('../scripts/package-release.mjs', import.meta.url), 'utf8');
   assert.match(source, /Get-ChildItem -LiteralPath \$source -Force -File -Recurse/);
   assert.match(source, /ZipFileExtensions\]::CreateEntryFromFile/);
   assert.match(source, /foreach \(\$file in \$manifest\.files\)/);
   assert.match(source, /\.studio-runtime\/node\/node-v22\.23\.3-win-x64\/node\.exe/);
-  assert.match(source, /\.venv-ocr\/Scripts\/python\.exe/);
+  assert.match(source, /third_party\/canvas\/web\/dist\/index\.html/);
+  assert.match(source, /release\/prepare-python\.mjs/);
+  assert.match(source, /verifyArchiveAfterExtraction\(archivePath/);
+  assert.match(source, /\.studio-runtime\/python\//);
+  assert.match(source, /\.studio-runtime\/rapidocr-models\//);
+  assert.doesNotMatch(source, /\.venv-ocr\/Scripts\/python\.exe/);
   assert.doesNotMatch(source, /Compress-Archive/);
+});
+
+test('release launcher prepares Python outside the bundle and passes both private paths to the web process', async () => {
+  const launcher = await readFile(new URL('../release/launcher.mjs', import.meta.url), 'utf8');
+  const prepare = await readFile(new URL('../release/prepare-python.mjs', import.meta.url), 'utf8');
+  assert.match(launcher, /release\/prepare-python\.mjs/);
+  assert.match(launcher, /STUDIO_OCR_PYTHON: pythonRuntime\.pythonPath/);
+  assert.match(launcher, /STUDIO_RAPIDOCR_MODEL_DIR: pythonRuntime\.modelRoot/);
+  assert.match(launcher, /python-prepare\.log/);
+  assert.doesNotMatch(launcher, /path\.join\(bundleRoot, '\.venv-ocr'/);
+  assert.match(prepare, /path\.join\(dataRoot\(\), 'runtime'\)/);
+  assert.match(prepare, /acquirePrepareLock\(runtimeRoot/);
+  assert.match(prepare, /preparePython\(\{ root: bundleRoot, runtimeRoot/);
 });

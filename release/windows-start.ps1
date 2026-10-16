@@ -24,7 +24,7 @@ try {
   $form.ControlBox = $false
   $label = New-Object System.Windows.Forms.Label
   $label.Text = if ($action -eq "start") {
-    "正在检查随包运行时并启动工作台，请稍候…"
+    "首次启动会准备本机 Python/OCR，可能下载依赖；请保持窗口打开…"
   } else {
     "正在停止工作台及已识别的本机服务，请稍候…"
   }

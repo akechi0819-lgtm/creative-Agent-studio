@@ -137,6 +137,7 @@ async function runOcr(args, options) {
     ? {
       LANG: 'C.UTF-8',
       PYTHONUTF8: '1',
+      ...(process.env.STUDIO_RAPIDOCR_MODEL_DIR ? { STUDIO_RAPIDOCR_MODEL_DIR: process.env.STUDIO_RAPIDOCR_MODEL_DIR } : {}),
       PYTHONDONTWRITEBYTECODE: '1',
       PYTHONNOUSERSITE: '1',
       ...(process.platform === 'win32' && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),

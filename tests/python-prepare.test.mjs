@@ -97,64 +97,6 @@ function warmOperation(counter) {
   };
 }
 
-test('managed-only preparation replaces an external base with the bundled Python runtime', async (t) => {
-  const { root, paths } = await makeFixture(t, { models: false });
-  const state = { created: false, synced: false, systemLookups: 0, warmups: 0 };
-  const managedBase = path.join(paths.pythonHome, 'cpython-3.12.15');
-  const stagedRunnerPython = pythonInternals.pythonExecutable(paths.venvStage);
-  await fs.mkdir(path.dirname(stagedRunnerPython), { recursive: true });
-  await fs.writeFile(stagedRunnerPython, 'runner-python');
-  const managedHealth = (dependencies = true) => ({
-    runtimeHealthy: true,
-    dependenciesHealthy: dependencies,
-    ready: dependencies,
-    version: [3, 12, 15],
-    basePrefix: managedBase,
-    versions: {},
-  });
-  const operations = {
-    inspectPython: async (_pythonPath, candidatePaths) => {
-      const candidate = path.resolve(candidatePaths.venv);
-      if (candidate === path.resolve(paths.venvStage)) {
-        return state.created ? managedHealth(state.synced) : readyHealth(paths, candidatePaths);
-      }
-      if (candidate === path.resolve(paths.venv)) {
-        if (!state.created) return readyHealth(paths, candidatePaths);
-        return managedHealth(state.synced);
-      }
-      return null;
-    },
-    resolveUv: async () => ({ command: 'fixture-uv', version: '0.12.24', source: 'fixture' }),
-    findSystemPython312: async () => {
-      state.systemLookups += 1;
-      return { executable: '/runner/python3.12', version: [3, 12, 15] };
-    },
-    createVenv: async (_uv, stagePath, systemPython) => {
-      assert.equal(systemPython, null, 'managed-only mode must not use the runner Python');
-      await fs.mkdir(managedBase, { recursive: true });
-      const stagePython = pythonInternals.pythonExecutable(stagePath);
-      const bin = path.dirname(stagePython);
-      await fs.mkdir(bin, { recursive: true });
-      await fs.writeFile(stagePython, 'managed-python');
-      await fs.writeFile(path.join(bin, 'activate'), 'VIRTUAL_ENV=/portable/venv\n');
-      await fs.writeFile(path.join(bin, 'studio-ocr'), '#!/usr/bin/env python3\nprint("ready")\n');
-      state.created = true;
-    },
-    syncDependencies: async () => { state.synced = true; },
-    warmOcr: async (_python, modelRoot) => {
-      state.warmups += 1;
-      await writeModels(modelRoot);
-      return { blankText: '', sampleText: 'P4 OCR SAMPLE' };
-    },
-  };
-
-  const prepared = await pythonInternals.prepareWithOperations({ root, managedOnly: true }, operations);
-  assert.equal(prepared.runtimeSource, 'project-managed-python');
-  assert.equal(state.systemLookups, 0);
-  assert.equal(state.warmups, 1);
-  assert.equal(JSON.parse(await fs.readFile(paths.pythonRuntimeState, 'utf8')).runtimeSource, 'project-managed-python');
-});
-
 test('claims a healthy external Python 3.12 venv without state and ignores helper changes', async (t) => {
   const { root, paths } = await makeFixture(t);
   const counters = { resolveUv: 0, sync: 0, create: 0, warm: 0, guard: 0 };
@@ -189,6 +131,96 @@ test('claims a healthy external Python 3.12 venv without state and ignores helpe
   assert.deepEqual(counters, { resolveUv: 0, sync: 0, create: 0, warm: 1, guard: 1 });
   assert.equal(JSON.parse(await fs.readFile(paths.pythonState, 'utf8')).status, 'ready');
   assert.equal(JSON.parse(await fs.readFile(paths.pythonRuntimeState, 'utf8')).status, 'ready');
+});
+
+test('prepares an isolated runtime from read-only source files and reuses it without reinstalling', async t => {
+  const { root } = await makeFixture(t, { python: false, models: false });
+  const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-python-runtime-'));
+  t.after(() => fs.rm(runtimeRoot, { recursive: true, force: true }));
+  const paths = pythonInternals.runtimePaths(root, runtimeRoot);
+  const sourceEntries = await fs.readdir(root);
+  const scriptEntries = await fs.readdir(path.join(root, 'scripts'));
+  const sourceFiles = [...scriptEntries].sort();
+  const sourceContents = new Map(await Promise.all(sourceFiles.map(async name => [
+    name,
+    await fs.readFile(path.join(root, 'scripts', name)),
+  ])));
+  const state = { stageCreated: false, dependenciesSynced: false };
+  const counters = { uv: 0, create: 0, sync: 0, warm: 0 };
+  const operations = {
+    inspectPython: async (pythonPath, candidatePaths) => {
+      const venv = path.resolve(candidatePaths.venv);
+      if (venv === path.resolve(paths.venvStage)) {
+        return state.stageCreated
+          ? readyHealth(paths, candidatePaths, { dependencies: state.dependenciesSynced })
+          : null;
+      }
+      if (venv === path.resolve(paths.venv)) {
+        const content = await fs.readFile(pythonPath, 'utf8').catch(() => null);
+        return content === 'isolated-runtime-python'
+          ? readyHealth(paths, candidatePaths, { dependencies: state.dependenciesSynced })
+          : null;
+      }
+      return null;
+    },
+    resolveUv: async () => {
+      counters.uv += 1;
+      return { command: 'fixture-uv', version: '0.12.24', source: 'fixture' };
+    },
+    findSystemPython312: async () => ({ executable: '/fixture/python3.12', version: [3, 12, 0] }),
+    createVenv: async (_uv, stagePath, systemPython) => {
+      counters.create += 1;
+      assert.equal(systemPython.executable, '/fixture/python3.12');
+      assert.equal(path.relative(runtimeRoot, stagePath).startsWith('..'), false);
+      const stagePython = pythonInternals.pythonExecutable(stagePath);
+      const bin = path.dirname(stagePython);
+      await fs.mkdir(bin, { recursive: true });
+      await fs.writeFile(stagePython, 'isolated-runtime-python');
+      await fs.writeFile(path.join(bin, 'activate'), 'VIRTUAL_ENV=/fixture/isolated\n');
+      await fs.writeFile(path.join(bin, 'studio-ocr'), '#!/usr/bin/env python3\nprint("ready")\n');
+      state.stageCreated = true;
+    },
+    syncDependencies: async (_uv, _pythonPath, candidatePaths) => {
+      counters.sync += 1;
+      assert.equal(path.resolve(candidatePaths.venv), path.resolve(paths.venvStage));
+      state.dependenciesSynced = true;
+    },
+    warmOcr: async (_pythonPath, modelRoot) => {
+      counters.warm += 1;
+      assert.equal(path.relative(runtimeRoot, modelRoot).startsWith('..'), false);
+      await writeModels(modelRoot);
+      return { blankText: '', sampleText: 'P4 OCR SAMPLE' };
+    },
+  };
+  const options = { root, runtimeRoot };
+
+  const first = await pythonInternals.prepareWithOperations(options, operations);
+  assert.equal(first.skipped, false);
+  assert.equal(first.pythonPath, pythonInternals.pythonExecutable(paths.venv));
+  assert.equal(first.pythonExecutable, first.pythonPath);
+  assert.equal(first.modelRoot, paths.modelRoot);
+  assert.equal(path.relative(runtimeRoot, first.pythonPath).startsWith('..'), false);
+  assert.equal(path.relative(runtimeRoot, first.modelRoot).startsWith('..'), false);
+  assert.deepEqual(counters, { uv: 1, create: 1, sync: 1, warm: 1 });
+
+  const second = await pythonInternals.prepareWithOperations(options, operations);
+  assert.equal(second.skipped, true);
+  assert.equal(second.pythonPath, first.pythonPath);
+  assert.equal(second.modelRoot, first.modelRoot);
+  assert.deepEqual(counters, { uv: 1, create: 1, sync: 1, warm: 1 });
+
+  assert.deepEqual(await fs.readdir(root), sourceEntries);
+  assert.deepEqual((await fs.readdir(path.join(root, 'scripts'))).sort(), sourceFiles);
+  for (const name of sourceFiles) {
+    assert.deepEqual(await fs.readFile(path.join(root, 'scripts', name)), sourceContents.get(name));
+  }
+  await assert.rejects(fs.access(path.join(root, '.venv-ocr')));
+  await assert.rejects(fs.access(path.join(root, '.studio-runtime')));
+  for (const outputPath of [paths.runtime, paths.uvDirectory, paths.pythonHome, paths.modelRoot,
+    paths.modelState, paths.pythonRuntimeState, paths.pythonState, paths.venv,
+    paths.venvStage, paths.venvBackups]) {
+    assert.equal(path.relative(runtimeRoot, outputPath).startsWith('..'), false, outputPath);
+  }
 });
 
 test('syncs only the locked dependencies in place and retains runtime and models after failure', async (t) => {

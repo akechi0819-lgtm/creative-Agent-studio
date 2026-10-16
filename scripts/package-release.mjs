@@ -9,9 +9,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  RELEASE_TARGETS, assertCleanWorkingTree, assertNativeTarget, copyAllowlistedFiles,
+  assertCleanWorkingTree, assertNativeTarget, copyAllowlistedFiles,
   hashFile, materializeBundleSymlinks, normalizeTargetId, pathWithin, pruneBuildState,
-  trackedFiles, validatePortablePython, writeBundleManifest,
+  trackedFiles, writeBundleManifest,
 } from '../src/launcher/distribution.mjs';
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,7 +27,7 @@ function parseArguments(args) {
     if (!value || value.startsWith('--')) throw new Error(`${name} 需要一个值。`);
     options[name.slice(2)] = value;
   }
-  if (!options.target) throw new Error('必须指定 --target darwin-arm64|darwin-x64|win32-x64。');
+  if (!options.target) throw new Error('必须指定 --target darwin-arm64|win32-x64。');
   if (!options.version) throw new Error('必须指定 --version。');
   if (!/^[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}$/.test(options.version)) throw new Error('版本号格式无效。');
   if (!options.output) throw new Error('必须指定源码树外的 --output 目录。');
@@ -97,16 +97,6 @@ async function downloadPinnedNode(target, stage) {
   return nodePath;
 }
 
-async function verifyBundledPython(stage, env) {
-  const uv = path.join(stage, '.studio-runtime', 'uv', process.platform === 'win32' ? 'uv.exe' : 'uv');
-  const python = path.join(stage, '.venv-ocr', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
-  await access(uv);
-  await access(python);
-  run(uv, ['pip', 'check', '--python', python], { cwd: stage, env });
-  run(python, ['-I', '-c', 'import cv2, docx, numpy, openpyxl, rapidocr; print("OCR/Office imports: ready")'], { cwd: stage, env });
-  return python;
-}
-
 async function packageNodeRuntime(nodePath, stage) {
   const nodeRoot = path.resolve(path.dirname(nodePath), process.platform === 'win32' ? '.' : '..');
   const nodeModules = path.join(nodeRoot, process.platform === 'win32' ? 'node_modules' : 'lib/node_modules');
@@ -168,69 +158,16 @@ async function npmPackageRecords(nodeModules, relativeRoot, output = []) {
   return output;
 }
 
-async function pythonPackageRecords(sitePackages, relativeRoot) {
-  const result = [];
-  const info = await readdir(sitePackages, { withFileTypes: true });
-  for (const entry of info.filter(value => value.isDirectory() && value.name.endsWith('.dist-info'))) {
-    const directory = path.join(sitePackages, entry.name);
-    const metadata = await readFile(path.join(directory, 'METADATA'), 'utf8').catch(() => '');
-    const field = name => metadata.match(new RegExp(`^${name}: (.+)$`, 'mi'))?.[1] ?? null;
-    const licenseDir = path.join(directory, 'licenses');
-    const licenseFiles = await readdir(licenseDir, { withFileTypes: true }).then(entries => entries.filter(item => item.isFile()).map(item => `licenses/${item.name}`)).catch(() => []);
-    result.push({ name: field('Name') ?? entry.name.replace(/\.dist-info$/, ''), version: field('Version') ?? 'unknown', license: field('License-Expression') ?? field('License'),
-      path: path.relative(relativeRoot, directory).split(path.sep).join('/'), licenseFiles });
-  }
-  return result;
-}
-
-async function findPythonRuntimeLicenses(runtimeRoot, stage) {
-  const known = [
-    'LICENSE.txt', 'LICENSE', 'install/LICENSE.txt', 'install/LICENSE',
-    'install/share/doc/python3.12/LICENSE.txt', 'install/share/licenses/python3.12/LICENSE.txt',
-    'install/lib/python3.12/LICENSE.txt',
-  ];
-  const found = [];
-  for (const relative of known) {
-    if (await access(path.join(runtimeRoot, relative)).then(() => true, () => false)) {
-      found.push(path.relative(stage, path.join(runtimeRoot, relative)).split(path.sep).join('/'));
-    }
-  }
-  async function walk(directory, depth) {
-    if (depth > 6) return;
-    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-      const absolute = path.join(directory, entry.name);
-      if (entry.isFile() && /^(?:LICENSE|COPYING)(?:\..*)?$/i.test(entry.name)) {
-        found.push(path.relative(stage, absolute).split(path.sep).join('/'));
-      } else if (entry.isDirectory() && !['site-packages', '__pycache__'].includes(entry.name)) {
-        await walk(absolute, depth + 1);
-      }
-    }
-  }
-  if (!found.length) await walk(runtimeRoot, 0);
-  return found;
-}
-
 async function writeLicenseInventory(stage, target, nodePath) {
   const roots = [stage, path.join(stage, 'adapters/dsh'), path.join(stage, 'third_party/canvas/web'), path.join(stage, 'third_party/canvas/canvas-agent')];
   const npm = [];
   for (const root of roots) npm.push(...await npmPackageRecords(path.join(root, 'node_modules'), stage));
-  const sitePackages = [
-    path.join(stage, '.venv-ocr', 'lib', 'python3.12', 'site-packages'),
-    path.join(stage, '.venv-ocr', 'Lib', 'site-packages'),
-  ];
-  let python = [];
-  for (const candidate of sitePackages) {
-    python = await pythonPackageRecords(candidate, stage).catch(() => []);
-    if (python.length) break;
-  }
-  const missing = [...npm.filter(item => !item.license).map(item => `npm:${item.name}@${item.version}`),
-    ...python.filter(item => !item.license).map(item => `python:${item.name}==${item.version}`)];
+  const missing = npm.filter(item => !item.license).map(item => `npm:${item.name}@${item.version}`);
   if (missing.length) throw new Error(`依赖元数据缺少许可证字段，请先人工核对：${missing.slice(0, 12).join('、')}`);
   const targetRoot = path.dirname(nodePath);
   const nodeRuntimeRoot = process.platform === 'win32' ? targetRoot : path.resolve(targetRoot, '..');
   const nodeLicense = path.join(nodeRuntimeRoot, 'LICENSE');
   const nodeLicensePresent = await access(nodeLicense).then(() => true, () => false);
-  const pythonRuntimeLicenses = await findPythonRuntimeLicenses(path.join(stage, '.studio-runtime/python'), stage);
   const mplPackages = npm.filter(item => String(item.license).includes('MPL-2.0'));
   const lgplPackages = npm.filter(item => String(item.license).includes('LGPL-3.0'));
   const ccByPackages = npm.filter(item => String(item.license).includes('CC-BY-4.0'));
@@ -248,7 +185,6 @@ async function writeLicenseInventory(stage, target, nodePath) {
     if (!await access(path.join(stage, relative)).then(() => true, () => false)) evidenceFailures.push(`缺少随包许可材料 ${relative}`);
   }
   if (!nodeLicensePresent) evidenceFailures.push('Node.js 官方运行时未保留 LICENSE 文件');
-  if (!pythonRuntimeLicenses.length) evidenceFailures.push('Python 3.12 官方运行时未找到 LICENSE.txt');
   if (mplPackages.length && !libreOfficePackages.some(item => item.licenseFiles.some(file => /(^|\/)LICENSE$/i.test(file)))) {
     evidenceFailures.push('MPL-2.0 组件没有随包可定位的 LICENSE');
   }
@@ -271,7 +207,6 @@ async function writeLicenseInventory(stage, target, nodePath) {
     runtime: {
       target: target.id,
       node: { version: REQUIRED_NODE_VERSION, path: path.relative(stage, nodeLicense).split(path.sep).join('/'), licensePresent: nodeLicensePresent },
-      python: { version: '3.12.15', licenseFiles: pythonRuntimeLicenses },
     },
     identifiedObligations: {
       mpl2: { packages: mplPackages, notice: 'release/NOTICE-third-party.md', sourceChanges: '本项目不修改这些上游包；若未来修改 MPL 覆盖代码，发布必须提供对应修改源码。' },
@@ -285,16 +220,20 @@ async function writeLicenseInventory(stage, target, nodePath) {
         note: '保留每个 npm 包原始 package.json 的 MIT 声明；训练数据由上游 Apache-2.0 仓库提供。包不包含单独 MIT 许可文本文件。',
       },
       libreOffice: { packages: libreOfficePackages, licenseFiles: libreOfficePackages.map(item => ({ package: item.path, files: item.licenseFiles })) },
+      pythonOcr: {
+        bundled: false,
+        preparedOnFirstStart: true,
+        version: '3.12.15',
+        lockFiles: ['scripts/requirements-cleaner-ocr.lock.txt', 'scripts/requirements-workspace.lock.txt'],
+        notice: 'release/NOTICE-third-party.md',
+      },
     },
     packageLocations: {
       nodeLicense: nodeLicensePresent ? path.relative(stage, nodeLicense).split(path.sep).join('/') : null,
-      pythonRuntimeLicenses,
-      pythonPackageLicenses: python.map(item => ({ name: item.name, version: item.version, path: item.path, license: item.license, licenseFiles: item.licenseFiles })),
       tesseractModels: npm.filter(item => item.name.startsWith('@tesseract.js-data/')).map(item => ({ name: item.name, version: item.version, path: item.path, declaredLicense: item.license })),
     },
     releaseLicenseGate: { status: evidenceFailures.length ? 'blocked' : 'evidence-complete', blockers: evidenceFailures },
     npm,
-    python,
   };
   await writeFile(path.join(stage, 'THIRD-PARTY-LICENSES.json'), `${JSON.stringify(inventory, null, 2)}\n`, { flag: 'wx' });
   if (evidenceFailures.length) process.stderr.write(`许可材料检查：该包可用于 build-only 审查，但正式 tag 发布被阻止：${evidenceFailures.join('；')}\n`);
@@ -333,49 +272,88 @@ async function makeWindowsEntry(stage) {
 
 async function relocatedRuntimeSmoke(stage, target) {
   const nodePath = path.join(stage, target.nodeRelative);
-  const pythonPath = path.join(stage, '.venv-ocr', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), 'cas-release-smoke-data-'));
   const env = {
     ...environmentWithoutSystemPython(stage, nodePath),
     STUDIO_DATA_DIR: dataRoot,
-    STUDIO_OCR_PYTHON: pythonPath,
     STUDIO_RELEASE_NO_OPEN: '1',
-    PYTHONNOUSERSITE: '1',
-    PYTHONDONTWRITEBYTECODE: '1',
-    PYTHONUNBUFFERED: '1',
   };
   const launcherPath = path.join(stage, 'release/launcher.mjs');
   const workspace = path.join(dataRoot, 'office-smoke');
+  const diagnosticTail = async () => {
+    const contents = await readFile(path.join(dataRoot, 'python-prepare.log'), 'utf8').catch(() => '');
+    if (!contents) return '';
+    const sanitized = contents.slice(-12_000)
+      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[redacted]@')
+      .replace(/(https?:\/\/[^\s?#'"<>]+)\?[^\s#'"<>]*/gi, '$1?[redacted]')
+      .replace(/\b((?:https?|socks5?)_proxy\s*[=:]\s*)[^\s]+/gi, '$1[redacted]');
+    return sanitized.trim();
+  };
   try {
+    const forbiddenRuntimePaths = [
+      path.join(stage, '.venv-ocr'),
+      path.join(stage, '.studio-runtime/python'),
+      path.join(stage, '.studio-runtime/rapidocr-models'),
+    ];
+    for (const runtimePath of forbiddenRuntimePaths) {
+      await access(runtimePath).then(() => { throw new Error(`Release ZIP staging 意外带入 Python/OCR 资源：${path.relative(stage, runtimePath)}`); }, error => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
     const nodeVersion = execFileSync(nodePath, ['--version'], { cwd: stage, env, encoding: 'utf8', windowsHide: true }).trim();
     if (nodeVersion !== REQUIRED_NODE_VERSION) throw new Error(`搬移后 Node 运行检查失败：${nodeVersion}`);
     const nodeImports = execFileSync(nodePath, ['--input-type=module', '-e', "await import('sharp'); await import('@deepseek-ai/libreoffice-kit'); console.log('native node imports ready')"], {
       cwd: path.join(stage, 'adapters/dsh'), env, encoding: 'utf8', windowsHide: true,
     }).trim();
     if (!nodeImports.includes('native node imports ready')) throw new Error('搬移后的 Node 原生依赖导入未通过。');
+
+    const startOutput = execFileSync(nodePath, [launcherPath, 'start'], {
+      cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 45 * 60 * 1000,
+    }).trim();
+    if (!startOutput.includes('工作台已启动')) throw new Error('首次 Python/OCR 准备后未启动本机 Web 工作台。');
+    const runtimeRoot = path.join(dataRoot, 'runtime');
+    const sharedRuntimeRoot = path.join(runtimeRoot, '.studio-runtime');
+    const [pythonState, dependencyState, modelState] = await Promise.all([
+      readFile(path.join(sharedRuntimeRoot, 'python-runtime-state.json'), 'utf8').then(JSON.parse),
+      readFile(path.join(sharedRuntimeRoot, 'python-state.json'), 'utf8').then(JSON.parse),
+      readFile(path.join(sharedRuntimeRoot, 'rapidocr-model-state.json'), 'utf8').then(JSON.parse),
+    ]);
+    const pythonPath = pythonState.pythonExecutable;
+    const modelRoot = modelState.modelRoot;
+    if (pythonState.status !== 'ready' || dependencyState.status !== 'ready' || modelState.status !== 'ready'
+        || !pathWithin(runtimeRoot, pythonPath) || !pathWithin(runtimeRoot, modelRoot)) {
+      throw new Error('首次启动没有在临时用户数据目录准备完整 Python/OCR 环境。');
+    }
+    const pythonEnv = {
+      ...env,
+      STUDIO_OCR_PYTHON: pythonPath,
+      STUDIO_RAPIDOCR_MODEL_DIR: modelRoot,
+      PYTHONNOUSERSITE: '1',
+      PYTHONDONTWRITEBYTECODE: '1',
+      PYTHONUNBUFFERED: '1',
+    };
     const pythonCode = [
       'import pathlib, sys, cv2, docx, numpy, openpyxl, rapidocr',
       'root = pathlib.Path(sys.argv[1]).resolve()',
-      'assert pathlib.Path(sys.prefix).resolve() == (root / ".venv-ocr").resolve(), sys.prefix',
-      'assert pathlib.Path(sys.base_prefix).resolve().is_relative_to((root / ".studio-runtime" / "python").resolve()), sys.base_prefix',
+      'assert pathlib.Path(sys.prefix).resolve().is_relative_to(root), sys.prefix',
       'print("private OCR/Office imports ready")',
     ].join('; ');
-    const pythonResult = execFileSync(pythonPath, ['-I', '-c', pythonCode, stage], { cwd: stage, env, encoding: 'utf8', windowsHide: true }).trim();
-    if (!pythonResult.includes('private OCR/Office imports ready')) throw new Error('搬移后的 OCR/Office Python 导入未通过。');
+    const pythonResult = execFileSync(pythonPath, ['-I', '-c', pythonCode, runtimeRoot], { cwd: stage, env: pythonEnv, encoding: 'utf8', windowsHide: true }).trim();
+    if (!pythonResult.includes('private OCR/Office imports ready')) throw new Error('用户数据目录中的 OCR/Office Python 导入未通过。');
 
     const ocr = execFileSync(pythonPath, ['-I', path.join(stage, 'scripts/ocr_materials.py'), 'image', path.join(stage, 'adapters/dsh/connection-check.png')], {
-      cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 120_000,
+      cwd: stage, env: pythonEnv, encoding: 'utf8', windowsHide: true, timeout: 120_000,
     }).trim();
     const ocrResult = JSON.parse(ocr);
     if (ocrResult.kind !== 'image' || !Array.isArray(ocrResult.pages) || ocrResult.pages.length !== 1) {
-      throw new Error('搬移后的本地 OCR JSON 健康检查失败。');
+      throw new Error('用户数据目录中的本地 OCR JSON 健康检查失败。');
     }
 
     await mkdir(path.join(workspace, 'inputs'), { recursive: true });
     await mkdir(path.join(workspace, 'outputs'), { recursive: true });
     const documentPath = path.join(workspace, 'inputs/release-smoke.docx');
     execFileSync(pythonPath, ['-I', '-c', 'import sys; from docx import Document; doc=Document(); doc.add_paragraph("portable runtime smoke"); doc.save(sys.argv[1])', documentPath], {
-      cwd: stage, env, windowsHide: true,
+      cwd: stage, env: pythonEnv, windowsHide: true,
     });
     const conversionScript = [
       "import { CONVERSION_FORMATS, createConverter } from '@deepseek-ai/libreoffice-kit';",
@@ -393,8 +371,6 @@ async function relocatedRuntimeSmoke(stage, target) {
       throw new Error('搬移后的原生 LibreOfficeKit PDF 转换检查失败。');
     }
 
-    const startOutput = execFileSync(nodePath, [launcherPath, 'start'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 60_000 }).trim();
-    if (!startOutput.includes('工作台已启动')) throw new Error('搬移后的图形启动器调用未启动本机 Web 工作台。');
     const runtime = JSON.parse(await readFile(path.join(dataRoot, 'web/runtime.json'), 'utf8'));
     const health = await fetch(`${runtime.controlUrl}/health`, {
       headers: { authorization: `Bearer ${runtime.token}` }, signal: AbortSignal.timeout(5_000), redirect: 'error',
@@ -406,7 +382,22 @@ async function relocatedRuntimeSmoke(stage, target) {
     execFileSync(nodePath, [launcherPath, 'stop'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 });
     const stoppedOutput = execFileSync(nodePath, [launcherPath, 'status'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 }).trim();
     if (!stoppedOutput.includes('未运行')) throw new Error('搬移后的停止检查未完成。');
-    process.stdout.write(`搬移后端到端检查通过：${target.id} / Node ${nodeVersion} / Python imports / OCR JSON / native LibreOffice PDF / Web health-start-status-stop。\n`);
+
+    const secondStart = execFileSync(nodePath, [launcherPath, 'start'], {
+      cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 3 * 60 * 1000,
+    }).trim();
+    if (!secondStart.includes('工作台已启动')) throw new Error('Python/OCR 健康复用后的第二次启动失败。');
+    const reusedPythonState = JSON.parse(await readFile(path.join(sharedRuntimeRoot, 'python-state.json'), 'utf8'));
+    const reusedModelState = JSON.parse(await readFile(path.join(sharedRuntimeRoot, 'rapidocr-model-state.json'), 'utf8'));
+    if (reusedPythonState.checkedAt !== dependencyState.checkedAt || reusedModelState.warmedAt !== modelState.warmedAt) {
+      throw new Error('第二次启动没有复用健康的 Python 依赖与 OCR 模型状态。');
+    }
+    execFileSync(nodePath, [launcherPath, 'stop'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 });
+    process.stdout.write(`搬移后首启检查通过：${target.id} / Node / Web health / Python imports / OCR JSON / Office PDF；第二次启动复用 Python/OCR 状态。\n`);
+  } catch (error) {
+    const details = await diagnosticTail();
+    if (details) throw new Error(`${error.message}\nPython/OCR 准备日志尾部（已清理凭据与 URL 查询参数）：\n${details}`);
+    throw error;
   } finally {
     try { execFileSync(nodePath, [launcherPath, 'stop'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 }); } catch { /* The normal test path stops cleanly; this is only failure cleanup. */ }
     await rm(dataRoot, { recursive: true, force: true });
@@ -414,7 +405,7 @@ async function relocatedRuntimeSmoke(stage, target) {
 }
 
 function archiveName(version, target) {
-  const labels = { 'darwin-arm64': 'macOS-arm64', 'darwin-x64': 'macOS-x64', 'win32-x64': 'Windows-x64' };
+  const labels = { 'darwin-arm64': 'macOS-arm64', 'win32-x64': 'Windows-x64' };
   return `Creative-Agent-Studio-${version}-${labels[target]}.zip`;
 }
 
@@ -450,24 +441,33 @@ try {
   $manifestReader = New-Object System.IO.StreamReader($check.GetEntry($manifestName).Open())
   try { $manifest = ConvertFrom-Json -InputObject $manifestReader.ReadToEnd() }
   finally { $manifestReader.Dispose() }
+  if ($manifest.pythonRuntime.bundled -ne $false -or $manifest.pythonRuntime.preparedOnFirstStart -ne $true) {
+    throw 'Windows ZIP 的 Python/OCR 首次准备元数据不正确。'
+  }
   foreach ($file in $manifest.files) {
     $entryName = "$rootName/$($file.path)"
     if (-not $entries.ContainsKey($entryName)) { throw "Windows ZIP 缺少 manifest 文件：$entryName" }
   }
   $required = @(
     "$rootName/.studio-runtime/node/node-v22.23.3-win-x64/node.exe",
-    "$rootName/.venv-ocr/Scripts/python.exe"
+    "$rootName/web/dist/index.html",
+    "$rootName/third_party/canvas/web/dist/index.html",
+    "$rootName/third_party/canvas/canvas-agent/dist/index.js",
+    "$rootName/adapters/dsh/lib/client.js",
+    "$rootName/release/prepare-python.mjs",
+    "$rootName/scripts/requirements-cleaner-ocr.lock.txt",
+    "$rootName/scripts/requirements-workspace.lock.txt"
   )
   foreach ($entryName in $required) {
-    if (-not $entries.ContainsKey($entryName)) { throw "Windows ZIP 缺少随包运行时：$entryName" }
+    if (-not $entries.ContainsKey($entryName)) { throw "Windows ZIP 缺少必要运行资源：$entryName" }
   }
-  $pythonRoot = "$rootName/.studio-runtime/python/"
-  if (-not ($check.Entries | Where-Object { $_.FullName.StartsWith($pythonRoot, [System.StringComparison]::OrdinalIgnoreCase) -and $_.FullName -match '/python(?:3(?:\.12)?)?\.exe$' })) {
-    throw 'Windows ZIP 缺少随包 Python 基础运行时。'
-  }
-  $modelRoot = "$rootName/.studio-runtime/rapidocr-models/"
-  if (-not ($check.Entries | Where-Object { $_.FullName.StartsWith($modelRoot, [System.StringComparison]::OrdinalIgnoreCase) -and $_.FullName.EndsWith('.onnx', [System.StringComparison]::OrdinalIgnoreCase) })) {
-    throw 'Windows ZIP 缺少随包 RapidOCR ONNX 模型。'
+  $forbiddenPrefixes = @("$rootName/.venv-ocr/", "$rootName/.studio-runtime/python/", "$rootName/.studio-runtime/rapidocr-models/")
+  foreach ($entryName in $entries.Keys) {
+    foreach ($prefix in $forbiddenPrefixes) {
+      if ($entryName.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Windows ZIP 不得包含 Python/OCR 首次准备资源：$entryName"
+      }
+    }
   }
 } finally {
   $check.Dispose()
@@ -478,6 +478,33 @@ try {
       env: { ...process.env, CAS_RELEASE_SOURCE: stage, CAS_RELEASE_ARCHIVE: archivePath },
     });
   }
+}
+
+async function extractArchive(archivePath, destination, target) {
+  if (target.platform === 'darwin') {
+    run('ditto', ['-x', '-k', archivePath, destination]);
+    return;
+  }
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::ExtractToDirectory($env:CAS_RELEASE_ARCHIVE, $env:CAS_RELEASE_EXTRACTED)
+`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+    env: { ...process.env, CAS_RELEASE_ARCHIVE: archivePath, CAS_RELEASE_EXTRACTED: destination },
+  });
+}
+
+async function verifyArchiveAfterExtraction(archivePath, extractionRoot, rootName, target) {
+  await extractArchive(archivePath, extractionRoot, target);
+  const extracted = path.join(extractionRoot, rootName);
+  const manifest = JSON.parse(await readFile(path.join(extracted, 'release-manifest.json'), 'utf8'));
+  if (manifest.target !== target.id || manifest.pythonRuntime?.bundled !== false) {
+    throw new Error('归档解压后的 Release manifest 与目标或 Python 首次准备布局不符。');
+  }
+  for (const file of manifest.files) await access(path.join(extracted, file.path));
+  await relocatedRuntimeSmoke(extracted, target);
 }
 
 async function build(options) {
@@ -506,12 +533,11 @@ async function build(options) {
     let preparation;
     try {
       const { prepareWorkspace } = await import(pathToFileURL(path.join(stage, 'src/launcher/prepare.mjs')).href);
-      const { preparePython } = await import(pathToFileURL(path.join(stage, 'src/launcher/python.mjs')).href);
       preparation = await prepareWorkspace({
         root: stage,
         nodePath,
+        includePython: false,
         onProgress: ({ message }) => process.stdout.write(`${message}\n`),
-        operations: { python: options => preparePython({ ...options, managedOnly: true }) },
       });
     } finally {
       process.env.PATH = originalPath;
@@ -520,9 +546,10 @@ async function build(options) {
       delete process.env.UV_NO_CONFIG;
       delete process.env.UV_NO_PROGRESS;
     }
-    process.stdout.write(`源码依赖、前端、Canvas、DSH 与 OCR 资源完成准备（${preparation.fingerprint}）。\n`);
-    const pythonPath = await verifyBundledPython(stage, env);
-    await validatePortablePython(stage);
+    if (!preparation.pythonDeferred || preparation.python !== null) {
+      throw new Error('Release 构建必须将 Python/OCR 准备明确延迟到首次启动。');
+    }
+    process.stdout.write(`Node 依赖、前端、Canvas 与 DSH 完成准备（${preparation.fingerprint}）；Python/OCR 延迟至首次启动。\n`);
     for (const directory of ['.', 'adapters/dsh', 'third_party/canvas/web', 'third_party/canvas/canvas-agent']) {
       const targetRoot = path.resolve(stage, directory);
       const cliCandidates = [
@@ -542,23 +569,25 @@ async function build(options) {
     if (target.platform === 'darwin') await makeMacApp(stage, target);
     else await makeWindowsEntry(stage);
     await pruneBuildState(stage);
-    const pythonCheck = execFileSync(pythonPath, ['-I', '-c', 'import cv2, docx, numpy, openpyxl, rapidocr; print("portable runtime ready")'], { cwd: stage, env, encoding: 'utf8' }).trim();
-    if (!pythonCheck.includes('portable runtime ready')) throw new Error('OCR/Office runtime 便携导入校验未通过。');
     await materializeBundleSymlinks(stage);
     relocationRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cas-release-moved-')));
     const relocatedStage = path.join(relocationRoot, rootName);
     await rename(stage, relocatedStage);
     stage = relocatedStage;
     const manifest = await writeBundleManifest(stage, targetId, options.version);
-    if (!manifest.files.some(file => file.path.startsWith('.studio-runtime/rapidocr-models/') && file.path.endsWith('.onnx'))) {
-      throw new Error('Release staging 缺少 RapidOCR 模型文件。');
+    if (manifest.pythonRuntime?.bundled !== false || manifest.pythonRuntime?.preparedOnFirstStart !== true
+        || manifest.files.some(file => file.path.startsWith('.venv-ocr/')
+          || file.path.startsWith('.studio-runtime/python/')
+          || file.path.startsWith('.studio-runtime/rapidocr-models/'))) {
+      throw new Error('主运行包必须排除 Python/OCR 首次准备资源，并保留首次准备元数据。');
     }
-    await relocatedRuntimeSmoke(stage, target);
     await mkdir(outputRoot, { recursive: true });
     const filename = archiveName(options.version, targetId);
     const archivePath = path.join(outputRoot, filename);
     await access(archivePath).then(() => { throw new Error(`输出文件已存在：${archivePath}`); }, error => { if (error.code !== 'ENOENT') throw error; });
     await makeArchive(stage, archivePath);
+    const extractionRoot = await mkdtemp(path.join(relocationRoot, 'archive-smoke-'));
+    await verifyArchiveAfterExtraction(archivePath, extractionRoot, rootName, target);
     const checksum = await hashFile(archivePath);
     await writeFile(`${archivePath}.sha256`, `${checksum}  ${filename}\n`, { flag: 'wx' });
     process.stdout.write(JSON.stringify({ target: targetId, version: options.version, archive: archivePath, sha256: checksum, files: manifest.files.length, licenses: 'THIRD-PARTY-LICENSES.json' }, null, 2) + '\n');
