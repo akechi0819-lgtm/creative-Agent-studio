@@ -10,7 +10,7 @@ $RuntimeRoot = Join-Path $Root '.studio-runtime\node'
 
 function Test-SupportedNode([string] $NodePath) {
   if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) { return $false }
-  & $NodePath -e 'const version = process.versions.node; const [major, minor] = version.split(".").map(Number); process.exit(/^\d+\.\d+\.\d+$/.test(version) && ((major === 22 && minor >= 19) || major >= 24) ? 0 : 1)' *> $null
+  & $NodePath -e 'const version = process.versions.node; const [major, minor] = version.split(/\./).map(Number); process.exit(/^\d+\.\d+\.\d+$/.test(version) && ((major === 22 && minor >= 19) || major >= 24) ? 0 : 1)' *> $null
   return $LASTEXITCODE -eq 0
 }
 
