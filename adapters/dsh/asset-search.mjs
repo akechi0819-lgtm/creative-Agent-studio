@@ -212,6 +212,11 @@ export function taskSourcesForPrompt(sources = []) {
       compact.tags = (Array.isArray(source.tags) ? source.tags : []).slice(0, 8).map(tag => boundedText(tag, 60)).filter(Boolean);
       compact.source = sourceFacts(source.source);
     }
+    if (source.type === 'company') {
+      compact.company = { documentId: source.company?.documentId, snapshotAt: source.company?.snapshotAt || null };
+      compact.summary = boundedText(source.summary, 1200);
+      compact.tags = (source.tags || []).slice(0, 8).map(tag => boundedText(tag, 60)).filter(Boolean);
+    }
     if (source.decision === 'retained') {
       if (source.body) compact.body = boundedText(source.body, 4000);
       if (source.url) compact.url = boundedText(source.url, 2000);

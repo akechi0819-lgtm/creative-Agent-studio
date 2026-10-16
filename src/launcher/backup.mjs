@@ -5,6 +5,7 @@ import { createReadStream } from 'node:fs';
 import { alive, readJson, runtimeStatus } from './control.mjs';
 
 const ignored = (name, relative) => name === '.lock' || name.startsWith('.lock-') || name.endsWith('.lock') || name === '.write-lock'
+  || /^canvas\/[^/]+\/company-canvas-bridge(?:-instance)?\.json$/.test(relative)
   || /^(?:web\/(?:runtime\.json|service\.log)|model-plugin\/instance\.json|(?:canvas\/[^/]+\/)?(?:canvas-instance\.json|supervisor\.log))$/.test(relative);
 const inside = (parent,child) => child===parent || child.startsWith(parent+path.sep);
 async function digest(file) {
@@ -65,7 +66,8 @@ export async function backupData(root,destination) {
       backup: destination,
       files: files.length,
       containsPrivateConfig: true,
-      canvasStorageIncluded: true,
+      taskArtifactsIncluded: true,
+      remoteCanvasBrowserIncluded: false,
       browserProfileIncluded: false,
     };
   } catch(e){await fs.rm(staging,{recursive:true,force:true});throw e;}

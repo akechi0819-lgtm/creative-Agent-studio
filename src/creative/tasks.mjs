@@ -537,11 +537,38 @@ export async function setAssetSources(id, selections, opts = {}) {
   }, {...opts, expectedRevision});
 }
 
+/** Company search results are candidates only; originals are fetched after a human retains them. */
+export async function stageCompanySources(id, candidates, opts = {}) {
+  const expectedRevision = requiredRevision(opts);
+  if (!Array.isArray(candidates) || candidates.length > 20) throw new Error("公司素材候选数量无效");
+  return withTask(id, async task => {
+    const seen = new Set(task.sources.filter(source => source.type === "company").map(source => source.company.documentId));
+    let added = false;
+    for (const candidate of candidates) {
+      const documentId = requiredText(candidate.documentId, "公司素材文档 ID", 200);
+      if (seen.has(documentId)) continue;
+      const source = {
+        id: crypto.randomUUID(), type: "company", decision: "pending",
+        title: requiredText(candidate.title || "公司素材", "素材标题", 500),
+        summary: String(candidate.summary || "").slice(0, 6000), body: "",
+        tags: (candidate.tags || []).map(tag => String(tag).slice(0, 100)).slice(0, 200),
+        purpose: "参考结构、表达或视觉方向，由用户决定是否保留",
+        factBoundary: "历史素材仅供参考；课程、价格及活动以本次现行资料为准",
+        company: { documentId, ...(candidate.previews?.[0] ? { previewFileId: String(candidate.previews[0].fileId || candidate.previews[0].id) } : {}) }, files: [],
+      };
+      assertNoCredentials(source);
+      task.sources.push(source); seen.add(documentId); added = true;
+    }
+    if (added) invalidateForInputChange(task);
+  }, { ...opts, expectedRevision });
+}
+
 /** Atomic mixed reference decisions. Existing snapshots are resolved on the trusted side. */
 export async function setReferences(id, items, opts = {}) {
   const expectedRevision = requiredRevision(opts);
   if (!Array.isArray(items)) throw new Error("参考清单必须为数组");
-  return withTask(id, async task => {
+  const created = [];
+  try { return await withTask(id, async task => {
     const result = [];
     for (const item of items) {
       if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("参考项无效");
@@ -552,7 +579,12 @@ export async function setReferences(id, items, opts = {}) {
       if (item.kind === "existing") {
         const current = task.sources.find(source => source.id === item.id);
         if (!current) throw new Error("当前任务不存在该参考，请重新查看");
-        result.push({...cloneJson(current),decision,purpose,factBoundary});
+        let snapshot = cloneJson(current);
+        if (current.type === "company" && decision === "retained" && !current.company.snapshotAt) {
+          const { freezeCompanySource } = await import('../company/sources.mjs');
+          snapshot = await freezeCompanySource(current, { root: opts.root, taskId: id, materials: opts.companyMaterials, created });
+        }
+        result.push({...snapshot,decision,purpose,factBoundary});
       } else if (item.kind === "asset") {
         result.push(...await freezeAssetSources(id,[{assetId:item.assetId,assetRevision:item.assetRevision,decision,purpose,factBoundary}],opts.root));
       } else if (item.kind === "external") {
@@ -569,6 +601,10 @@ export async function setReferences(id, items, opts = {}) {
     task.sources = validateSources(result);
     invalidateForInputChange(task);
   },{...opts,expectedRevision});
+  } catch (error) {
+    for (const directory of created) await fs.rm(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** User uploads are task-owned current material, never automatically confirmed or added to the library. */

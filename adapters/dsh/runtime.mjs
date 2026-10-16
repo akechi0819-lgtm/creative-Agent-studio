@@ -14,7 +14,9 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { readFile, mkdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { readTask, readTaskOutputImageBytes, setBrief, setReferences, setSheet, recordReview, taskDirectory, withTask, assertNoCredentials } from '../../src/creative/tasks.mjs';
+import { readTask, readTaskOutputImageBytes, setBrief, setReferences, setSheet, recordReview, taskDirectory, withTask, assertNoCredentials, stageCompanySources } from '../../src/creative/tasks.mjs';
+import { createCompanyMaterials } from '../../src/company/materials.mjs';
+import { checkCompanyCopy } from '../../src/company/risk.mjs';
 import { queryAssets } from '../../src/assets/library.mjs';
 import { compactLegacyAssetSearchResults, findAssetCandidates, taskSourcesForPrompt, taskSheetsForPrompt } from './asset-search.mjs';
 import { validateModelId } from '../../src/web/model-id.mjs';
@@ -326,6 +328,7 @@ export async function createDshContext({root,config,referenceImageMode=false}) {
 }
 
 export function createStudioAgent({root,readConfig}) {
+  const companyMaterials = createCompanyMaterials({ root });
   async function run({taskId,text,signal,onEvent=()=>{},mode='chat',page,expectedRevision,beforeRecordReview,model,editPages,canvasState,canvasOperation,canvasPreview,canvasRegions}) {
     signal?.throwIfAborted();
     assertNoCredentials(text,"传给模型的消息");
@@ -374,6 +377,7 @@ export function createStudioAgent({root,readConfig}) {
         return {stagedCount:additions.length};
       };
       if(mode==='chat'){
+        tool('studio_check_company_copy','用公司随包词库辅助检查制作单、实际读图文字或终稿。命中是人工判断提示，不代表发布结论；未命中也不替代读图或人工批准。',{text:{type:'string',required:true}},async({text})=>checkCompanyCopy(text));
         tool('studio_read_task','读取当前任务与人工确认状态',{},async()=>{const current=await readTask(taskId,root);return {task:modelTask(current)};});
         if (taskId && task && typeof canvasState === 'function' && typeof canvasOperation === 'function') {
           tool('studio_canvas_state','读取当前任务 Canvas 的节点索引、选中项、位置和尺寸。执行机械操作前先读取，不能臆造节点 ID；displaySize 仅画布展示尺寸，naturalSize 才是实际图片像素。此工具不生成图片。',{},async()=>canvasState({expectedRevision:revision}),{strictRoot:true});
@@ -473,7 +477,20 @@ export function createStudioAgent({root,readConfig}) {
           await emit('questions',{questions});
           return {questions};
         });
-        tool('studio_search_assets','检索已人工确认入库的素材，并将最多五项列为待人工保留或排除的候选',{query:{type:'string',required:true}},async({query})=>{
+        tool('studio_search_company_materials','检索公司远端 Teedy 图文素材。纯关键词无需标签；明确硬条件用 requiredConcepts 每组内 OR、组间 AND，不得静默放宽。结果自动进入待选参考，人工保留后才下载正文和原件。',{
+          query:{type:'string',required:true},
+          tags:{type:'array',items:{type:'string'},description:'仅用户明确指定的标签'},
+          requiredConcepts:{type:'array',items:{type:'array',items:{type:'string'}},description:'用户明确指定的硬条件组'},
+        },async({query,tags,requiredConcepts})=>{
+          const found=await companyMaterials.search({query,tags,required_concepts:requiredConcepts},{signal});
+          const before=task.sources.length;
+          task=await stageCompanySources(taskId,found.items,{root,expectedRevision:revision});revision=task.revision;
+          const items=found.items.map(item=>({documentId:item.documentId,title:item.title,summary:String(item.summary||'').slice(0,600),tags:item.tags}));
+          const stagedCount=task.sources.length-before;
+          await emit('tool',`公司素材检索返回 ${items.length} 项，新增待选择 ${stagedCount} 项`);
+          return {items,returnedCount:items.length,stagedCount,taskRevision:revision};
+        });
+        tool('studio_search_assets','仅检索本机已人工确认入库的素材；用户明确选择本机素材时使用，不代替公司素材检索',{query:{type:'string',required:true}},async({query})=>{
           const search=await findAssetCandidates(query,{queryAssets,root});
           const selections=search.items.map(asset=>({assetId:asset.id,assetRevision:asset.revision,purpose:'仅供结构、表达方式或视觉呈现参考，由用户决定是否保留。',factBoundary:asset.source.factBoundary}));
           const hadInputConfirmation=Boolean(task?.inputConfirmation);
@@ -606,7 +623,7 @@ export function createStudioAgent({root,readConfig}) {
       let historicalSessionEvents=[];
       const setup=agentCtx=>{
         agentCtx.systemPrompt.section({name:'studio:web-entry-contract',order:5,interpolate:false,text:webContract+'\n本次是独立Web工作台入口，使用已注册业务工具；无需shell、CLI 或 Codex。人工确认按钮由 Web 宿主处理，模型没有代确认工具。'});
-        agentCtx.systemPrompt.section({name:'studio:asset-search-contract',order:6,interpolate:false,text:'用户明确要求检索素材或历史参考时，必须实际调用 studio_search_assets，再按工具返回的真实命中数、展示数和新增待选择数回复；不得空口说已查或无素材。检索先使用一个简短主题关键词（例如 KET），不要把受众、引流目标、手帐风格等拼成一个长精确短语。该工具会自动把命中项加入任务的待选择参考；这不等于用户保留。'});
+        agentCtx.systemPrompt.section({name:'studio:asset-search-contract',order:6,interpolate:false,text:'当前为公司版。需求明确且需要历史参考时，默认调用 studio_search_company_materials 检索现有远端公司库；用户明确选择本机素材时才调用 studio_search_assets。公司检索的标签和硬条件不得从关键词擅自推断、删除或放宽。工具实际返回的候选自动进入待选区，不代表人工保留。未配置、无权限、无结果时如实说明；不能用本机素材结果冒充公司库命中。历史素材只参考结构、表达、视觉；课程、价格与活动依据用户提供的现行资料，不复制历史品牌或Logo。'});
         agentCtx.tools.restrict({allow:toolNames});
         if(mode==='chat') agentCtx.on('agent/pre-step',async({agent,step,signal:turnSignal},next)=>{
           if(step===1&&historicalSessionEvents.length&&!turnSignal.aborted){

@@ -249,8 +249,11 @@ export const useConfigStore = create<ConfigStore>()(
             partialize: (state) => ({
                 config: {
                     ...state.config,
-                    apiKey: "",
-                    channels: state.config.channels.map((channel) => ({ ...channel, apiKey: "" })),
+                    apiKey: __STUDIO_CANVAS_DEPLOYMENT__ === "remote" ? state.config.apiKey : "",
+                    channels: state.config.channels.map((channel) => ({
+                        ...channel,
+                        apiKey: __STUDIO_CANVAS_DEPLOYMENT__ === "remote" ? channel.apiKey : "",
+                    })),
                 },
                 webdav: { ...state.webdav, password: "" },
             }),

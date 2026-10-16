@@ -10,7 +10,7 @@ import { assertOffline, backupData, restoreData } from '../src/launcher/backup.m
 const args=process.argv.slice(2);
 let command=args[0]&&!args[0].startsWith('--')?args.shift():'start';
 const flags=new Set(['--no-open','--port','--destination','--from']);
-const options={port:0};
+const options={port:4311};
 for(let i=0;i<args.length;i++){
   const flag=args[i];if(!flags.has(flag))throw new Error(`未知选项 ${flag}`);
   if(flag==='--no-open')options.noOpen=true;
@@ -56,10 +56,10 @@ async function stopServices(){
 }
 async function doctor(){
   const current=await runtimeStatus(root).catch(e=>({running:false,error:e.message}));
-  const config=await fs.access(path.join(root,'config','studio.json')).then(()=>true).catch(()=>false);
+  const config=await fs.access(path.join(root,'config','company.json')).then(()=>true).catch(()=>false);
   const checks=[];
   for(const relative of ['node_modules','adapters/dsh/node_modules','third_party/canvas/web/dist/index.html','third_party/canvas/canvas-agent/dist/index.js','web/dist/index.html'])checks.push({path:relative,exists:await fs.access(path.join(repo,relative)).then(()=>true).catch(()=>false)});
-  return {node:process.version,platform:process.platform,architecture:process.arch,source:repo,dataDirectory:root,workbench:current,services:await auxiliaryStatus(root),checks,configPresent:config,help:'首次配置在网页设置完成；网络/依赖错误运行 prepare；更新前 stop，再 update；详细说明见 docs/本地Web交付.md。'};
+  return {node:process.version,platform:process.platform,architecture:process.arch,source:repo,dataDirectory:root,workbench:current,services:await auxiliaryStatus(root),checks,companyConfigPresent:config,help:'首次配置在网页设置完成；网络/依赖错误运行 prepare；更新前 stop，再 update；详细说明见 docs/本地Web交付.md。'};
 }
 async function run(){
   if(command==='status')return runtimeStatus(root);

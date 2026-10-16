@@ -1,5 +1,10 @@
 # AGENTS.md
 
+## 当前分支：公司版（2026-10-16 用户授权施工）
+
+`codex/company-edition` 从干净公开历史建立。公司版为员工本机运行，接入现有远端 Teedy 和新版 Canvas；使用独立 Company 数据目录与默认 4311。用户补充决定：按新版 Canvas 协议实现，旧公司远端 Canvas 由用户更新；不做旧协议适配。旧项目、旧全局 MCP／技能配置、远端标签和 ACL 不改动。公司素材只读检索，人工保留后下载原件和冻结任务快照；本机素材另列。公司 Canvas 不启动本地画布、不启停旧桥接、不覆盖远端模型设置。新增范围及证据见 `docs/公司版接入.md`、`docs/工程进度.md`；下文 P0—P4 为通用版验收，不能冒充公司现网联通或员工灰测通过。
+
+
 **2026-10-16 P4 最终独立复验通过：跨平台本地 Web 源码交付、macOS 隔离运行和 Windows Actions 按授权范围通过。** 两项首轮必修已关闭，229/229 测试、真实浏览器及用户数据完整性核对通过；普通设备双击体验与既有上游限制单独记录。最新结论见 [P4最终独立复验](docs/P4最终独立复验.md)。
 
 - Choose the simplest modular implementation that meets current requirements. Avoid speculative abstractions and throwaway workarounds.

@@ -7,15 +7,16 @@ import {serveControl} from '../src/launcher/control.mjs';
 import {dataRoot} from '../src/canvas/client.mjs';
 import {ensureModelPlugin,stopModelPlugin} from '../src/web/model-plugin.mjs';
 import {readConfig} from '../src/web/config.mjs';
+import {readCompanyConfig} from '../src/company/config.mjs';
 import {listenStudioServer} from '../src/web/server.mjs';
-import {createCanvasManager} from '../src/web/canvas.mjs';
+import {createCompanyCanvasManager} from '../src/company/canvas.mjs';
 import {createStudioAgent} from '../adapters/dsh/runtime.mjs';
 
 const args=process.argv.slice(2);
 const allowed=new Set(['--no-open','--port']);
-let port=4310;
+let port=4311;
 for(let i=0;i<args.length;i++){
-  if(!allowed.has(args[i]))throw new Error('用法：npm run web -- [--port 4310] [--no-open]');
+  if(!allowed.has(args[i]))throw new Error('用法：npm run web -- [--port 4311] [--no-open]');
   if(args[i]==='--port'){port=Number(args[++i]);if(!Number.isInteger(port)||port<0||port>65535)throw new Error('端口必须为 0—65535 的整数。');}
 }
 const root=dataRoot();
@@ -34,7 +35,7 @@ const sourceRuntime=path.resolve(import.meta.dirname,'../.studio-runtime');
 const sourceMarker=path.join(sourceRuntime,'servers',`${instanceId}.json`);
 await lock.writeFile(JSON.stringify({pid:process.pid,instanceId}));
 const getConfig=()=>readConfig({root});
-const canvas=createCanvasManager({root,readConfig:getConfig});
+const canvas=createCompanyCanvasManager({root,readConfig:getConfig,readCompanyConfig});
 const agent=createStudioAgent({root,readConfig:getConfig});
 let app,controlClose,closing=false;
 async function stop(){
@@ -61,7 +62,7 @@ try{
   const url=`http://127.0.0.1:${app.address.port}`;
   controlClose=await serveControl({root,instanceId,url,stop});
   console.log(`Creative Agent Studio Web UI：${url}`);
-  console.log('按 Ctrl+C 或使用启动入口的 stop 命令停止工作台与本产品 Canvas。');
+  console.log('按 Ctrl+C 或使用启动入口的 stop 命令停止工作台与模型插件。');
   if(!args.includes('--no-open')){
     const command=process.platform==='darwin'?'open':process.platform==='win32'?'cmd':'xdg-open';
     const parameters=process.platform==='win32'?['/c','start','',url]:[url];

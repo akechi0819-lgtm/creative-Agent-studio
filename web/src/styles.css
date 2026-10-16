@@ -836,3 +836,14 @@ h1, h2, h3, p { margin-top: 0; }
 .sheet-reference-choice.selected { border-color: var(--accent); background: var(--accent-soft); }
 .sheet-reference-choice img { width: 100%; height: 76px; object-fit: contain; background: var(--surface); }
 .sheet-reference-choice span { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+
+/* Company reference previews share the existing settings and reference layout. */
+.company-search { margin-block: 20px; }
+.company-search details { margin-block: 12px; }
+.company-results { display: grid; gap: 12px; margin-top: 16px; }
+.company-results .reference-item { display: flex; gap: 16px; align-items: flex-start; }
+.company-results img { width: 112px; max-height: 150px; object-fit: contain; border-radius: 8px; }
+.company-results small { display: block; margin-top: 6px; overflow-wrap: anywhere; }
+.company-results p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.company-source-preview { max-width: 180px; max-height: 200px; object-fit: contain; border-radius: 8px; margin: 12px 0; }
+@media (max-width: 600px) { .company-results .reference-item { flex-direction: column; } }

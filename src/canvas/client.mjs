@@ -5,9 +5,9 @@ import os from 'node:os';
 export const root = path.resolve(import.meta.dirname, '../..');
 export function dataRoot() {
   if (process.env.STUDIO_DATA_DIR) return path.resolve(process.env.STUDIO_DATA_DIR);
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library/Application Support/Creative Agent Studio');
-  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || os.homedir(), 'Creative Agent Studio');
-  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'creative-agent-studio');
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library/Application Support/Creative Agent Studio Company');
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || os.homedir(), 'Creative Agent Studio Company');
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'creative-agent-studio-company');
 }
 export async function connection() { return JSON.parse(await readFile(path.join(dataRoot(), 'canvas-instance.json'), 'utf8')); }
 export async function health(config, { signal } = {}) {

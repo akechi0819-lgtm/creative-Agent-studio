@@ -2,6 +2,7 @@
 
 declare const __APP_VERSION__: string;
 declare const __APP_RELEASES__: import("@/lib/release").ReleaseInfo[];
+declare const __STUDIO_CANVAS_DEPLOYMENT__: "local" | "remote";
 
 interface ImportMetaEnv {
     // Comma-separated local development plugin URLs, refetched on every startup without caching or persistence.

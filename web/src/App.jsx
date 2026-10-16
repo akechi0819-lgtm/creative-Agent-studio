@@ -5,10 +5,12 @@ import { api, jobFromResponse } from './api.js';
 import { Workbench, ChatComposer } from './Workbench.jsx';
 import { Library } from './Library.jsx';
 import { DnaSettings, ModelSettings } from './Settings.jsx';
+import { CompanySettings, CompanySearch, CompanyCopyCheck } from './Company.jsx';
 
 const NAV = [
   { id: 'workbench', label: '创作工作台', mark: '✳' },
   { id: 'library', label: '素材库', mark: '▣' },
+  { id: 'company', label: '公司连接', mark: '◈' },
   { id: 'dna', label: 'DNA', mark: '⌘' },
   { id: 'config', label: '模型与服务', mark: '◇' },
 ];
@@ -594,7 +596,7 @@ export function App() {
       <button className={`sidebar-scrim ${sidebarOpen ? 'shown' : ''}`} aria-label="关闭导航" onClick={() => setSidebarOpen(false)} />
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-top-row">
-          <div className="brand-lockup"><span className="brand-mark"><WhaleAvatar decorative /></span><div><strong>Creative Studio</strong><small>大肥鱼绘图助手</small></div></div>
+          <div className="brand-lockup"><span className="brand-mark"><WhaleAvatar decorative /></span><div><strong>Creative Studio</strong><small>大肥鱼绘图助手 · 公司版</small></div></div>
           <button type="button" className="sidebar-collapse-toggle" aria-label={sidebarCollapsed ? '展开导航栏' : '收起导航栏'} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? '展开导航栏' : '收起导航栏'} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>{sidebarCollapsed ? '›' : '‹'}</button>
         </div>
         <button className="button primary create-button" aria-label="新建创作" title="新建创作" onClick={() => { setCreateOpen(true); setSidebarOpen(false); }}><span aria-hidden="true">＋</span><span className="create-button-label">新建创作</span></button>
@@ -626,6 +628,8 @@ export function App() {
           <button className="icon-button" onClick={() => setJob(null)} aria-label="收起操作结果">×</button>
         </div>}
         {section === 'workbench' && <Workbench
+          companySearch={<CompanySearch task={task} onRun={run} />}
+          companyCopyCheck={<CompanyCopyCheck task={task} />}
           task={workbenchTask}
           canvasNeedsSync={canvasNeedsSyncTaskId === task?.id}
           summary={activeTaskSummary}
@@ -663,6 +667,8 @@ export function App() {
           onRetryChat={retryChat}
         />}
         <div hidden={section !== 'library'}>
+          <CompanySearch task={task} onRun={run} />
+          <details><summary>本机素材管理</summary>
           <Library
           tags={bootstrap.tags || { revision: 1, tags: [] }}
           refreshKey={refreshKey}
@@ -670,7 +676,9 @@ export function App() {
           onStartJob={startJob}
           job={job}
           />
+          </details>
         </div>
+        {section === 'company' && <CompanySettings onRun={run} task={task} />}
         {section === 'dna' && <DnaSettings
           initial={bootstrap.dna || { revision: 1, enabled: false, content: '' }}
           task={task}

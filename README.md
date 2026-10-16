@@ -1,18 +1,23 @@
 # Creative Agent Studio
 
+> 当前分支是公司版 `codex/company-edition`：同事本机运行新版工作台，接入现有远端 Teedy 与新版 Canvas。公司接入范围、所需 Canvas 协议及验证边界见 [公司版接入](docs/公司版接入.md)。远端 Canvas 由用户更新，本分支不适配旧桥接。
+
+公司版默认使用独立 Company 数据目录和本机端口 4311。启动后先进入“公司连接”，配置自己的素材账号与画布连接；不自动读取旧全局凭据或修改原挂靠。公司库候选经人工保留后下载本次原件，本机素材另列。
+
+
 把创作想法变成海报或多页图文的本地工作台，提供独立 Web 工作台和 Codex 两种入口，共用素材、制作单、任务、Canvas、审核与导出。
 
-仓库：[creative-Agent-studio](https://github.com/akechi0819-lgtm/creative-Agent-studio)。下载源码后按下面步骤准备并在自己的电脑上运行；仓库链接本身不是公网服务。
+公司分支：[creative-Agent-studio / codex/company-edition](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/codex/company-edition)。下载源码后按下面步骤准备并在自己的电脑上运行；仓库链接本身不是公网服务。
 
 ## 下载与首次启动
 
 任选一种方式获取源码：
 
-1. 打开 GitHub 仓库页面，选择 **Code → Download ZIP**，下载后解压。
+1. 打开上述公司分支页面，确认分支为 `codex/company-edition`，选择 **Code → Download ZIP**，下载后解压。
 2. 或在终端克隆仓库：
 
 ```sh
-git clone https://github.com/akechi0819-lgtm/creative-Agent-studio.git
+git clone --branch codex/company-edition https://github.com/akechi0819-lgtm/creative-Agent-studio.git
 ```
 
 把完整文件夹放在自己有读写权限、之后会保留的目录中。不要直接从 ZIP 预览窗口运行，也不要放进只读目录。
@@ -43,15 +48,15 @@ chmod +x Start.command scripts/bootstrap-node.sh
 
 ## 独立 Web／DSH 端
 
-双击入口后会自动准备并启动工作台，尝试在浏览器打开本机页面，同时显示维护菜单。若浏览器未弹出，选择 **1 打开工作台** 或复制终端显示的本机地址。端口动态分配，不固定为 `4310`。再次打开入口会复用同一数据目录中已经运行的实例。
+双击入口后会自动准备并启动工作台，尝试在浏览器打开本机页面，同时显示维护菜单。若浏览器未弹出，选择 **1 打开工作台** 或复制终端显示的本机地址。公司版默认端口为 `4311`，也可显式指定其他端口。再次打开入口会复用同一数据目录中已经运行的实例。
 
-这个网页是独立工作台入口，启动器会准备并管理它所需的 DSH、Canvas 和模型来源服务。用户不需要额外安装 DSH，也不需要手动运行上游 CLI。
+这个网页是独立工作台入口，启动器会准备并管理 DSH、任务工具桥接和模型来源服务，画布网页使用已配置的远端 Canvas。用户不需要额外安装 DSH，也不需要手动运行上游 CLI。
 
 首次进入后的操作顺序：
 
 1. 等待自动打开本机工作台；需要重新打开时，在菜单选择 **1 打开工作台**。
-2. 在网页的 **模型与服务** 页面配置 API。
-3. 保存后即可在工作台中开始任务；需要生图或 AI 清洗时，对应 API 必须已配置。
+2. 在 **公司连接** 保存个人素材库账号与远端 Canvas 地址，在 **模型与服务** 配置基础 API。
+3. 在任务中打开 Canvas，在远端画布配置本人使用的生图 API；素材 AI 清洗和 Web 对话使用工作台的基础 API。
 4. 需要手工调整当前任务图片时，在任务中打开 Canvas 页面进行查看和编辑。
 
 两类 API 的用途如下：
@@ -106,10 +111,10 @@ chmod +x Start.command scripts/bootstrap-node.sh
 首次配置 API 可按以下步骤完成：
 
 1. 双击 `Start.command` 或 `Start.cmd`，等待本机工作台打开。
-2. 在 **模型与服务** 中至少保存生图 API；需要素材 AI 清洗或 Web 对话时，再配置基础 API。
+2. 在 **公司连接** 保存个人素材账号和远端 Canvas 地址；基础 API 用于素材 AI 清洗。任务画布的生图 API 在远端 Canvas 的本人浏览器中配置。
 3. 回到启动菜单选择 **2 停止服务**，之后在 Codex 中创作。
 
-素材 AI 清洗使用产品配置的基础 API；图片生成仍使用产品配置的生图 API。来源限制和登录要求见[模型来源与裁剪](docs/模型来源与裁剪.md)。
+素材 AI 清洗使用产品配置的基础 API；图片生成使用当前任务远端 Canvas 的生图 API。来源限制和登录要求见[模型来源与裁剪](docs/模型来源与裁剪.md)。
 
 在支持 Skill 显式调用的 Codex CLI／IDE 中可以使用 `$creative-studio`。也可以直接用普通自然语言说明需求，例如：
 

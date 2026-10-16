@@ -1,5 +1,8 @@
 # Codex 创作入口
 
+当前公司版差异见 [公司版接入](公司版接入.md)：先配置个人 Teedy 账号及新版远端画布工具连接，不启动通用版本地 Canvas；远端更新由用户负责。公司素材检索用 `node scripts/company.mjs search @payload.json`，本机素材另列。下文原 P0—P4 验收不能代替公司现网验证。
+
+
 在本地 Codex 中打开下载或克隆的仓库根目录，让当前 Codex 会话通过项目 Skill 和共享 CLI 创作。日常创作不启动 DSH，不调用 `codex exec`；Canvas 按任务独立打开。两个入口的区别见 [README](../README.md)。
 
 ## 新用户首次使用
@@ -20,7 +23,7 @@
    ```
 
    Mac ZIP 解压后如提示无执行权限，在仓库目录执行一次 `chmod +x Start.command scripts/bootstrap-node.sh`；首次准备需要联网，耗时由网络决定。不要只运行 `node scripts/prepare.mjs` 并假设新设备已经有 Node；该命令适合已有合格 Node 的环境。
-3. 首次填写产品生图服务配置。当前可双击平台启动入口，在 Web 的“模型与服务”设置中填写并保存；需要显式素材 AI 清洗时也配置基础 API。配置后在启动菜单选择 `2 停止服务`，再回到 Codex 创作。网页设置是独立入口的配置操作；之后 Codex 的对话推理由宿主承担，日常创作无需保持 Web DSH 运行，也无需给 Codex 更换基础模型。
+3. 首次在 Web 的“公司连接”中保存个人素材库账号和远端 Canvas 地址；需要显式素材 AI 清洗时在“模型与服务”配置基础 API。生图 API 在任务远端 Canvas 本人的浏览器中填写。配置后在启动菜单选择 `2 停止服务`，再回到 Codex 创作。网页设置是独立入口的配置操作；之后 Codex 的对话推理由宿主承担，日常创作无需保持 Web DSH 运行，也无需给 Codex 更换基础模型。
 4. 在 Codex 输入自然语言需求，例如：
 
    ```text
@@ -37,9 +40,9 @@ P0 至 P4 已按各自授权范围独立验收或复验；最新交付与未测�
 
 ## 运行边界与数据位置
 
-在仓库根目录运行 `node scripts/studio.mjs`。Codex 创作路径使用本地 Canvas 和共享任务核心，不启动 DSH，也不运行 `codex exec`。首次使用按项目准备说明安装固定依赖并准备本产品的独立 Canvas 实例；不得连接旧 Canvas 实例。
+在仓库根目录运行 `node scripts/studio.mjs`。Codex 创作路径使用远端新版 Canvas 和共享任务核心，不启动 DSH，也不运行 `codex exec`。首次使用按项目准备说明安装固定依赖并在“公司连接”填写远端地址；任务会自动准备独立纯工具桥接，不连接旧协议实例。
 
-任务保存在系统用户数据目录下的 `tasks/`：macOS 为 `~/Library/Application Support/Creative Agent Studio/tasks/`；Windows 为 `%LOCALAPPDATA%\Creative Agent Studio\tasks\`；Linux 为 `$XDG_DATA_HOME/creative-agent-studio/tasks/`，未设置时为 `~/.local/share/creative-agent-studio/tasks/`。源码目录与任务数据分开。
+任务保存在系统用户数据目录下的 `tasks/`：macOS 为 `~/Library/Application Support/Creative Agent Studio Company/tasks/`；Windows 为 `%LOCALAPPDATA%\Creative Agent Studio Company\tasks\`；Linux 为 `$XDG_DATA_HOME/creative-agent-studio-company/tasks/`，未设置时为 `~/.local/share/creative-agent-studio-company/tasks/`。源码目录与任务数据分开。
 
 隔离开发或无收费 smoke 时，可以仅为该次 CLI 进程设置项目已有的 `STUDIO_DATA_DIR` 指向临时目录；未设置时始终使用上述系统目录。不要在该临时目录保存正式任务。
 

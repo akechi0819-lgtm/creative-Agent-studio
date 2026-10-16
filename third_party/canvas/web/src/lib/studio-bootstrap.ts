@@ -11,6 +11,8 @@ type StudioSession = {
     imageConfig?: { baseUrl?: string; model?: string; apiKey?: string; apiFormat?: "openai" | "gemini" } | null;
 };
 
+const isRemoteCanvasDeployment = __STUDIO_CANVAS_DEPLOYMENT__ === "remote";
+
 let studioProjectId: string | null = null;
 let appliedConfigRevision = 0;
 let refreshListenersInstalled = false;
@@ -107,6 +109,7 @@ function applyStudioSession(session: StudioSession) {
 
 /** Read the same-origin private session and apply only a newer image-config revision. */
 export async function refreshStudioCanvasConfig() {
+    if (isRemoteCanvasDeployment) return false;
     if (!window.location.pathname.startsWith("/canvas")) return false;
     let response: Response;
     try {
@@ -132,6 +135,104 @@ export async function refreshStudioCanvasConfig() {
     return true;
 }
 
+function parseLoopbackBridgeUrl(value: string): URL | null {
+    let url: URL;
+    try { url = new URL(value); } catch { return null; }
+    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+    if (!loopback || url.protocol !== "http:" || !url.port || url.username || url.password
+        || url.pathname !== "/" || url.search || url.hash) return null;
+    return url;
+}
+
+function reportCompanyBootstrapFailure(bridgeUrl = "") {
+    useCanvasToolStore.setState({
+        url: bridgeUrl,
+        token: "",
+        clientId: "",
+        enabled: false,
+        connected: false,
+        panelOpen: true,
+        activity: "公司 Canvas 连接授权失败，请从工作台重新打开画布",
+    });
+}
+
+async function bootstrapCompanyCanvasBridge() {
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const bridgeValue = params.get("companyBridge")?.trim() || "";
+    const ticket = params.get("companyTicket")?.trim() || "";
+    if (!bridgeValue && !ticket) return false;
+
+    // Tickets are one-use, short-lived authorization. Remove them from the visible URL
+    // before network access and never persist them in browser storage.
+    params.delete("companyBridge");
+    params.delete("companyTicket");
+    const remainingHash = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${remainingHash ? `#${remainingHash}` : ""}`);
+
+    const bridge = parseLoopbackBridgeUrl(bridgeValue);
+    if (!bridge || !ticket) {
+        reportCompanyBootstrapFailure(bridge?.origin || "");
+        return false;
+    }
+
+    let response: Response;
+    try {
+        response = await fetch(new URL("/__company/bootstrap", bridge).toString(), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ticket }),
+            cache: "no-store",
+            credentials: "omit",
+            mode: "cors",
+            redirect: "error",
+            referrerPolicy: "no-referrer",
+            signal: AbortSignal.timeout(4_000),
+        });
+    } catch {
+        reportCompanyBootstrapFailure(bridge.origin);
+        return false;
+    }
+    if (!response.ok) {
+        reportCompanyBootstrapFailure(bridge.origin);
+        return false;
+    }
+
+    let payload: unknown;
+    try { payload = await response.json(); } catch {
+        reportCompanyBootstrapFailure(bridge.origin);
+        return false;
+    }
+    if (!payload || typeof payload !== "object") {
+        reportCompanyBootstrapFailure(bridge.origin);
+        return false;
+    }
+    const session = payload as Record<string, unknown>;
+    const returnedBridge = typeof session.bridgeUrl === "string" ? parseLoopbackBridgeUrl(session.bridgeUrl) : null;
+    const requestedProjectId = taskProjectId();
+    if (session.ok !== true || !returnedBridge || returnedBridge.origin !== bridge.origin
+        || typeof session.token !== "string" || !session.token.trim()
+        || typeof session.projectId !== "string" || !session.projectId.trim()
+        || !requestedProjectId || requestedProjectId !== session.projectId
+        || (session.clientId !== undefined && (typeof session.clientId !== "string" || !session.clientId.trim()))) {
+        reportCompanyBootstrapFailure(bridge.origin);
+        return false;
+    }
+
+    useCanvasToolStore.setState({
+        url: returnedBridge.origin,
+        token: session.token,
+        clientId: typeof session.clientId === "string" ? session.clientId : "",
+        enabled: true,
+        connected: false,
+        fragmentBootstrap: true,
+        studioManaged: false,
+        studioProjectTitle: "",
+        activity: "正在连接公司绘图工具",
+        panelOpen: true,
+    });
+    return true;
+}
+
 function installRefreshListeners() {
     if (refreshListenersInstalled) return;
     refreshListenersInstalled = true;
@@ -145,6 +246,10 @@ function installRefreshListeners() {
 
 /** Consume the one-use local ticket before React renders or the Canvas navigation runs. */
 export async function bootstrapStudioCanvas() {
+    if (isRemoteCanvasDeployment) {
+        await bootstrapCompanyCanvasBridge();
+        return;
+    }
     if (!window.location.pathname.startsWith("/canvas")) return;
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const ticket = hash.get("studioBootstrap");

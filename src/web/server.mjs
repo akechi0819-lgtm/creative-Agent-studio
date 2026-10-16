@@ -20,9 +20,13 @@ import {
   attachTaskFiles,
   taskDirectory,
   setReferences,
+  stageCompanySources,
   withTask,
   isSheetAuthorized,
 } from '../creative/tasks.mjs';
+import { readCompanyConfig, saveCompanyConfig, publicCompanyConfig } from '../company/config.mjs';
+import { createCompanyMaterials } from '../company/materials.mjs';
+import { checkCompanyCopy } from '../company/risk.mjs';
 import { executeTask } from '../creative/executor.mjs';
 import { readCanvasOperationImage } from '../creative/canvas-operations.mjs';
 import { editTaskPages, restorePageEdit } from '../creative/page-edits.mjs';
@@ -582,6 +586,7 @@ function publicTask(task) {
   rewritePages(result.execution?.pages, result.execution?.version ?? result.sheetVersion);
   for (const execution of result.executionHistory || []) rewritePages(execution.pages, execution.version);
   for (const source of result.sources || []) {
+    if (source.type === 'company' && source.company?.previewFileId) source.companyPreviewUrl = `/api/company/preview/${encodeURIComponent(source.company.documentId)}/${encodeURIComponent(source.company.previewFileId)}`;
     delete source.uploadId;
     delete source.uploadFingerprint;
     delete source.uploadRevision;
@@ -781,13 +786,23 @@ function validateMimeFromCandidate(value) {
   return value;
 }
 
-function validateCanvasOpenUrl(value) {
+function validateCanvasOpenUrl(value, companyWebUrl = null, companyProjectId = '') {
   if (typeof value !== 'string' || value.length > 4000) throw error('ERR_CANVAS_OPEN_URL', 'Canvas 没有返回可用的打开链接', 503);
   let parsed;
   try { parsed = new URL(value); } catch { throw error('ERR_CANVAS_OPEN_URL', 'Canvas 打开链接无效', 503); }
-  if (!['http:', 'https:'].includes(parsed.protocol) || !isLoopback(parsed.hostname)
+  let companyTarget = false;
+  if (companyWebUrl) {
+    const configured = new URL(companyWebUrl);
+    const route = /^\/canvas(?:\/([^/]+))?\/?$/.exec(parsed.pathname);
+    const targetId = route?.[1] ? decodeURIComponent(route[1]) : parsed.searchParams.get('projectId');
+    companyTarget = configured.protocol === 'https:' && parsed.protocol === 'https:'
+      && parsed.origin === configured.origin && Boolean(route)
+      && (!companyProjectId || targetId === companyProjectId)
+      && [...parsed.searchParams.keys()].every(key => ['projectId', 'mode'].includes(key));
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || !(companyWebUrl ? companyTarget : isLoopback(parsed.hostname))
     || parsed.username || parsed.password || /(?:token|api[_-]?key|bridgeUrl|authorization|secret)=/i.test(`${parsed.search}${parsed.hash}`)) {
-    throw error('ERR_CANVAS_OPEN_URL', 'Canvas 打开链接不是本机安全地址', 503);
+    throw error('ERR_CANVAS_OPEN_URL', 'Canvas 打开链接与已配置目标不一致', 503);
   }
   return value;
 }
@@ -802,11 +817,13 @@ export function createStudioServer({
   readConfig = null,
   staticDir = path.resolve(import.meta.dirname, '../../web/dist'),
   maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES,
+  companyMaterials = null,
 } = {}) {
   const data = path.resolve(root);
   const getConfig = readConfig || ((args) => defaultReadConfig({ ...args, root: data }));
   const jobs = createJobManager({ root: data, onOperation: (taskId, event) => appendOperation(taskId, event, data) });
   const ready = jobs.initialize();
+  const materials = companyMaterials || createCompanyMaterials({ root: data });
 
   async function requireTask(taskId) {
     const id = assertUuid(taskId);
@@ -1015,7 +1032,7 @@ export function createStudioServer({
       if (action === 'set-brief') task = await setBrief(id, body.brief, opts);
       else if (action === 'set-sources') task = await setSources(id, body.sources, opts);
       else if (action === 'set-asset-sources') task = await setAssetSources(id, body.selections, opts);
-      else if (action === 'references') task = await setReferences(id, body.items, opts);
+      else if (action === 'references') task = await setReferences(id, body.items, { ...opts, companyMaterials: materials });
       else if (action === 'apply-dna') task = await applyDna(id, { dnaRevision: body.dnaRevision }, opts);
       else if (action === 'confirm-inputs') task = await confirmInputs(id, { revision: body.revision, by: body.by, note: body.note }, opts);
       else if (action === 'set-sheet') task = await setSheet(id, body.sheet, { ...opts, inputRevision: body.inputRevision });
@@ -1098,6 +1115,45 @@ export function createStudioServer({
     const method = request.method || 'GET';
     const segments = url.pathname.split('/').filter(Boolean).map((segment) => decodeURIComponent(segment));
     if (segments[0] !== 'api') throw error('ERR_ROUTE_NOT_FOUND', '接口不存在', 404);
+    if (segments[1] === 'company' && segments[2] === 'check-copy' && segments.length === 3 && method === 'POST') {
+      const body = await readJson(request);
+      return json(response, 200, checkCompanyCopy(body.text));
+    }
+
+    if (segments[1] === 'company' && segments[2] === 'config' && segments.length === 3) {
+      if (method === 'GET') return json(response, 200, { config: publicCompanyConfig(await readCompanyConfig({ root: data })) });
+      if (method === 'POST') {
+        const body = await readJson(request);
+        const saved = await jobs.withMutation('company-config', () => saveCompanyConfig(body, { root: data }));
+        return json(response, 200, { config: publicCompanyConfig(saved) });
+      }
+    }
+    if (segments[1] === 'company' && segments[2] === 'canvas-check' && segments.length === 3 && method === 'POST') {
+      if (typeof canvas?.diagnose !== 'function') throw error('ERR_COMPANY_CANVAS_UNAVAILABLE', '公司画布连接未就绪', 503);
+      const body = await readJson(request, { optional: true });
+      if (body.taskId) await requireTask(assertUuid(body.taskId));
+      return json(response, 200, await canvas.diagnose({ taskId: body.taskId }));
+    }
+    if (segments[1] === 'company' && segments[2] === 'search' && segments.length === 3 && method === 'POST') {
+      const body = await readJson(request);
+      const search = async () => {
+        if (body.taskId) {
+          const current = await readTask(assertUuid(body.taskId), data);
+          if (current.revision !== requiredRevision(body.expectedRevision)) throw error('ERR_TASK_REVISION_CONFLICT', '任务已更新，请刷新后重新检索', 409);
+        }
+        const result = await materials.search({ query: body.query, tags: body.tags, required_concepts: body.required_concepts, limit: body.limit }, { signal: request.abortSignal });
+        const items = result.items.map(item => ({ ...item, previews: (item.previews || []).map(preview => ({ ...preview, preview_url: `/api/company/preview/${encodeURIComponent(item.documentId)}/${encodeURIComponent(preview.fileId || preview.id)}` })) }));
+        const task = body.taskId ? await jobs.withMutation(`task:${assertUuid(body.taskId)}`, () => stageCompanySources(body.taskId, items, { root: data, expectedRevision: body.expectedRevision })) : null;
+        return { ...result, items, ...(task ? { task: publicTask(task) } : {}) };
+      };
+      return json(response, 200, await search());
+    }
+    if (segments[1] === 'company' && segments[2] === 'preview' && segments.length === 5 && method === 'GET') {
+      const preview = await materials.preview(segments[3], segments[4], { signal: request.abortSignal });
+      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(preview.mimeType)) throw error('ERR_COMPANY_PREVIEW_TYPE', '素材预览格式不支持');
+      response.writeHead(200, { 'content-type': preview.mimeType, 'content-length': preview.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' });
+      return response.end(preview.bytes);
+    }
 
     if (method === 'GET' && segments.length === 2 && segments[1] === 'bootstrap') {
       return json(response, 200, await bootstrap());
@@ -1459,7 +1515,8 @@ export function createStudioServer({
       await requireTask(taskId);
       if (!canvas || typeof canvas.ensure !== 'function') throw error('ERR_CANVAS_UNAVAILABLE', 'Canvas 当前不可用', 503);
       const result = await canvas.ensure(taskId);
-      const openUrl = validateCanvasOpenUrl(result?.openUrl);
+      const company = await readCompanyConfig({ root: data });
+      const openUrl = validateCanvasOpenUrl(result?.openUrl, company.canvas.webUrl || null, company.canvas.webUrl ? taskId : '');
       return json(response, 200, { openUrl, projectId: result.projectId, clientConnected: Boolean(result.clientConnected) });
     }
 

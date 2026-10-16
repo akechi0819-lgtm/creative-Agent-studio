@@ -25,6 +25,11 @@ const json = (method, value) => ({ method, body: JSON.stringify(value) });
 const idPath = (id) => encodeURIComponent(id);
 
 export const api = {
+  companyConfig: () => request('/api/company/config'),
+  saveCompanyConfig: (payload) => request('/api/company/config', json('POST', payload)),
+  companySearch: (payload) => request('/api/company/search', json('POST', payload)),
+  companyCanvasCheck: (taskId) => request('/api/company/canvas-check', json('POST', taskId ? { taskId } : {})),
+  companyCheckCopy: (text) => request('/api/company/check-copy', json('POST', { text })),
   bootstrap: () => request('/api/bootstrap'),
   task: (id) => request(`/api/tasks/${idPath(id)}`),
   createTask: (value) => request('/api/tasks', json('POST', value)),

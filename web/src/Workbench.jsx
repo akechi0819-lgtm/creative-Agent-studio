@@ -71,6 +71,8 @@ function taskStage(task) {
 }
 
 export function Workbench({
+  companySearch,
+  companyCopyCheck,
   task,
   canvasNeedsSync = false,
   summary,
@@ -237,9 +239,10 @@ export function Workbench({
           document.getElementById(`tab-${next}`)?.focus();
         }}>{label}</button>)}</div></div>
         <div className="object-content">
-          {tab === 'references' && <ReferencesPanel task={task} onSetReferences={onSetReferences} onSearchAssets={onSearchAssets} onConfirmAndContinue={onConfirmReferencesAndContinue} busy={actionDisabled} />}
+          {tab === 'references' && <ReferencesPanel companySearch={companySearch} task={task} onSetReferences={onSetReferences} onSearchAssets={onSearchAssets} onConfirmAndContinue={onConfirmReferencesAndContinue} busy={actionDisabled} />}
           {tab === 'sheet' && <SheetPanel task={task} sheet={activeSheet} onAction={act} onDraftSheet={onDraftSheet} busy={actionDisabled} />}
           {tab === 'review' && <ReviewPanel task={task} summary={summary} sheet={activeSheet} candidates={canvasCandidates} setCandidates={setCanvasCandidates} onAction={act} onSync={syncCanvas} canvasBusy={canvasBusy} canvasError={canvasError} exportResult={exportResult} busy={actionDisabled} canvasNeedsSync={canvasNeedsSync} />}
+          {(tab === 'sheet' || tab === 'review') && companyCopyCheck}
         </div>
         <div className="object-footer">
           {tab === 'references' && <span>保留的素材及事实边界会随任务版本保存。</span>}
@@ -479,7 +482,7 @@ function EmptyWorkbench({ onCreate }) {
   return <div className="empty-workbench"><div className="whale-empty-art"><WhaleCharacter decorative={false} /></div><span className="eyebrow">创作工作台</span><h1>从一个想法开始</h1><p>描述你要做的内容，和 Agent 一起把需求、参考、制作单与成品逐步确认下来。</p><button className="button primary" onClick={onCreate}>＋ 新建创作</button></div>;
 }
 
-function ReferencesPanel({ task, onSetReferences, onSearchAssets, onConfirmAndContinue, busy }) {
+function ReferencesPanel({ task, onSetReferences, onSearchAssets, onConfirmAndContinue, busy, companySearch }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -571,7 +574,8 @@ function ReferencesPanel({ task, onSetReferences, onSearchAssets, onConfirmAndCo
       const dirty = edit.purpose !== (source.purpose || '') || edit.factBoundary !== (source.factBoundary || '');
       const canDecide = Boolean(edit.purpose.trim() && edit.factBoundary.trim());
       return <article className="reference-item" key={source.id}>
-        <div className="reference-item-head"><div><strong>{source.title}</strong><span className={`decision-pill ${source.decision}`}>{decisionLabel(source.decision)}</span></div><small>{source.type === 'current_attachment' ? '当前任务附件' : source.type === 'external' ? '外部参考' : `素材库 v${source.asset.revision}`}{source.tags?.length ? ` · ${source.tags.join(' · ')}` : ''}</small></div>
+        <div className="reference-item-head"><div><strong>{source.title}</strong><span className={`decision-pill ${source.decision}`}>{decisionLabel(source.decision)}</span></div><small>{source.type === 'company' ? `公司素材 · ${source.company.documentId}` : source.type === 'current_attachment' ? '当前任务附件' : source.type === 'external' ? '外部参考' : `本机素材 v${source.asset.revision}`}{source.tags?.length ? ` · ${source.tags.join(' · ')}` : ''}</small></div>
+        {source.companyPreviewUrl && <img className="company-source-preview" src={source.companyPreviewUrl} alt={`${source.title}预览`} loading="lazy" />}
         {source.summary && <p className="reference-summary">{source.summary}</p>}
         {source.url && (externalHref(source.url) ? <a className="reference-external-link" href={externalHref(source.url)} target="_blank" rel="noreferrer">{source.url}</a> : <span className="reference-external-link">{source.url}</span>)}
         {source.body && <details><summary>查看提取内容</summary><p className="reference-body">{source.body}</p></details>}
@@ -586,8 +590,9 @@ function ReferencesPanel({ task, onSetReferences, onSearchAssets, onConfirmAndCo
       </article>;
     })}</div> : <div className="empty-inline"><span className="empty-symbol">⌕</span><div><strong>还没有选择参考素材</strong><p>可以检索素材库、补充当前业务资料，也可以明确确认本次不使用历史参考。</p></div></div>}
 
-    <details className="asset-search-block" open={!sources.length}>
-      <summary>从素材库选择已入库素材</summary>
+    {companySearch}
+    <details className="asset-search-block">
+      <summary>从本机素材库选择已入库素材</summary>
       <form className="search-form" onSubmit={search}><label className="visually-hidden" htmlFor="reference-search">检索素材</label><input id="reference-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入主题、关键词或标签" /><button className="button outline small" type="submit" disabled={searching}>{searching ? '检索中…' : '检索'}</button></form>
       {searchError && <p className="inline-error" role="alert">{searchError}</p>}
       {results.length > 0 && <div className="asset-result-list">{results.map((asset) => <button className={`asset-result ${selected?.id === asset.id ? 'active' : ''}`} key={asset.id} onClick={() => { setSelected(asset); setPurpose(''); setFactBoundary(''); }}>

@@ -68,5 +68,14 @@ jobs:
       - name: Run image-region fixtures
         run: node scripts/verify-p4-images.mjs
 
-      - name: Start service and verify the real browser UI
-        run: node scripts/verify-p4-service.mjs
+      - name: Build the company remote Canvas artifact
+        run: node scripts/build-company-canvas.mjs
+
+      - name: Verify remote Canvas HTTPS, IndexedDB and one-use browser bootstrap
+        run: node scripts/verify-company-canvas-remote.mjs
+
+      - name: Verify the company browser integration with isolated fixtures
+        run: node scripts/verify-company-browser.mjs
+
+      - name: Start the company service and verify the real browser UI
+        run: node scripts/verify-company-service.mjs
