@@ -31,8 +31,10 @@ node scripts/verify-p4-service.mjs
 
 | 证据 | 当前状态 |
 | --- | --- |
-| 本机隔离源码／集成回归 | macOS 隔离副本首次准备、更新和构建通过；Node 测试 219/219、0 跳过，区域图片样例 9/9，Python 3.12.15／uv 0.12.24 与固定 OCR 导入、模型 warm-up 检查通过。服务回归验证合成图导入、新浏览器 context 恢复原图、真实二维码合成独立解码、框外 610,199 像素不变和正常停机。日志位于本机忽略目录 `docs/evidence/p4/`。 |
-| GitHub Actions Windows runner | run `38841324019` 的依赖准备、构建和 OCR 准备通过；无系统 Node 分支因 Windows PowerShell 5 找不到 `Get-FileHash` 失败。现已改用 .NET SHA-256 实现，等待修复提交后的 runner 重跑；完整 Windows workflow 尚未通过。 |
+| 本机隔离源码／集成回归 | macOS 隔离副本首次准备、更新和构建通过；Node 测试 220/220、0 跳过，区域图片样例 9/9，Python 3.12.15／uv 0.12.24 与固定 OCR 导入、模型 warm-up 检查通过。服务回归验证合成图导入、新浏览器 context 恢复原图、真实二维码合成独立解码、框外 610,199 像素不变和正常停机。日志位于本机忽略目录 `docs/evidence/p4/`。 |
+| GitHub Actions Windows runner | [run 38842766621](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/38842766621) 于 2026-10-16 全部成功，代码提交 `6868a9a`。正式 Windows 入口准备、无系统 Node 下载／哈希／解压、OCR、220/220 测试（零跳过）、9/9 区域图片、服务与真实浏览器回归均通过；原图恢复、二维码独立解码、框外 610,199 像素不变和正常停机通过。 |
 | Windows 实机与普通用户 `.cmd` 双击体验 | 未验证；与 CI 分开记录 |
 
-本机隔离回归包含扫描 PDF OCR、无字图片和中英文识别样例；编码测试还用 `cp1252` 子进程验证中文识别结果仍可输出为 UTF-8 JSON。以上仅证明当前 macOS 隔离运行结果，不代表 Windows runner 或普通用户设备验证。
+本机隔离回归包含扫描 PDF OCR、无字图片和中英文识别样例；编码测试还用 `cp1252` 子进程验证中文识别结果仍可输出为 UTF-8 JSON。macOS 与 Windows runner 的证据分别记录；两者都不替代普通用户设备与双击体验验证。
+
+Windows 最终完整日志与 run 元数据位于本机忽略目录 `docs/evidence/p4/windows-final.log`、`windows-final.json`。此前失败 run 为施工排错历史，不作为通过记录；最终结论以上述成功 run 为准。
