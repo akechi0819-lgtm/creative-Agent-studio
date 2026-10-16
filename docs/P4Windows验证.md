@@ -33,6 +33,7 @@ node scripts/verify-p4-service.mjs
 | --- | --- |
 | 本机隔离源码／集成回归 | macOS 隔离副本首次准备、更新和构建通过；Node 测试 220/220、0 跳过，区域图片样例 9/9，Python 3.12.15／uv 0.12.24 与固定 OCR 导入、模型 warm-up 检查通过。服务回归验证合成图导入、新浏览器 context 恢复原图、真实二维码合成独立解码、框外 610,199 像素不变和正常停机。日志位于本机忽略目录 `docs/evidence/p4/`。 |
 | GitHub Actions Windows runner | [run 38842766621](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/38842766621) 于 2026-10-16 全部成功，代码提交 `6868a9a`。正式 Windows 入口准备、无系统 Node 下载／哈希／解压、OCR、220/220 测试（零跳过）、9/9 区域图片、服务与真实浏览器回归均通过；原图恢复、二维码独立解码、框外 610,199 像素不变和正常停机通过。 |
+| P4 小范围返工 Windows runner | [run 38872663995](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/38872663995) 全部成功，代码 `e242a74`；229/229 测试零跳过，区域样例 11/11，首次准备、私有 Node、OCR、真实浏览器恢复／合成／停机通过。新增修正仍待主审独立复验，见 [返工报告](P4返工与自验证.md)。 |
 | Windows 实机与普通用户 `.cmd` 双击体验 | 未验证；与 CI 分开记录 |
 
 本机隔离回归包含扫描 PDF OCR、无字图片和中英文识别样例；编码测试还用 `cp1252` 子进程验证中文识别结果仍可输出为 UTF-8 JSON。macOS 与 Windows runner 的证据分别记录；两者都不替代普通用户设备与双击体验验证。
