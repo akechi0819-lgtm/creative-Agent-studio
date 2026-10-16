@@ -143,7 +143,7 @@ export async function runOfficeHelper({ workspaceRoot, pythonPath, request, sign
   } catch {
     throw new Error('Python Office 工具尚未准备。');
   }
-  const result = await runProcess(executable, ['-I', OFFICE_HELPER], {
+  const result = await runProcess(executable, ['-I', '-X', 'utf8', OFFICE_HELPER], {
     cwd: workspaceRoot,
     input: JSON.stringify({ ...request, workspaceRoot }),
     signal,
@@ -174,7 +174,7 @@ export async function runWorkspaceScript({ workspaceRoot, pythonPath, language, 
   const stored = await writeWorkspaceFile(workspaceRoot, relativePath, code, { allowInternal: true, mode: 0o600 });
   const python = pythonPath || defaultPythonPath();
   const command = language === 'python' ? python : process.execPath;
-  const args = language === 'python' ? ['-I', stored.path] : [stored.path];
+  const args = language === 'python' ? ['-I', '-X', 'utf8', stored.path] : [stored.path];
   try {
     if (language === 'python') {
       try { await access(command); } catch { throw new Error('Python 脚本运行环境尚未准备。'); }

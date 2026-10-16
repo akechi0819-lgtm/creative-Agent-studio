@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createWriteStream } from 'node:fs';
-import { access, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -45,7 +45,7 @@ function run(command, args, options = {}) {
 function environmentWithoutSystemPython(stage, nodePath) {
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
   const pathEntries = process.platform === 'win32'
-    ? [path.dirname(nodePath), path.join(systemRoot, 'System32'), systemRoot]
+    ? [path.dirname(nodePath), path.join(systemRoot, 'System32'), path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0'), systemRoot]
     : [path.dirname(nodePath), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   return {
     ...process.env,
@@ -70,7 +70,26 @@ async function downloadPinnedNode(target, stage) {
   await pipeline(Readable.fromWeb(response.body), createWriteStream(archivePath, { flags: 'wx' }));
   const digest = await hashFile(archivePath);
   if (digest !== target.nodeSha256) throw new Error(`Node.js 官方运行时哈希不匹配：${target.id}`);
-  run('tar', ['-xf', archivePath, '-C', runtimeRoot]);
+  if (target.platform === 'win32') {
+    const extractor = path.join(downloadRoot, 'extract-node.ps1');
+    const source = [
+      'param([Parameter(Mandatory=$true)][string]$ArchivePath,[Parameter(Mandatory=$true)][string]$DestinationPath)',
+      "$ErrorActionPreference = 'Stop'",
+      'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+      '[System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath)',
+    ].join('\n');
+    await writeFile(extractor, `${source}\n`, { flag: 'wx' });
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    try {
+      run(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', extractor,
+        '-ArchivePath', archivePath, '-DestinationPath', runtimeRoot]);
+    } finally {
+      await rm(extractor, { force: true });
+    }
+  } else {
+    run('tar', ['-xf', archivePath, '-C', runtimeRoot]);
+  }
   await rm(archivePath, { force: true });
   const nodePath = path.join(stage, target.nodeRelative);
   const output = execFileSync(nodePath, ['--version'], { encoding: 'utf8', windowsHide: true }).trim();
@@ -469,7 +488,7 @@ async function build(options) {
   if (pathWithin(source, outputRoot)) throw new Error('Release 输出目录必须位于源码工作树之外。');
   assertCleanWorkingTree(source);
 
-  const parent = await mkdtemp(path.join(os.tmpdir(), 'cas-release-'));
+  const parent = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cas-release-')));
   const rootName = `Creative-Agent-Studio-${options.version}-${targetId}`;
   let stage = path.join(parent, rootName);
   let relocationRoot;
@@ -487,7 +506,13 @@ async function build(options) {
     let preparation;
     try {
       const { prepareWorkspace } = await import(pathToFileURL(path.join(stage, 'src/launcher/prepare.mjs')).href);
-      preparation = await prepareWorkspace({ root: stage, nodePath, onProgress: ({ message }) => process.stdout.write(`${message}\n`) });
+      const { preparePython } = await import(pathToFileURL(path.join(stage, 'src/launcher/python.mjs')).href);
+      preparation = await prepareWorkspace({
+        root: stage,
+        nodePath,
+        onProgress: ({ message }) => process.stdout.write(`${message}\n`),
+        operations: { python: options => preparePython({ ...options, managedOnly: true }) },
+      });
     } finally {
       process.env.PATH = originalPath;
       if (originalUvCache === undefined) delete process.env.UV_CACHE_DIR;
@@ -520,7 +545,7 @@ async function build(options) {
     const pythonCheck = execFileSync(pythonPath, ['-I', '-c', 'import cv2, docx, numpy, openpyxl, rapidocr; print("portable runtime ready")'], { cwd: stage, env, encoding: 'utf8' }).trim();
     if (!pythonCheck.includes('portable runtime ready')) throw new Error('OCR/Office runtime 便携导入校验未通过。');
     await materializeBundleSymlinks(stage);
-    relocationRoot = await mkdtemp(path.join(os.tmpdir(), 'cas-release-moved-'));
+    relocationRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cas-release-moved-')));
     const relocatedStage = path.join(relocationRoot, rootName);
     await rename(stage, relocatedStage);
     stage = relocatedStage;

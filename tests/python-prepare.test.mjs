@@ -97,6 +97,64 @@ function warmOperation(counter) {
   };
 }
 
+test('managed-only preparation replaces an external base with the bundled Python runtime', async (t) => {
+  const { root, paths } = await makeFixture(t, { models: false });
+  const state = { created: false, synced: false, systemLookups: 0, warmups: 0 };
+  const managedBase = path.join(paths.pythonHome, 'cpython-3.12.15');
+  const stagedRunnerPython = pythonInternals.pythonExecutable(paths.venvStage);
+  await fs.mkdir(path.dirname(stagedRunnerPython), { recursive: true });
+  await fs.writeFile(stagedRunnerPython, 'runner-python');
+  const managedHealth = (dependencies = true) => ({
+    runtimeHealthy: true,
+    dependenciesHealthy: dependencies,
+    ready: dependencies,
+    version: [3, 12, 15],
+    basePrefix: managedBase,
+    versions: {},
+  });
+  const operations = {
+    inspectPython: async (_pythonPath, candidatePaths) => {
+      const candidate = path.resolve(candidatePaths.venv);
+      if (candidate === path.resolve(paths.venvStage)) {
+        return state.created ? managedHealth(state.synced) : readyHealth(paths, candidatePaths);
+      }
+      if (candidate === path.resolve(paths.venv)) {
+        if (!state.created) return readyHealth(paths, candidatePaths);
+        return managedHealth(state.synced);
+      }
+      return null;
+    },
+    resolveUv: async () => ({ command: 'fixture-uv', version: '0.12.24', source: 'fixture' }),
+    findSystemPython312: async () => {
+      state.systemLookups += 1;
+      return { executable: '/runner/python3.12', version: [3, 12, 15] };
+    },
+    createVenv: async (_uv, stagePath, systemPython) => {
+      assert.equal(systemPython, null, 'managed-only mode must not use the runner Python');
+      await fs.mkdir(managedBase, { recursive: true });
+      const stagePython = pythonInternals.pythonExecutable(stagePath);
+      const bin = path.dirname(stagePython);
+      await fs.mkdir(bin, { recursive: true });
+      await fs.writeFile(stagePython, 'managed-python');
+      await fs.writeFile(path.join(bin, 'activate'), 'VIRTUAL_ENV=/portable/venv\n');
+      await fs.writeFile(path.join(bin, 'studio-ocr'), '#!/usr/bin/env python3\nprint("ready")\n');
+      state.created = true;
+    },
+    syncDependencies: async () => { state.synced = true; },
+    warmOcr: async (_python, modelRoot) => {
+      state.warmups += 1;
+      await writeModels(modelRoot);
+      return { blankText: '', sampleText: 'P4 OCR SAMPLE' };
+    },
+  };
+
+  const prepared = await pythonInternals.prepareWithOperations({ root, managedOnly: true }, operations);
+  assert.equal(prepared.runtimeSource, 'project-managed-python');
+  assert.equal(state.systemLookups, 0);
+  assert.equal(state.warmups, 1);
+  assert.equal(JSON.parse(await fs.readFile(paths.pythonRuntimeState, 'utf8')).runtimeSource, 'project-managed-python');
+});
+
 test('claims a healthy external Python 3.12 venv without state and ignores helper changes', async (t) => {
   const { root, paths } = await makeFixture(t);
   const counters = { resolveUv: 0, sync: 0, create: 0, warm: 0, guard: 0 };
@@ -229,7 +287,7 @@ test('stages a replacement and preserves the old venv when sync fails', async (t
   assert.equal(await fs.readFile(pythonInternals.pythonExecutable(paths.venv), 'utf8'), 'new-environment');
   const backups = await fs.readdir(paths.venvBackups);
   assert.equal(backups.length, 1);
-  assert.equal(await fs.readFile(path.join(paths.venvBackups, backups[0], 'bin', 'python'), 'utf8'), 'old-environment');
+  assert.equal(await fs.readFile(pythonInternals.pythonExecutable(path.join(paths.venvBackups, backups[0])), 'utf8'), 'old-environment');
 });
 
 test('keeps a healthy promoted venv after warmup fails and retries only model warmup', async (t) => {
@@ -259,8 +317,8 @@ test('keeps a healthy promoted venv after warmup fails and retries only model wa
     findSystemPython312: async () => ({ executable: '/fixture/python3.12', version: [3, 12, 0] }),
     createVenv: async (_uv, stagePath) => {
       state.creates += 1;
-      const bin = path.join(stagePath, 'bin');
       const stagePython = pythonInternals.pythonExecutable(stagePath);
+      const bin = path.dirname(stagePython);
       await fs.mkdir(bin, { recursive: true });
       await fs.writeFile(stagePython, 'replacement-environment');
       await fs.writeFile(path.join(bin, 'activate'), 'VIRTUAL_ENV="$(cd "$(dirname "$BASH_SOURCE")/.." && pwd)"\n');

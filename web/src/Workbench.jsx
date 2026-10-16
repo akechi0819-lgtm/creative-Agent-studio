@@ -121,9 +121,9 @@ export function Workbench({
     && activeSheet.pages.every((page) => currentImagePages.has(page.page)));
   const finalApproved = summary?.finalApproved === true
     || (summary == null && task.finalApproval?.version === task.sheetVersion);
-  const currentExport = exportResult?.sheetVersion === task.sheetVersion
-    ? exportResult
-    : finalApproved ? task.exports?.at(-1) : null;
+  const currentExport = finalApproved
+    ? exportResult?.sheetVersion === task.sheetVersion ? exportResult : task.exports?.at(-1)
+    : null;
 
   function sendMessage(text, answers, attachments) {
     followConversationRef.current = true;

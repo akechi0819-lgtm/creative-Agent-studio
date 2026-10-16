@@ -81,7 +81,7 @@ async function start() {
   await mkdir(logs, { recursive: true, mode: 0o700 });
   const log = await open(path.join(logs, 'service.log'), 'a', 0o600);
   const env = packageEnvironment();
-  const child = spawn(nodePath, [path.join(bundleRoot, 'scripts/web.mjs'), '--no-open'], {
+  const child = spawn(nodePath, [...(process.allowedNodeEnvironmentFlags.has('--use-env-proxy') ? ['--use-env-proxy'] : []), path.join(bundleRoot, 'scripts/web.mjs'), '--no-open'], {
     cwd: bundleRoot, env, detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
   });
   let childError = null;

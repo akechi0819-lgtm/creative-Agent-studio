@@ -591,12 +591,19 @@ async function promoteStage(paths, spec, operations) {
 }
 
 function sourceFromHealth(health, paths) {
-  const basePrefix = path.resolve(health.basePrefix ?? '');
-  const privatePython = path.resolve(paths.pythonHome);
-  const relative = path.relative(privatePython, basePrefix);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  return pathIsWithin(paths.pythonHome, health.basePrefix ?? '')
     ? 'project-managed-python'
     : 'external-python-base';
+}
+
+function pathIsWithin(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function runtimeIsUsable(health, paths, managedOnly) {
+  return health?.runtimeHealthy === true
+    && (!managedOnly || pathIsWithin(paths.pythonHome, health?.basePrefix ?? ''));
 }
 
 async function writeReadyStates(paths, { digest, spec, health, pythonPath, runtimeSource, uvVersion }) {
@@ -627,7 +634,7 @@ async function writeReadyStates(paths, { digest, spec, health, pythonPath, runti
   }
 }
 
-async function preparePythonCore({ root, onProgress = () => {}, nodePath = process.execPath, beforeChange }, injectedOperations = {}) {
+async function preparePythonCore({ root, onProgress = () => {}, nodePath = process.execPath, beforeChange, managedOnly = false }, injectedOperations = {}) {
   if (typeof root !== 'string' || !root.trim()) throw new Error('Python 准备器需要源码根目录。');
   const projectRoot = path.resolve(root);
   const paths = runtimePaths(projectRoot);
@@ -648,7 +655,7 @@ async function preparePythonCore({ root, onProgress = () => {}, nodePath = proce
   };
 
   let health = await operations.inspectPython(pythonPath, paths, spec);
-  let runtimeReady = health?.runtimeHealthy === true;
+  let runtimeReady = runtimeIsUsable(health, paths, managedOnly);
   let dependenciesReady = runtimeReady && health?.dependenciesHealthy === true;
   const modelsReady = await modelStateReady(paths, modelDigest);
   const needsChanges = !runtimeReady || !dependenciesReady || !modelsReady;
@@ -686,9 +693,9 @@ async function preparePythonCore({ root, onProgress = () => {}, nodePath = proce
       const stagePaths = { ...paths, venv: paths.venvStage };
       const stagePython = pythonExecutable(paths.venvStage);
       let stageHealth = await operations.inspectPython(stagePython, stagePaths, spec);
-      if (!stageHealth?.runtimeHealthy) {
+      if (!runtimeIsUsable(stageHealth, stagePaths, managedOnly)) {
         await preserveInvalidStage(paths);
-        const systemPython = await operations.findSystemPython312();
+        const systemPython = managedOnly ? null : await operations.findSystemPython312();
         report(onProgress, 'install', systemPython
           ? `使用本机 Python ${systemPython.version.join('.')} 创建项目私有 OCR 虚拟环境。`
           : `准备项目私有 Python ${PYTHON_VERSION}。`);
@@ -696,7 +703,7 @@ async function preparePythonCore({ root, onProgress = () => {}, nodePath = proce
         changed = true;
         stageHealth = await operations.inspectPython(stagePython, stagePaths, spec);
       }
-      if (!stageHealth?.runtimeHealthy) throw new Error('新建 OCR Python 虚拟环境未通过 3.12 版本与项目路径检查。');
+      if (!runtimeIsUsable(stageHealth, stagePaths, managedOnly)) throw new Error('新建 OCR Python 虚拟环境未通过 3.12 版本与项目路径检查。');
       if (!stageHealth.dependenciesHealthy) {
         report(onProgress, 'install', '同步带 SHA-256 哈希的完整 OCR 固定依赖。');
         dependencyAttempted = true;

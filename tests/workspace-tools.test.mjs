@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,20 @@ import { readWorkspaceDocument, readWorkspaceImageText } from '../src/workspace/
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures/workspace');
+
+function findPythonRuntime() {
+  const candidates = [process.env.STUDIO_OCR_PYTHON, process.env.PYTHON, defaultPythonPath()];
+  const locator = process.platform === 'win32' ? 'where' : 'which';
+  for (const name of ['python3', 'python']) {
+    const located = spawnSync(locator, [name], { encoding: 'utf8' });
+    if (located.status === 0) candidates.push(located.stdout.split(/\r?\n/u).find(Boolean));
+  }
+  for (const candidate of [...new Set(candidates.filter(Boolean))]) {
+    const probe = spawnSync(candidate, ['-I', '-X', 'utf8', '-c', 'print("中文")'], { encoding: 'utf8' });
+    if (probe.status === 0 && probe.stdout.trim() === '中文') return candidate;
+  }
+  return null;
+}
 
 function findOfficePython() {
   const candidates = [process.env.STUDIO_OCR_PYTHON, process.env.PYTHON, defaultPythonPath()];
@@ -29,6 +43,7 @@ function findOfficePython() {
 }
 
 const PYTHON = findOfficePython();
+const PYTHON_RUNTIME = findPythonRuntime();
 
 async function fixtureSources() {
   const names = new Map([
@@ -162,6 +177,23 @@ test('workspace tools import frozen roster/photos, filter and dedupe, batch imag
   assert.ok(progress.length >= 12);
 });
 
+test('Python helper preserves Chinese through JSON stdin and stdout', { skip: PYTHON_RUNTIME ? false : 'Python runtime is unavailable.' }, async t => {
+  const taskRoot = await mkdtemp(path.join(os.tmpdir(), 'studio-workspace-utf8-'));
+  const workspaceRoot = path.join(taskRoot, 'workspace');
+  await mkdir(path.join(workspaceRoot, 'inputs'), { recursive: true });
+  t.after(() => rm(taskRoot, { recursive: true, force: true }));
+  const relativePath = 'inputs/花名册.csv';
+  await writeFile(path.join(workspaceRoot, relativePath), '姓名,审核\n张三,通过\n', 'utf8');
+  const result = await readWorkspaceDocument({
+    workspaceRoot,
+    relativePath,
+    pythonPath: PYTHON_RUNTIME,
+  });
+  assert.equal(result.kind, 'table');
+  assert.equal(result.relativePath, relativePath);
+  assert.deepEqual(result.rows[1].values, ['张三', '通过']);
+});
+
 test('generic Office conversion reuses LibreOffice kit for PDF, CSV and workbook recalculation', async t => {
   const taskRoot = await mkdtemp(path.join(os.tmpdir(), 'studio-workspace-convert-'));
   const workspaceRoot = path.join(taskRoot, 'workspace');
@@ -248,7 +280,7 @@ test('workspace boundary rejects absolute/traversal/symlink paths; scripts run w
   const onProgress = [];
   const definitions = createWorkspaceToolDefinitions({
     workspaceRoot,
-    pythonPath: PYTHON || defaultPythonPath(),
+    pythonPath: PYTHON_RUNTIME || defaultPythonPath(),
     onProgress: async text => onProgress.push(text),
     withProtectedState: async run => {
       const before = createHash('sha256').update(await readFile(protectedPath)).digest('hex');
@@ -272,8 +304,16 @@ test('workspace boundary rejects absolute/traversal/symlink paths; scripts run w
   });
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /no-secret-env/u);
-  assert.equal(result.stdout.includes(taskRoot), true);
+  assert.equal(result.stdout.split(/\r?\n/u)[0], await realpath(workspaceRoot));
   assert.ok(onProgress.some(text => text.includes('简单 Python 或 JavaScript')));
+
+  const pythonOutput = await execute('studio_workspace_run_script', {
+    language: 'python',
+    code: 'print("脚本中文输出")',
+    timeoutSeconds: 3,
+  });
+  assert.equal(pythonOutput.exitCode, 0, pythonOutput.stderr);
+  assert.equal(pythonOutput.stdout.trim(), '脚本中文输出');
 
   await writeFile(protectedPath, '{"revision":1}');
   await assert.rejects(execute('studio_workspace_run_script', {
