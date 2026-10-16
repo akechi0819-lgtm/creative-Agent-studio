@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "清洗器拒绝泄漏的固定虚构测试字串；不是运行凭据"
+condition = "AND"
+paths = ['''(^|/)tests/cleaner\.test\.mjs$''']
+regexTarget = "secret"
+regexes = ['''^qrstuvwxyz123456$''']

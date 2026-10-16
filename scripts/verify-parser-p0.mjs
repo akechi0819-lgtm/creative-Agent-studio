@@ -1,0 +1,15 @@
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
+const file = process.argv[2] || 'docs/evidence/p0/parser-sample.pdf';
+const bytes = await readFile(file);
+const loading = getDocument({data:new Uint8Array(bytes),useSystemFonts:true});
+const pdf = await loading.promise;
+const page = await pdf.getPage(1);
+const text = (await page.getTextContent()).items.map(i=>i.str).join(' ');
+assert.ok(text.includes('Hello, world!'));
+const evidence={dependency:'pdfjs-dist@6.4.299',source:'https://github.com/mozilla/pdf.js/blob/master/examples/learning/helloworld.pdf',sha256:createHash('sha256').update(bytes).digest('hex'),pages:pdf.numPages,text,result:'passed',limits:'文本型PDF单页样本；不证明扫描OCR、中文复杂版式或图片提取已通过'};
+await loading.destroy();
+await writeFile('docs/evidence/p0/parser-report.json',JSON.stringify(evidence,null,2));
+console.log(JSON.stringify(evidence));

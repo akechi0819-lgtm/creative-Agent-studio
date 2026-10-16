@@ -1,0 +1,72 @@
+name: Windows CI
+
+on:
+  push:
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows install, build, and isolated smoke checks
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      STUDIO_DATA_DIR: ${{ runner.temp }}\creative-agent-studio-p4-data
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            third_party/canvas/canvas-agent/package-lock.json
+            third_party/canvas/web/package-lock.json
+            adapters/dsh/package-lock.json
+
+      - name: Cache private OCR runtime
+        uses: actions/cache@v4
+        with:
+          path: |
+            .studio-runtime/node
+            .studio-runtime/uv
+            .studio-runtime/python
+            .studio-runtime/rapidocr-models
+            .venv-ocr
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-${{ hashFiles('scripts/bootstrap-node.ps1', 'Start.cmd', 'scripts/requirements-cleaner-ocr.lock.txt', 'src/launcher/python.mjs', 'scripts/ocr_materials.py') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-runtime-
+
+      - name: Prepare through the Windows launcher entry point
+        run: cmd /c Start.cmd prepare
+
+      - name: Smoke the private Node bootstrap without system Node
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          cmd /c Start.cmd status
+
+      - name: Verify private OCR runtime and warm models
+        run: node scripts/verify-p4-python.mjs
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Run the Node test suite
+        run: node scripts/verify-p4-tests.mjs
+
+      - name: Run image-region fixtures
+        run: node scripts/verify-p4-images.mjs
+
+      - name: Start service and verify the real browser UI
+        run: node scripts/verify-p4-service.mjs

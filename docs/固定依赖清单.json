@@ -1,0 +1,348 @@
+{
+  "node": "^22.19.0 || >=24",
+  "testedNode": "v22.22.3",
+  "manifests": [
+    {
+      "file": "package-lock.json",
+      "sha256": "64834bbb1caaf7ffa035e07be8acdf929afa7671543a70ce1320dcc50d766aad",
+      "directDependencies": {
+        "@napi-rs/canvas": {
+          "requested": "1.0.11",
+          "version": "1.0.11",
+          "integrity": "sha512-vt5tog1cr+QKadIddGe+3LrcX0EmjEd0izF717Uwf92mBmgYfq2XRmL2r4bZU40spB69exxhrBn9I91HYEr/7w=="
+        },
+        "@techstark/opencv-js": {
+          "requested": "5.0.0-release.1",
+          "version": "5.0.0-release.1",
+          "integrity": "sha512-PIm+eB0MFtieXoNC2GRao0dv/02sehG+Nv2nSW5D6pQm6J/4WqvDHm0RyoqOmGYQm67jdGiaOdIeTShCY3PIUg=="
+        },
+        "@tesseract.js-data/chi_sim": {
+          "requested": "1.0.0",
+          "version": "1.0.0",
+          "integrity": "sha512-iuErURkPbECDUazgsLn/r3c+tU2y5o5S/w14d0A/YiagfsjYyZKgTo75RUpsGJ311qtu0dIX4hqnXAAjmqf2CA=="
+        },
+        "@tesseract.js-data/eng": {
+          "requested": "1.0.0",
+          "version": "1.0.0",
+          "integrity": "sha512-mbTumm6KQPUHyzTPQaF3ObXYnx0SqqfV2nabqFVQBwD6Kl7PhGSLSzOlfFTWy0P3BjghaSKA2W9GB19Jk+ZcTg=="
+        },
+        "fflate": {
+          "requested": "0.8.3",
+          "version": "0.8.3",
+          "integrity": "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="
+        },
+        "pdfjs-dist": {
+          "requested": "6.4.299",
+          "version": "6.4.299",
+          "integrity": "sha512-AVl138zALtfaAPvADulE0PZThbYzCBS79nL4pOSL/6Sm/4AH5A21BD9VHt97OlCuzJuCpmeZtAtkinisF4Vb1g=="
+        },
+        "react": {
+          "requested": "19.2.5",
+          "version": "19.2.5",
+          "integrity": "sha512-llUJLzz1zTUBrskt2pwZgLq59AemifIftw4aB7JxOqf1HY2FDaGDxgwpAPVzHU1kdWabH7FauP4i1oEeer2WCA=="
+        },
+        "react-dom": {
+          "requested": "19.2.5",
+          "version": "19.2.5",
+          "integrity": "sha512-J5bAZz+DXMMwW/wV3xzKke59Af6CHY7G4uYLN1OvBcKEsWOs4pQExj86BBKamxl/Ik5bx9whOrvBlSDfWzgSag=="
+        },
+        "tesseract.js": {
+          "requested": "6.0.1",
+          "version": "6.0.1",
+          "integrity": "sha512-/sPvMvrCtgxnNRCjbTYbr7BRu0yfWDsMZQ2a/T5aN/L1t8wUQN6tTWv6p6FwzpoEBA0jrN2UD2SX4QQFRdoDbA=="
+        },
+        "esbuild": {
+          "requested": "0.28.2",
+          "version": "0.28.2",
+          "integrity": "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA=="
+        },
+        "jsqr": {
+          "requested": "1.4.0",
+          "version": "1.4.0",
+          "integrity": "sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A=="
+        },
+        "playwright": {
+          "requested": "1.58.2",
+          "version": "1.58.2",
+          "integrity": "sha512-vA30H8Nvkq/cPBnNw4Q8TWz1EJyqgpuinBcHET0YVJVFldr8JDNiU9LaWAE1KqSkRYazuaBhTpB5ZzShOezQ6A=="
+        }
+      }
+    },
+    {
+      "file": "third_party/canvas/web/package-lock.json",
+      "sha256": "1ae5e3e68209691bb1e11c03d7c6f7f0071e84494c16042c5615885b6bc954b3",
+      "directDependencies": {
+        "@ant-design/icons": {
+          "requested": "^6.1.1",
+          "version": "6.2.2"
+        },
+        "@codemirror/lang-javascript": {
+          "requested": "^6.2.5",
+          "version": "6.2.5",
+          "integrity": "sha512-zD4e5mS+50htS7F+TYjBPsiIFGanfVqg4HyUz6WNFikgOPf2BgKlx+TQedI1w6n/IqRBVBbBWmGFdLB/7uxO4A=="
+        },
+        "@codemirror/lang-json": {
+          "requested": "^6.0.2",
+          "version": "6.0.2"
+        },
+        "@tanstack/react-query": {
+          "requested": "^5.100.9",
+          "version": "5.100.9"
+        },
+        "@uiw/react-codemirror": {
+          "requested": "^4.25.9",
+          "version": "4.25.9"
+        },
+        "antd": {
+          "requested": "^6.4.2",
+          "version": "6.4.2"
+        },
+        "axios": {
+          "requested": "^1.16.0",
+          "version": "1.16.0"
+        },
+        "class-variance-authority": {
+          "requested": "^0.7.1",
+          "version": "0.7.1"
+        },
+        "clsx": {
+          "requested": "^2.1.1",
+          "version": "2.1.1"
+        },
+        "copy-to-clipboard": {
+          "requested": "^4.0.2",
+          "version": "4.0.2"
+        },
+        "dayjs": {
+          "requested": "^1.11.20",
+          "version": "1.11.20"
+        },
+        "fflate": {
+          "requested": "^0.8.3",
+          "version": "0.8.3"
+        },
+        "file-saver": {
+          "requested": "^2.0.5",
+          "version": "2.0.5"
+        },
+        "i18next": {
+          "requested": "^26.3.6",
+          "version": "26.4.4",
+          "integrity": "sha512-O+rqmQUi54OwAgnZ4SAwO6aRrbXZt36VZXWt6zvq0FpC3vJbH46oQRs6u4Uwm1vf8ZI7UqOXQiJhQVTor7vRiQ=="
+        },
+        "localforage": {
+          "requested": "^1.10.0",
+          "version": "1.10.0"
+        },
+        "lucide-react": {
+          "requested": "^1.16.0",
+          "version": "1.16.0"
+        },
+        "motion": {
+          "requested": "^12.38.0",
+          "version": "12.38.0"
+        },
+        "nanoid": {
+          "requested": "^5.1.11",
+          "version": "5.1.11"
+        },
+        "radix-ui": {
+          "requested": "^1.4.3",
+          "version": "1.4.3"
+        },
+        "react": {
+          "requested": "19.2.5",
+          "version": "19.2.5"
+        },
+        "react-dom": {
+          "requested": "19.2.5",
+          "version": "19.2.5"
+        },
+        "react-i18next": {
+          "requested": "^17.0.11",
+          "version": "17.0.16",
+          "integrity": "sha512-7uImVD9hG5yUOaP5KHVied1x0A004Di/KU031ULR35Ma+9e9H5GdnNZHgQEIByyAz+IAXBkRDTedNVzjPUH8ZA=="
+        },
+        "react-router": {
+          "requested": "^7.12.0",
+          "version": "7.18.0"
+        },
+        "react-router-dom": {
+          "requested": "^7.12.0",
+          "version": "7.18.0"
+        },
+        "shadcn": {
+          "requested": "^4.7.0",
+          "version": "4.7.0"
+        },
+        "tailwind-merge": {
+          "requested": "^3.6.0",
+          "version": "3.6.0"
+        },
+        "tailwindcss": {
+          "requested": "^4",
+          "version": "4.2.4"
+        },
+        "tw-animate-css": {
+          "requested": "^1.4.0",
+          "version": "1.4.0"
+        },
+        "zustand": {
+          "requested": "^5.0.12",
+          "version": "5.0.12"
+        },
+        "@tailwindcss/postcss": {
+          "requested": "^4",
+          "version": "4.2.4"
+        },
+        "@types/file-saver": {
+          "requested": "^2.0.7",
+          "version": "2.0.7"
+        },
+        "@types/node": {
+          "requested": "^20",
+          "version": "20.19.39"
+        },
+        "@types/react": {
+          "requested": "19.1.12",
+          "version": "19.1.12"
+        },
+        "@types/react-dom": {
+          "requested": "19.1.9",
+          "version": "19.1.9"
+        },
+        "@vitejs/plugin-react": {
+          "requested": "^5.2.0",
+          "version": "5.2.0"
+        },
+        "prettier": {
+          "requested": "^3.8.3",
+          "version": "3.8.3"
+        },
+        "typescript": {
+          "requested": "^5",
+          "version": "5.9.3"
+        },
+        "vite": {
+          "requested": "^7.3.0",
+          "version": "7.3.6"
+        }
+      }
+    },
+    {
+      "file": "third_party/canvas/canvas-agent/package-lock.json",
+      "sha256": "f812442dd75babfe37713c4b9c928cb460fd0ae338f0c4172e956525f00f586f",
+      "directDependencies": {
+        "express": {
+          "requested": "^5.1.0",
+          "version": "5.2.1"
+        },
+        "zod": {
+          "requested": "^3.25.0",
+          "version": "3.25.76"
+        },
+        "@types/express": {
+          "requested": "^5.0.0",
+          "version": "5.0.6"
+        },
+        "@types/node": {
+          "requested": "^22.0.0",
+          "version": "22.19.21"
+        },
+        "tsx": {
+          "requested": "^4.19.0",
+          "version": "4.22.4"
+        },
+        "typescript": {
+          "requested": "^5.8.0",
+          "version": "5.9.3"
+        }
+      }
+    },
+    {
+      "file": "adapters/dsh/package-lock.json",
+      "sha256": "f8f3d4fd2206de38c77958b9031ea5f3058a238ebf7a1b40cd1a4411c5964147",
+      "directDependencies": {
+        "@deepseek-ai/cordis": {
+          "requested": "4.0.5-alpha.1",
+          "version": "4.0.5-alpha.1"
+        },
+        "@deepseek-ai/dsh": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-agent": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2",
+          "integrity": "sha512-G/gqW6Y2Qki+MLUVk22+ni6rwyjkCI6tpzF7EoyTdckrk9C7sjQMrnBh0hbA65sES0DNygxLHfzEQiZjpuWIDA=="
+        },
+        "@deepseek-ai/dsh-agent-loop": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2",
+          "integrity": "sha512-bw5s6A/w9TJXHautNxherVEvLGc/hQzNG2FDmbMGTo5dAB1aeOY6ELES/Xv2tI6qC9jGmnC2fkejtDneiqtmcg=="
+        },
+        "@deepseek-ai/dsh-attachment-local": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2",
+          "integrity": "sha512-BLhdN10c9yaTHdacnkiKgMwrfKt+pL3+bh8t44nt1LbW0V72u5sJOM8jVy5K2ntfSvF6jBlyz4s+QgxVCwFFPA=="
+        },
+        "@deepseek-ai/dsh-client-ui-chat": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-client-ui-conversation": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-client-ui-workspace": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-compaction-image-offload": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-llm": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-llm-pi-ai": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-session": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-session-persistence-jsonl": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2",
+          "integrity": "sha512-BS9FkO3Oxl1WV7l9XrrAf+B/xeYBwfvQHNQ23BSjRvQMmMp7UAg+3QKr6hAWp+6ZC16bzbEc3iiRaftapqszeg=="
+        },
+        "@deepseek-ai/dsh-session-projection": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2",
+          "integrity": "sha512-rwA8TiXxvoKhPNW63Y42ClqwdiVOWIs80rCpW39S3M1yWi1gnvgtEkqeLx8+cJP08zGrS2MXQpguhoc3PzWSuw=="
+        },
+        "@deepseek-ai/dsh-skill-filesystem": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "@deepseek-ai/dsh-system-prompt": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2",
+          "integrity": "sha512-3UqSuNpaTQWRSUEE1ygCm83dcJPkhmssmwUTRGB8jufFc3ib/7i6ktqhZZNSUQrrr/d/FQ0dsQ5wo9l/iJSKWA=="
+        },
+        "@deepseek-ai/dsh-tools": {
+          "requested": "0.2.1-alpha.2",
+          "version": "0.2.1-alpha.2"
+        },
+        "esbuild": {
+          "requested": "0.28.2",
+          "version": "0.28.2",
+          "integrity": "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA=="
+        }
+      }
+    }
+  ]
+}

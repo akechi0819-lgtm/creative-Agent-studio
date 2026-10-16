@@ -1,0 +1,258 @@
+{
+  "repository": "https://github.com/Ebony-Vinyl/dsh-our-free-model",
+  "commit": "2daf7625619bc3a93b97b84a896357b9edb1064f",
+  "files": [
+    {
+      "path": "LICENSE",
+      "upstreamGitBlob": "0d5e2a61dc66dd531b7894bcd038599c5b723888",
+      "sha256": "4d5f97c83545b2159926df06d3210a266d2b7f900e27f7b3e8e576caf753e828"
+    },
+    {
+      "path": "package.json",
+      "upstreamGitBlob": "24855a251aebf6138c56e40e46929dc436ec5ee8",
+      "sha256": "9a966100554fd9edb77ed0afab11f28db656df9402ef616a40787c0929723358",
+      "upstreamSha256": "1e6e34df59cf782f9a95c05c14f282857db28fc9b0837d57d1ac689298a26e2e",
+      "localChange": "Minimal private ESM runtime metadata; upstream host plugin hooks and dependencies removed."
+    },
+    {
+      "path": "src/adapter.js",
+      "upstreamGitBlob": "0d6e95c5336ed22d631067bb9d4b86bceb6df071",
+      "sha256": "054e3b99ff4128e1ad486a6233edc9e03bed219c24c7c7041c76be319cd6f205"
+    },
+    {
+      "path": "src/aggregate.js",
+      "upstreamGitBlob": "09b58b2595816dff11d0e5e7c2a75324cb6942fd",
+      "sha256": "94ecce3159837f62db7727319263656e8b60a2fcc9c72379444b9d6f9fd380e4"
+    },
+    {
+      "path": "src/anthropic.js",
+      "upstreamGitBlob": "bd622759b60743e255a83be4772f5a6c2861c9c6",
+      "sha256": "1b14e7b4e7264f7c9017952cfc3fb49470f53848048a2510d916dc6197d236db"
+    },
+    {
+      "path": "src/catalog.js",
+      "upstreamGitBlob": "b25827abcdecd16c38ca4c5b484bcee0deb2da53",
+      "sha256": "7f20a8589b02b30770d3dfafd4301e4a998a4f5ad5c7bb394277bb1ce4d63c11"
+    },
+    {
+      "path": "src/channel.js",
+      "upstreamGitBlob": "b650ef710d6a94fddf11fca2f6d5b4a872b08d16",
+      "sha256": "c1b80fdaac75fa320fd619b5dd09d796a8c4b1c8f58af07b921f548a5604c357"
+    },
+    {
+      "path": "src/combos.js",
+      "upstreamGitBlob": "c11c117bc0a37d3fad0f5029fcbcfc6f5a51d2a8",
+      "sha256": "2920e99d34923c306d2289f9a342e8e39416e8e2ecfe0c078326cbda4d28c0ed"
+    },
+    {
+      "path": "src/core/completion.js",
+      "upstreamGitBlob": "5b48e782a7379d16d2d58d57d6384b66f8c9b19b",
+      "sha256": "cb9b4488a3dd7554e028392790e6ae915b92c51375704a41a3be6a22f77abc27"
+    },
+    {
+      "path": "src/eac-user.js",
+      "upstreamGitBlob": "3fb7b1dd2f948f35def37deb8ac4028c78cbbb44",
+      "sha256": "05155af81b9eac36dbb5eb30ad2dc42a48ad01ad6bcd5989def1c321c58b016d"
+    },
+    {
+      "path": "src/eac.js",
+      "upstreamGitBlob": "9a82b5e0b507360cac713eb296973fc9e5f59090",
+      "sha256": "e9d9b69dfb2074537c645a6213dfc04762f23d5d51267d1086dfc07f1b76fc86"
+    },
+    {
+      "path": "src/effort.js",
+      "upstreamGitBlob": "6b2f577b322fc38f29db7d989c92f91574143c91",
+      "sha256": "511b178f402badfbf49d722428592626e0f3a253c5ab2b9a66a22dac4b7b9da4"
+    },
+    {
+      "path": "src/egress.js",
+      "upstreamGitBlob": "a15c6a1b8c46ffe116e8c76e93f720921c71f7a4",
+      "sha256": "4811a0a1e1d42907932488ab4b480acdfbc8244a130d273d34e87530c29552f8"
+    },
+    {
+      "path": "src/forward.js",
+      "upstreamGitBlob": "7846045b08eb27017ef9ea4677eb776fba2de4a1",
+      "sha256": "d99a72bd01989018d7264e93957089be76e874493268840909570ce0d7765882"
+    },
+    {
+      "path": "src/http.js",
+      "upstreamGitBlob": "9291ad281e359794362926b3a50d85f21eef4ef7",
+      "sha256": "2afb523e410495c1af90105a1c2e9732a34fd306cf7b3829621836f48b866b83"
+    },
+    {
+      "path": "src/image-pricing.js",
+      "upstreamGitBlob": "e5a134ab33abb935d45a0bf481a05b9428600a5e",
+      "sha256": "ee92a354506df0f0ce182efaf6bbc4780fb7c3fb503a5cbb2836974b34d47066"
+    },
+    {
+      "path": "src/kilo.js",
+      "upstreamGitBlob": "95824cf9a56cdd18021e381f37108817803e3d34",
+      "sha256": "8ece253a9ae295973103e72473b6812c2024fa26f48830295cdc7cfb56a22018"
+    },
+    {
+      "path": "src/local-optimize.js",
+      "upstreamGitBlob": "e58dd24719651a168c185128746b8fa21c35b7e5",
+      "sha256": "9cda533778c6d91090180d6dad3d861d21c1f484bb371bf3f69de0f3653f5fb2"
+    },
+    {
+      "path": "src/messages.js",
+      "upstreamGitBlob": "c63b3e4e95a31c80d59d5ba01e3e6959546603d2",
+      "sha256": "cfda211cfd40b34a4f11cd3a451e59df5d9ac761ded735e3d06b7ea5974eed5f"
+    },
+    {
+      "path": "src/providers/index.js",
+      "upstreamGitBlob": "cd6c1f4fecbb1c40ed6044ee69466089fb4d8262",
+      "sha256": "8c3255eb32f427ec879fbe00e2366a6022467ba0f3ff18fcdcf30f148424313e"
+    },
+    {
+      "path": "src/recovery.js",
+      "upstreamGitBlob": "81e8fb3989b3488871839133f3b1695a3c18c9e1",
+      "sha256": "3fcacbe793755d5101d9a331d35cd868d020a3f26b9d359bd2adfee968673169"
+    },
+    {
+      "path": "src/route/classify.js",
+      "upstreamGitBlob": "5bb50a51a75dbe5bce4795cb7d9e7564304bda79",
+      "sha256": "9123be50f8284a9a8735abac7c0e541e726fdfdce1de9aab841e4e5bbe348e17"
+    },
+    {
+      "path": "src/store.js",
+      "upstreamGitBlob": "687ad47878ef6ef9b0ff6d3780ebb64dbdc5dd4a",
+      "sha256": "4ba1dc93b5d886f9e2d23e31dca3cc2a4673dec9a92971afbd0c50dbec7b1fdf"
+    },
+    {
+      "path": "src/stream.js",
+      "upstreamGitBlob": "9ba8a1821ae3e1ffabe4ec650b113a50821e282d",
+      "sha256": "d7c561dab102b275e63daa68559e25a5c2b23dd534fbbac32cb17d5ac18aba17"
+    },
+    {
+      "path": "src/token-saver/index.js",
+      "upstreamGitBlob": "117393066c769f13b458d989a95d5c2170a9b5e5",
+      "sha256": "b0f3f86dcefdd0e490ccc5d5adad547935c68786c94380c1c3b6fcc847a24c3a"
+    },
+    {
+      "path": "src/token-saver/inject.js",
+      "upstreamGitBlob": "943f9c5f921ca6d997b1c0b534b644a392fccd74",
+      "sha256": "3a680ae566301f29fae56648f9b9e59ef4ed1c4a54c233a9fd733ab8e264309b"
+    },
+    {
+      "path": "src/token-saver/prompts.js",
+      "upstreamGitBlob": "6847e9585e9e1d4c50e1f8104a825bbe8919db36",
+      "sha256": "0c9134dea286dacdb15f681385acb9e7851495ebc4df28bc209986307614dbfe"
+    },
+    {
+      "path": "src/token-saver/rtk/applyFilter.js",
+      "upstreamGitBlob": "c026ab6bbec168dfc0d51742c5cddb9892475762",
+      "sha256": "1089f5e76aac3d8708fe47be966baaab5f0b2cad3852c7f79a5cc6b3a4c8a2f5"
+    },
+    {
+      "path": "src/token-saver/rtk/autodetect.js",
+      "upstreamGitBlob": "17f250f54e4683713144a918e8672a8308bb866f",
+      "sha256": "017650d4a88959552dfd6a01b8841fd5caeead462271ae355b7730fbfd5c9416"
+    },
+    {
+      "path": "src/token-saver/rtk/constants.js",
+      "upstreamGitBlob": "3fb60d27ab0f7880c335347a6f8e26b34d689de5",
+      "sha256": "198d6a5482712a7cf2b368bbfb766de368754e767f570cd184a7e021c09b85b1"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/buildOutput.js",
+      "upstreamGitBlob": "15e72f0412827f9347fbea342dd98b6415b816ee",
+      "sha256": "5011a10844df64d63ab00cf8920182d4cd108c4fbbe5e39fdec3d4d9c27fc9f2"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/dedupLog.js",
+      "upstreamGitBlob": "6ec8f619ef80097177063f11dd98f3109d28fc40",
+      "sha256": "887186ebae560e0d809c2a56f9a1af77f16e09bf2c7cd1582c1a3072385a225f"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/find.js",
+      "upstreamGitBlob": "ee1b4be23a9e36e97d21013cda173a5ddfaeda1b",
+      "sha256": "d4d4cebaffcfb9d90fd08880dcf91408fa04ec6ed76161a0f51c2e010dba84ac"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/gitDiff.js",
+      "upstreamGitBlob": "9a9d45a583cb24cb062ca37c17665c5402822596",
+      "sha256": "2bf65937c05016ce2aaf6a2ec8b70fe22e465f685b0255114ba8cc803a3f19f9"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/gitLog.js",
+      "upstreamGitBlob": "839115fc782f15571ab71118ea1eeb2ed71808e0",
+      "sha256": "fa083a361744bcb9bbcce4f77eb09017fa5e9e74d7fdbd9fa78e4491be7fdf60"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/gitStatus.js",
+      "upstreamGitBlob": "c2eeef144d313cfc4a70b6b0af7c66792c804f2f",
+      "sha256": "f7d0af9ef42f152251ddd3202e599a14a571f86a765ee9329ffe279ebfbf4c7b"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/grep.js",
+      "upstreamGitBlob": "12422410848a504ea116f3bbe2dc8c285817e6e9",
+      "sha256": "06abe489488e2c796696d4f1b42f91d19c2dfa6b50fadd82d9c8331e15f157b1"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/ls.js",
+      "upstreamGitBlob": "4fea0af4baf107e93e44c3085ae01f1a10665b5e",
+      "sha256": "05d07d94fe7c065589398ac3fac7431e1ae19ecae1cb0ddb8f8811df7ddbc83e"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/readNumbered.js",
+      "upstreamGitBlob": "018f6693b094590cf99be75fe204b986505fe7b3",
+      "sha256": "9cd608d36881267fb4f182177d2c30b2ce3d8e78826250ee0c693fc174b1f496"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/searchList.js",
+      "upstreamGitBlob": "edc8cfbd185d33661b8e5b93e64d8b634edf5cba",
+      "sha256": "9cf0a76c4259827b5f7e0866b1ede8f9b2042ab012c111f66bde351b6b0c0e3f"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/smartTruncate.js",
+      "upstreamGitBlob": "36a671dc5a50cdea1ca0392812c3152b19062bae",
+      "sha256": "653776558e8fcca41d8951e9812c2fb59d4ad44f15fd88ff6bb117b5e657e3f9"
+    },
+    {
+      "path": "src/token-saver/rtk/filters/tree.js",
+      "upstreamGitBlob": "3330e69a2f6081b0c97e4ea53c193c962fb8b246",
+      "sha256": "283ce99b64971c5c83786e5f8d68f78bdbbc67372f80c27af92823b1edf09082"
+    },
+    {
+      "path": "src/token-saver/rtk/hitLine.js",
+      "upstreamGitBlob": "ee6219f888dbc13b53874e18b7219dc128ba9427",
+      "sha256": "b87bfe38ea75451b94da3cf202c281245ec2650ae283fcff37cf8e3dfe58d64e"
+    },
+    {
+      "path": "src/token-saver/rtk/index.js",
+      "upstreamGitBlob": "e6d5272088818625f7cbd1a058cbb53eb5e222dc",
+      "sha256": "5aa05f8e6630bd0f941910e25759ac179b7caa53df5c7528ff5f8b5cb19a8c48"
+    },
+    {
+      "path": "src/upstream.js",
+      "upstreamGitBlob": "d803befcdf8fabba454aeaa73abdc47a317d7917",
+      "sha256": "3be44eb1b5a3aad20c27112d51b40ce7db13d426f849fed32c20c80b4b5a91eb"
+    },
+    {
+      "path": "src/providers/registry.json",
+      "upstreamGitBlob": "4af417ef3e28d50a3d162e894da93064170a9753",
+      "sha256": "cab50d6513bb50eb90436f3176ec4ed8c7857b8fb08195e0a618ea6b9ebb8405"
+    }
+  ],
+  "workbuddy": {
+    "upstreamPath": "packages/standalone/channels/business.mjs",
+    "upstreamGitBlob": "b525b08c0bc08455a49af25458e20f412c62f743",
+    "inputPath": "workbuddy/upstream-business.mjs",
+    "inputSha256": "13e407d870e276a3ccd55984119f87b745d1549b88ae2ad3a6476fb4b154fa6f",
+    "buildScript": "../../scripts/build-workbuddy-plugin.mjs",
+    "runtimePath": "workbuddy/runtime.mjs",
+    "runtimeSha256": "c21ae850aad41af1329785c77d3469e0ed2838e3b41b17bfac48bb77c7d44a6e",
+    "localAdapters": [
+      "workbuddy/contracts.mjs",
+      "workbuddy/images.mjs"
+    ],
+    "changes": [
+      "Export only Buddy/WorkBuddy registration and protocol dependencies",
+      "Forward cancellation signal through login state and token/account polling",
+      "Use project-owned credentials and image contracts",
+      "P4 public distribution removes unused Loomy credentials and Gemini OAuth constants; original upstream hash retained without copying credential literals"
+    ],
+    "upstreamInputSha256": "9793bea5c4ce51fb93fbba2dfe3691588ac050ed4727646c99d11977d2a8b457"
+  }
+}

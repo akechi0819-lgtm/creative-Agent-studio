@@ -1,0 +1,31 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {createServer} from 'node:http';
+import {canvasStorageHandler} from '../src/canvas/storage.mjs';
+import {backupData,restoreData} from '../src/launcher/backup.mjs';
+
+test('task Canvas bytes persist across sessions, backup and restore with private authorization',async t=>{
+  const base=await fs.mkdtemp(path.join(os.tmpdir(),'studio-canvas-storage-'));
+  const root=path.join(base,'data');await fs.mkdir(root);
+  t.after(()=>fs.rm(base,{recursive:true,force:true}));
+  const handler=canvasStorageHandler({data:root,authorize:req=>req.headers.cookie==='fixture=session'});
+  const server=createServer(async(req,res)=>{if(!await handler(req,res,new URL(req.url,'http://localhost')))res.writeHead(404).end();});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  t.after(()=>new Promise(r=>server.close(r)));
+  const url=`http://127.0.0.1:${server.address().port}/__studio/storage/image_files/`+encodeURIComponent('image:../测试');
+  assert.equal((await fetch(url)).status,403);
+  const bytes=Buffer.from([1,0,254,33,128]);
+  assert.equal((await fetch(url,{method:'PUT',headers:{cookie:'fixture=session','content-type':'image/png'},body:bytes})).status,200);
+  const backup=path.join(base,'backup');await backupData(root,backup);
+  await fetch(url,{method:'DELETE',headers:{cookie:'fixture=session'}});
+  assert.equal((await fetch(url,{headers:{cookie:'fixture=session'}})).status,404);
+  await restoreData(root,backup);
+  const restored=await fetch(url,{headers:{cookie:'fixture=session'}});
+  assert.equal(restored.headers.get('content-type'),'image/png');
+  assert.deepEqual(Buffer.from(await restored.arrayBuffer()),bytes);
+  const keys=await fetch(url.slice(0,url.lastIndexOf('/')),{headers:{cookie:'fixture=session'}}).then(r=>r.json());
+  assert.deepEqual(keys,['image:../测试']);
+});

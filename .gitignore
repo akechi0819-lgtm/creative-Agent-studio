@@ -1,0 +1,27 @@
+node_modules/
+.venv-ocr/
+.research/
+.p0-state/
+.env*
+*.tsbuildinfo
+third_party/canvas/**/dist/
+third_party/canvas/**/node_modules/
+adapters/dsh/lib/
+web/dist/
+
+# 本机文件、运行输出与私有配置
+.DS_Store
+__pycache__/
+*.pyc
+*.log
+*.pem
+*.key
+
+# 历史验收原件保留本机，避免真实任务／会话资料进入源码仓库
+docs/evidence/*
+!docs/evidence/p0/
+docs/evidence/p0/*
+!docs/evidence/p0/gpt-image-2.png
+
+# P4 项目私有运行时与准备缓存
+.studio-runtime/

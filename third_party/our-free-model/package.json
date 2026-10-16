@@ -1,0 +1,7 @@
+{
+  "name": "studio-our-free-model-runtime",
+  "private": true,
+  "type": "module",
+  "version": "2.2.0",
+  "license": "MIT"
+}
