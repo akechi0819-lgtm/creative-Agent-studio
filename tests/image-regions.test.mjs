@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +67,22 @@ function assertValidRegions(result) {
     assert.equal(region.suggestedPadding, 2);
   }
 }
+
+test('image-region detection honors a native cancellation before its first scan completes', async () => {
+  const bytes = await fixture('poster-mixed.png');
+  const controller = new AbortController();
+  const reason = new Error('cancel during initial image scan');
+  const pending = detectImageRegions({ bytes, mimeType: 'image/png', kinds: ['barcode'], signal: controller.signal });
+  const timer = setTimeout(() => controller.abort(reason), 20);
+  try {
+    await assert.rejects(
+      pending,
+      (error) => error === reason,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+});
 
 async function asJpeg(png) {
   const image = await loadImage(png);
@@ -175,6 +192,46 @@ test('multiple QR codes return two separate locations, including a rotated code'
   const metrics = matchGeometry(qr.truth, result.regions, 0.9);
   assert.equal(metrics.recall, 1);
   assert.equal(metrics.precision, 1);
+});
+
+test('transparent and opaque PNGs of the same QR are detected while source bytes stay unchanged', async () => {
+  const payload = 'transparent-qr-detection-fixture';
+  const code = QrCode.encodeText(payload, Ecc.MEDIUM);
+  const scale = 6;
+  const quietZone = 4;
+  const side = (code.size + quietZone * 2) * scale;
+  const transparentCanvas = createCanvas(side, side);
+  const transparentContext = transparentCanvas.getContext('2d');
+  transparentContext.fillStyle = '#000';
+  for (let y = 0; y < code.size; y += 1) {
+    for (let x = 0; x < code.size; x += 1) {
+      if (code.getModule(x, y)) {
+        transparentContext.fillRect((x + quietZone) * scale, (y + quietZone) * scale, scale, scale);
+      }
+    }
+  }
+  const transparentBytes = transparentCanvas.toBuffer('image/png');
+  const opaqueCanvas = createCanvas(side, side);
+  const opaqueContext = opaqueCanvas.getContext('2d');
+  opaqueContext.fillStyle = '#fff';
+  opaqueContext.fillRect(0, 0, side, side);
+  opaqueContext.drawImage(transparentCanvas, 0, 0);
+  const opaqueBytes = opaqueCanvas.toBuffer('image/png');
+
+  const whiteBackgroundDecode = jsQR(opaqueContext.getImageData(0, 0, side, side).data, side, side, {
+    inversionAttempts: 'dontInvert',
+  });
+  assert.equal(whiteBackgroundDecode?.data, payload, 'the white-background reference must decode independently');
+
+  const transparentHash = createHash('sha256').update(transparentBytes).digest('hex');
+  const opaqueHash = createHash('sha256').update(opaqueBytes).digest('hex');
+  const transparentResult = await detectImageRegions({ bytes: transparentBytes, mimeType: 'image/png', kinds: ['barcode'] });
+  const opaqueResult = await detectImageRegions({ bytes: opaqueBytes, mimeType: 'image/png', kinds: ['barcode'] });
+  assert.equal(transparentResult.regions.length, 1, 'transparent QR is detected');
+  assert.equal(opaqueResult.regions.length, 1, 'opaque QR is detected');
+  assert.ok(intersectionOverUnion(transparentResult.regions[0].bounds, opaqueResult.regions[0].bounds) >= 0.95);
+  assert.equal(createHash('sha256').update(transparentBytes).digest('hex'), transparentHash, 'transparent source bytes are unchanged');
+  assert.equal(createHash('sha256').update(opaqueBytes).digest('hex'), opaqueHash, 'opaque source bytes are unchanged');
 });
 
 test('landscape and irregular texture are negative fixtures with no QR, text, or rectangle regions', async () => {

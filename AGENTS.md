@@ -1,5 +1,7 @@
 # AGENTS.md
 
+**2026-10-16 P4 首轮独立验收：主体链路复核通过，透明 PNG 二维码检测、异常存活配套服务状态两项需小范围修正后复验；本轮未标全部通过。** 详情见 [P4独立验收](docs/P4独立验收.md)。
+
 - Choose the simplest modular implementation that meets current requirements. Avoid speculative abstractions and throwaway workarounds.
 - Build incrementally from the smallest working end-to-end version. Never replace a working product with unfinished complexity.
 - Do not preserve backward compatibility. Remove obsolete paths instead of adding compatibility layers, fallbacks, or migrations to retain them.

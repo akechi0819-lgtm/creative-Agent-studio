@@ -84,7 +84,9 @@ async function run(){
       const destination=options.destination||path.join(path.dirname(root),`${path.basename(root)} backups`,new Date().toISOString().replaceAll(':','-')+'-'+randomUUID().slice(0,8));
       const backup=await backupData(root,destination);
       if(command==='backup')return backup;
-      await prepare(true);
+      try{await prepare(true);}catch(cause){
+        throw new Error(`更新准备失败：${cause.message}\n已保留本次备份（恢复点）：${backup.backup}`,{cause});
+      }
       return {updated:true,backup,source:repo,message:'已备份数据并准备当前源码。源码获取和 Git 切换由用户指定，不自动拉取远端。'};
     }
     if(!options.from)throw new Error('restore 需要 --from 备份目录。');

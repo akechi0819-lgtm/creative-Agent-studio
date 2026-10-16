@@ -143,6 +143,10 @@ async function decodeRaster(bytes) {
   const analysis = analysisSize(width, height);
   const canvas = createCanvas(analysis.width, analysis.height);
   const context = canvas.getContext('2d');
+  // Alpha is not meaningful to the local detectors. Composite onto white in
+  // this detection-only raster so transparent QR quiet zones stay visible.
+  context.fillStyle = '#fff';
+  context.fillRect(0, 0, analysis.width, analysis.height);
   context.drawImage(image, 0, 0, analysis.width, analysis.height);
   const pixels = context.getImageData(0, 0, analysis.width, analysis.height).data;
   return { width, height, analysisWidth: analysis.width, analysisHeight: analysis.height, pixels, png: canvas.toBuffer('image/png') };
@@ -493,6 +497,7 @@ export async function detectImageRegions({ bytes, mimeType, kinds, signal } = {}
   const decoded = await decodeRaster(imageBytes);
   signal?.throwIfAborted();
   const cv = await loadCv();
+  signal?.throwIfAborted();
   const rgba = new cv.Mat(decoded.analysisHeight, decoded.analysisWidth, cv.CV_8UC4);
   rgba.data.set(decoded.pixels);
   try {
@@ -508,6 +513,7 @@ export async function detectImageRegions({ bytes, mimeType, kinds, signal } = {}
     if (selectedKinds.includes('rectangle')) regions.push(...detectRectangles(cv, rgba, decoded, qrRegions));
     regions.sort((first, second) => first.kind.localeCompare(second.kind)
       || first.bounds.y - second.bounds.y || first.bounds.x - second.bounds.x);
+    signal?.throwIfAborted();
     return validateResult({
       width: decoded.width,
       height: decoded.height,

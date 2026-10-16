@@ -83,21 +83,157 @@ test('authenticated HTTP control supports Windows graceful stop without PID sign
   assert.equal((await runtimeStatus(root)).running,false);
 });
 
-test('abnormal workbench exit can stop only authenticated residual services in its data root',async t=>{
-  const {root}=await fixture(t);
+async function serviceServer(t,handler){
   const {createServer}=await import('node:http');
-  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
-  const server=createServer((req,res)=>{
-    assert.equal(req.headers.authorization,'Bearer fixture-token');
-    if(req.url==='/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({service:'studio-model-plugin',instanceId:'fixture-plugin'}));}
-    else if(req.url==='/studio/stop'){res.end('{}');server.close();}
-    else res.writeHead(404).end();
+  const server=createServer(handler);
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{if(server.listening)server.close(()=>resolve());else resolve();}));
+  return {server,baseUrl:`http://127.0.0.1:${server.address().port}`};
+}
+async function writePluginFixture(root,baseUrl,{instanceId='fixture-plugin',pid=process.pid,lockPid=pid}={}){
+  const directory=path.join(root,'model-plugin');
+  await fs.mkdir(directory,{recursive:true});
+  await fs.writeFile(path.join(directory,'instance.json'),JSON.stringify({baseUrl,apiKey:'fixture-token',instanceId,pid}));
+  await fs.writeFile(path.join(directory,'service.lock'),JSON.stringify({pid:lockPid,instanceId}));
+}
+test('healthy residual plugin is diagnosed without secrets and stops through its authenticated endpoint',async t=>{
+  const {root}=await fixture(t);let stopped=false;
+  const {server,baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/health'&&req.headers.authorization==='Bearer fixture-token'){
+      res.setHeader('content-type','application/json');res.end(JSON.stringify({service:'studio-model-plugin',instanceId:'fixture-plugin'}));return;
+    }
+    if(req.url==='/studio/stop'&&req.headers.authorization==='Bearer fixture-token'){
+      res.end('{}');setImmediate(async()=>{
+        stopped=true;
+        await fs.rm(path.join(root,'model-plugin','instance.json'),{force:true});
+        await fs.rm(path.join(root,'model-plugin','service.lock'),{force:true});
+        await new Promise(resolve=>server.close(resolve));
+      });return;
+    }
+    res.writeHead(403).end();
   });
-  await new Promise(r=>server.listen(0,'127.0.0.1',r));
-  t.after(()=>new Promise(r=>server.close(r)));
-  await fs.mkdir(path.join(root,'model-plugin'));
-  await fs.writeFile(path.join(root,'model-plugin','instance.json'),JSON.stringify({baseUrl:`http://127.0.0.1:${server.address().port}`,apiKey:'fixture-token',instanceId:'fixture-plugin'}));
-  assert.deepEqual(await auxiliaryStatus(root),{modelPluginRunning:true,canvasInstances:0});
+  await writePluginFixture(root,baseUrl);
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  const status=await auxiliaryStatus(root);
+  assert.deepEqual(status,{modelPluginRunning:true,modelPluginUnverified:false,canvasInstances:0,canvasUnverifiedInstances:0,instances:[{kind:'plugin',scope:'model-plugin',state:'healthy',live:true}]});
+  assert.ok(!JSON.stringify(status).includes('fixture-token'));
   assert.deepEqual(await stopAuxiliary(root),{auxiliaryStopped:1});
-  assert.deepEqual(await auxiliaryStatus(root),{modelPluginRunning:false,canvasInstances:0});
+  assert.equal(stopped,true);
+  assert.deepEqual(await auxiliaryStatus(root),{modelPluginRunning:false,modelPluginUnverified:false,canvasInstances:0,canvasUnverifiedInstances:0,instances:[]});
+});
+
+test('live plugin with a 503 health endpoint is reported as unverified and is not sent stop',async t=>{
+  const {root}=await fixture(t);let stopRequests=0;
+  const {baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/health'){res.writeHead(503,{'content-type':'application/json'}).end('{}');return;}
+    if(req.url==='/studio/stop')stopRequests++;
+    res.writeHead(404).end();
+  });
+  await writePluginFixture(root,baseUrl);
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  const status=await auxiliaryStatus(root);
+  assert.equal(status.modelPluginRunning,true);
+  assert.equal(status.modelPluginUnverified,true);
+  assert.deepEqual(status.instances,[{kind:'plugin',scope:'model-plugin',state:'unverified',live:true,reason:'health-http-503'}]);
+  assert.ok(!JSON.stringify(status).includes('fixture-token'));
+  await assert.rejects(stopAuxiliary(root),/仍有存活或所有者无法确认/);
+  assert.equal(stopRequests,0);
+});
+
+test('live plugin with a mismatched health identity is visible and never receives stop',async t=>{
+  const {root}=await fixture(t);let stopRequests=0;
+  const {baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({service:'studio-model-plugin',instanceId:'different-instance'}));return;}
+    if(req.url==='/studio/stop')stopRequests++;
+    res.writeHead(404).end();
+  });
+  await writePluginFixture(root,baseUrl);
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  const status=await auxiliaryStatus(root);
+  assert.equal(status.modelPluginRunning,true);
+  assert.deepEqual(status.instances,[{kind:'plugin',scope:'model-plugin',state:'unverified',live:true,reason:'identity-mismatch'}]);
+  await assert.rejects(stopAuxiliary(root),/仍有存活或所有者无法确认/);
+  assert.equal(stopRequests,0);
+});
+
+test('a live plugin lock remains visible when its instance record is missing',async t=>{
+  const {root}=await fixture(t);
+  const directory=path.join(root,'model-plugin');await fs.mkdir(directory,{recursive:true});
+  await fs.writeFile(path.join(directory,'service.lock'),JSON.stringify({pid:process.pid,instanceId:'orphan-plugin'}));
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  const status=await auxiliaryStatus(root);
+  assert.equal(status.modelPluginRunning,true);
+  assert.deepEqual(status.instances,[{kind:'plugin',scope:'model-plugin',state:'unverified',live:true,reason:'record-missing'}]);
+  await assert.rejects(stopAuxiliary(root),/仍有存活或所有者无法确认/);
+});
+
+test('stale plugin records are distinguished from live services and do not block stop',async t=>{
+  const {spawn}=await import('node:child_process');
+  const child=spawn(process.execPath,['-e','process.exit(0)'],{stdio:'ignore'});
+  const deadPid=child.pid;
+  await new Promise(resolve=>child.once('exit',resolve));
+  const {root}=await fixture(t);
+  await writePluginFixture(root,'http://127.0.0.1:1',{pid:deadPid,lockPid:deadPid});
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  const status=await auxiliaryStatus(root);
+  assert.equal(status.modelPluginRunning,false);
+  assert.deepEqual(status.instances,[{kind:'plugin',scope:'model-plugin',state:'stale',live:false,reason:'process-exited'}]);
+  assert.deepEqual(await stopAuxiliary(root),{auxiliaryStopped:0});
+});
+
+test('Canvas uses its supervisor lock to report a live unverified instance with a missing descriptor',async t=>{
+  const {root}=await fixture(t);const directory=path.join(root,'canvas','fixture-project');
+  await fs.mkdir(directory,{recursive:true});
+  await fs.writeFile(path.join(directory,'supervisor.lock'),JSON.stringify({pid:process.pid,instanceId:'fixture-canvas'}));
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  const status=await auxiliaryStatus(root);
+  assert.equal(status.canvasInstances,1);
+  assert.equal(status.canvasUnverifiedInstances,1);
+  assert.deepEqual(status.instances,[{kind:'canvas',scope:'canvas/fixture-project',state:'unverified',live:true,reason:'record-missing'}]);
+  await assert.rejects(stopAuxiliary(root),/仍有存活或所有者无法确认/);
+});
+
+test('Canvas identity mismatch stays visible and its stop endpoint is not called',async t=>{
+  const {root}=await fixture(t);const directory=path.join(root,'canvas','fixture-project');let stopRequests=0;
+  await fs.mkdir(directory,{recursive:true});
+  const {baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/__studio/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({instanceId:'other-canvas',projectId:'fixture-project'}));return;}
+    if(req.url==='/__studio/stop')stopRequests++;
+    res.writeHead(404).end();
+  });
+  await fs.writeFile(path.join(directory,'canvas-instance.json'),JSON.stringify({webUrl:baseUrl,token:'fixture-canvas-token',projectId:'fixture-project',instanceId:'fixture-canvas',pid:process.pid}));
+  await fs.writeFile(path.join(directory,'supervisor.lock'),JSON.stringify({pid:process.pid,instanceId:'fixture-canvas'}));
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  const status=await auxiliaryStatus(root);
+  assert.equal(status.canvasInstances,1);
+  assert.deepEqual(status.instances,[{kind:'canvas',scope:'canvas/fixture-project',state:'unverified',live:true,reason:'identity-mismatch'}]);
+  assert.ok(!JSON.stringify(status).includes('fixture-canvas-token'));
+  await assert.rejects(stopAuxiliary(root),/仍有存活或所有者无法确认/);
+  assert.equal(stopRequests,0);
+});
+
+test('healthy Canvas instance stops through its authenticated supervisor endpoint',async t=>{
+  const {root}=await fixture(t);const directory=path.join(root,'canvas','fixture-project');let stopped=false;
+  await fs.mkdir(directory,{recursive:true});
+  const {server,baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/__studio/health'&&req.headers['x-studio-token']==='fixture-canvas-token'){
+      res.setHeader('content-type','application/json');res.end(JSON.stringify({instanceId:'fixture-canvas',projectId:'fixture-project'}));return;
+    }
+    if(req.url==='/__studio/stop'&&req.headers['x-studio-token']==='fixture-canvas-token'){
+      res.end('stopping');setImmediate(async()=>{
+        stopped=true;
+        await fs.rm(path.join(directory,'canvas-instance.json'),{force:true});
+        await fs.rm(path.join(directory,'supervisor.lock'),{force:true});
+        await new Promise(resolve=>server.close(resolve));
+      });return;
+    }
+    res.writeHead(403).end();
+  });
+  await fs.writeFile(path.join(directory,'canvas-instance.json'),JSON.stringify({webUrl:baseUrl,token:'fixture-canvas-token',projectId:'fixture-project',instanceId:'fixture-canvas',pid:process.pid}));
+  await fs.writeFile(path.join(directory,'supervisor.lock'),JSON.stringify({pid:process.pid,instanceId:'fixture-canvas'}));
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  assert.equal((await auxiliaryStatus(root)).canvasInstances,1);
+  assert.deepEqual(await stopAuxiliary(root),{auxiliaryStopped:1});
+  assert.equal(stopped,true);
+  assert.equal((await auxiliaryStatus(root)).canvasInstances,0);
 });
