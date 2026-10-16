@@ -344,16 +344,16 @@ test('keeps a healthy promoted venv after warmup fails and retries only model wa
   );
   const activePython = pythonInternals.pythonExecutable(paths.venv);
   assert.equal(await fs.readFile(activePython, 'utf8'), 'replacement-environment');
-  assert.equal(await fs.readFile(path.join(paths.venv, 'bin', 'activate'), 'utf8')
+  assert.equal(await fs.readFile(path.join(path.dirname(activePython), 'activate'), 'utf8')
     .then((text) => text.includes(paths.venvStage)), false);
-  assert.equal(await fs.readFile(path.join(paths.venv, 'bin', 'studio-ocr'), 'utf8')
+  assert.equal(await fs.readFile(path.join(path.dirname(activePython), 'studio-ocr'), 'utf8')
     .then((text) => text.includes(paths.venvStage)), false);
   assert.equal(JSON.parse(await fs.readFile(paths.pythonRuntimeState, 'utf8')).status, 'ready');
   assert.equal(JSON.parse(await fs.readFile(paths.pythonState, 'utf8')).status, 'ready');
   assert.equal(JSON.parse(await fs.readFile(paths.modelState, 'utf8')).status, 'failed');
   const backups = await fs.readdir(paths.venvBackups);
   assert.equal(backups.length, 1);
-  assert.equal(await fs.readFile(path.join(paths.venvBackups, backups[0], 'bin', 'python'), 'utf8'), 'old-environment');
+  assert.equal(await fs.readFile(pythonInternals.pythonExecutable(path.join(paths.venvBackups, backups[0])), 'utf8'), 'old-environment');
 
   const retry = await pythonInternals.prepareWithOperations(options, operations);
   assert.equal(retry.skipped, false);

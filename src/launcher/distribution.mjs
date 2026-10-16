@@ -296,7 +296,28 @@ export async function validatePortablePython(root) {
   await stat(venvPython).catch(() => { throw new Error('预构建 Python 虚拟环境缺少运行入口。'); });
   const config = await readFile(path.join(venv, 'pyvenv.cfg'), 'utf8');
   const rootReferences = new Set([path.resolve(root), realRoot]);
-  if ([...rootReferences].some(reference => config.includes(reference))) throw new Error('OCR Python 虚拟环境配置仍引用临时 staging 路径。');
+  const configEntries = config.split(/\r?\n/).flatMap(line => {
+    const separator = line.indexOf('=');
+    return separator < 0 ? [] : [{
+      key: line.slice(0, separator).trim(),
+      value: line.slice(separator + 1).trim(),
+    }];
+  });
+  const configHome = configEntries.find(entry => entry.key === 'home')?.value;
+  if (!configHome || configEntries.find(entry => entry.key === 'relocatable')?.value.toLowerCase() !== 'true') {
+    throw new Error('OCR Python 虚拟环境缺少私有 base 路径或 uv relocatable 标记。');
+  }
+  const realConfigHome = await realpath(path.resolve(configHome)).catch(() => {
+    throw new Error('OCR Python 虚拟环境的 base 路径不存在。');
+  });
+  if (!pathWithin(realPythonHome, realConfigHome)) throw new Error('OCR Python 虚拟环境的 base 路径不在包内私有运行时。');
+  const normalizeReference = value => value.replaceAll('\\', '/').toLowerCase();
+  const referencesStagingPath = value => [...rootReferences].some(reference =>
+    normalizeReference(value).includes(normalizeReference(reference)));
+  const unexpectedReferences = configEntries.filter(entry => entry.key !== 'home' && referencesStagingPath(entry.value));
+  if (unexpectedReferences.length) {
+    throw new Error(`OCR Python 虚拟环境配置含 staging 路径元数据（键：${unexpectedReferences.map(entry => entry.key).join('、')}）。`);
+  }
   const candidates = [path.join(venv, 'lib', 'python3.12', 'site-packages'), path.join(venv, 'Lib', 'site-packages')];
   if (!(await Promise.all(candidates.map(candidate => lstat(candidate).then(info => info.isDirectory(), () => false)))).some(Boolean)) {
     throw new Error('预构建 OCR/workspace Python 依赖中缺少 site-packages。');

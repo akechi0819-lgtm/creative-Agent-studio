@@ -18,7 +18,7 @@ task=await confirmInputs(task.id,{revision:task.revision,by:'测试用户',note:
 task=await setSheet(task.id,{title:'隔离样张',pages:[{page:1,copy:'样张标题',prompt:'白底测试样张',size:'3:4'}]},{root,expectedRevision:task.revision,inputRevision:task.inputConfirmation.revision});
 let referenceTask=await createTask({title:'P5 参考讨论',brief:'讨论与确认参考'},root);
 referenceTask=await setSources(referenceTask.id,[{id:crypto.randomUUID(),type:'external',title:'合成参考',body:'合成测试参考',purpose:'等待选择',factBoundary:'仅参考',decision:'pending'}],{root,expectedRevision:referenceTask.revision});
-const image=await readFile(path.join(repo,'adapters/dsh/connection-check.png'));let nodes=[],connections=[],runs=0;
+const image=await readFile(path.join(repo,'docs/evidence/p0/gpt-image-2.png'));let nodes=[],connections=[],runs=0;
 const canvas={state:async()=>({status:'connected',projectId:'fixture',clientConnected:true}),ensure:async()=>({openUrl:'http://127.0.0.1:1',projectId:'fixture',clientConnected:true}),assertFresh:async()=>{},executionOptions:async()=>({config:{projectId:'fixture',webUrl:'http://fixture',clientId:'fixture'},getHealth:async()=>({targets:[{hasCanvas:true,projectId:'fixture',clientId:'fixture'}]}),tool:async(name,input)=>{
  if(name==='canvas_get_state')return {nodes,connections};
  if(name==='canvas_apply_ops'){nodes.push(...input.ops.filter(op=>op.type==='add_node').map(op=>({id:op.id,type:op.nodeType,metadata:op.metadata})));return {};}

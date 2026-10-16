@@ -7,7 +7,7 @@ import test from 'node:test';
 import {
   RELEASE_TARGETS, assertCleanStatus, assertNativeTarget, copyAllowlistedFiles,
   hashFile, isReleasePathAllowed, materializeBundleSymlinks, normalizeTargetId,
-  writeBundleManifest,
+  validatePortablePython, writeBundleManifest,
 } from '../src/launcher/distribution.mjs';
 
 async function temporaryDirectory() { return mkdtemp(path.join(os.tmpdir(), 'cas-distribution-test-')); }
@@ -110,6 +110,31 @@ test('manifest hashes individual packaged files', async t => {
   const manifest = await writeBundleManifest(fixture, 'darwin-arm64', 'v1.2.3');
   assert.equal(manifest.files[0].sha256, await hashFile(path.join(fixture, 'app.bin')));
   assert.equal(manifest.target, 'darwin-arm64');
+});
+
+test('portable Python validation allows its private base home but rejects other staging metadata', async t => {
+  const root = await temporaryDirectory();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pythonHome = path.join(root, '.studio-runtime/python');
+  const basePrefix = path.join(pythonHome, 'cpython-3.12.15');
+  const baseBin = process.platform === 'win32' ? basePrefix : path.join(basePrefix, 'bin');
+  const basePython = path.join(basePrefix, process.platform === 'win32' ? 'python.exe' : 'bin/python3.12');
+  const venv = path.join(root, '.venv-ocr');
+  const venvPython = path.join(venv, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const sitePackages = path.join(venv, process.platform === 'win32' ? 'Lib/site-packages' : 'lib/python3.12/site-packages');
+  await mkdir(baseBin, { recursive: true });
+  await writeFile(basePython, 'fixture-python');
+  await mkdir(path.dirname(venvPython), { recursive: true });
+  await writeFile(venvPython, 'fixture-venv-python');
+  await mkdir(sitePackages, { recursive: true });
+  const statePath = path.join(root, '.studio-runtime/python-runtime-state.json');
+  await writeFile(statePath, JSON.stringify({ status: 'ready', runtimeSource: 'project-managed-python', basePrefix }));
+  const configPath = path.join(venv, 'pyvenv.cfg');
+  await writeFile(configPath, `home = ${baseBin}\nrelocatable = true\n`);
+
+  await assert.doesNotReject(validatePortablePython(root), 'the bundled base home is an expected staging path');
+  await writeFile(configPath, `home = ${baseBin}\nrelocatable = true\ncommand = uv venv ${root}\n`);
+  await assert.rejects(validatePortablePython(root), /键：command/);
 });
 
 test('compiled macOS launcher points to the native bundled Node path without opening its GUI', async t => {
