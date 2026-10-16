@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'node:test';
 import { checkDependencyGroup } from '../src/launcher/dependencies.mjs';
 
@@ -166,4 +167,50 @@ test('requires npm lockfile version 3', async () => {
   const result = await checkDependencyGroup({ cwd });
   assert.equal(result.ready, false);
   assert.match(result.reason, /lockfileVersion 3/i);
+});
+
+test('probes the locked esbuild runtime through its platform-aware API', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'studio-esbuild-dependencies-'));
+  fixtures.add(cwd);
+
+  const projectRoot = fileURLToPath(new URL('../', import.meta.url));
+  const sourceLock = JSON.parse(await readFile(path.join(projectRoot, 'package-lock.json'), 'utf8'));
+  const esbuildLock = sourceLock.packages['node_modules/esbuild'];
+  assert.ok(esbuildLock, 'project lockfile includes esbuild');
+  const version = esbuildLock.version;
+  const rootPackage = {
+    name: 'esbuild-dependency-fixture',
+    version: '1.0.0',
+    dependencies: { esbuild: version },
+  };
+  const packages = {
+    '': { ...rootPackage },
+    'node_modules/esbuild': esbuildLock,
+  };
+  const installed = path.join(cwd, 'node_modules');
+  await mkdir(installed, { recursive: true });
+  await cp(path.join(projectRoot, 'node_modules', 'esbuild'), path.join(installed, 'esbuild'), { recursive: true });
+
+  for (const [location, metadata] of Object.entries(sourceLock.packages)) {
+    if (!location.startsWith('node_modules/@esbuild/')) continue;
+    packages[location] = metadata;
+    const sourcePath = path.join(projectRoot, location);
+    try {
+      await cp(sourcePath, path.join(cwd, location), { recursive: true, errorOnExist: true });
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+
+  await writeFile(path.join(cwd, 'package.json'), JSON.stringify(rootPackage));
+  await writeFile(path.join(cwd, 'package-lock.json'), JSON.stringify({
+    name: rootPackage.name,
+    version: rootPackage.version,
+    lockfileVersion: 3,
+    requires: true,
+    packages,
+  }));
+
+  const result = await checkDependencyGroup({ cwd });
+  assert.equal(result.ready, true, result.reason);
 });

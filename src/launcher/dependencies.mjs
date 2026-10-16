@@ -331,6 +331,7 @@ for (const entry of entries) {
   if (entry.name === 'esbuild') {
     const transformSync = module.transformSync ?? module.default?.transformSync;
     if (typeof transformSync !== 'function') throw new Error('esbuild transformSync API unavailable');
+    // This supported API selects and runs esbuild's platform-specific binary.
     const result = transformSync('const x=1');
     if (!result.code?.includes('const x')) throw new Error('esbuild transformSync returned invalid output');
   }
