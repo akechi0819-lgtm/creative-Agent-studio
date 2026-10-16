@@ -8,6 +8,20 @@ $ProgressPreference = 'SilentlyContinue'
 $PinnedVersion = '22.23.3'
 $RuntimeRoot = Join-Path $Root '.studio-runtime\node'
 
+function Get-Sha256Hex([string] $Path) {
+  $Algorithm = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $Stream = [System.IO.File]::OpenRead($Path)
+    try {
+      return [System.BitConverter]::ToString($Algorithm.ComputeHash($Stream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+      $Stream.Dispose()
+    }
+  } finally {
+    $Algorithm.Dispose()
+  }
+}
+
 function Test-SupportedNode([string] $NodePath) {
   if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) { return $false }
   & $NodePath -e 'const version = process.versions.node; const [major, minor] = version.split(/\./).map(Number); process.exit(/^\d+\.\d+\.\d+$/.test(version) && ((major === 22 && minor >= 19) || major >= 24) ? 0 : 1)' *> $null
@@ -75,11 +89,12 @@ try {
       Start-Sleep -Seconds $attempt
     }
   }
-  $ActualSha256 = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $ActualSha256 = Get-Sha256Hex $ArchivePath
   if ($ActualSha256 -ne $ExpectedSha256) {
     throw "Node.js archive checksum mismatch: expected $ExpectedSha256, received $ActualSha256"
   }
-  Expand-Archive -LiteralPath $ArchivePath -DestinationPath $Extracted -Force
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $Extracted)
   $ExpandedRoot = Join-Path $Extracted "node-v$PinnedVersion-$NodeArchitecture"
   if (-not (Test-Path -LiteralPath (Join-Path $ExpandedRoot 'node.exe'))) {
     throw 'The verified Node.js archive did not contain node.exe.'
