@@ -314,26 +314,8 @@ async function nativeModuleEntries(actualTree) {
   return entries;
 }
 
-async function esbuildBinaries(actualTree) {
-  const bins = [];
-  for (const node of actualTree.inventory.values()) {
-    if (node.isRoot || node.isLink || node.name !== 'esbuild' || node.location !== 'node_modules/esbuild') continue;
-    let packageJson;
-    try {
-      packageJson = await installedManifest(node);
-    } catch {
-      continue;
-    }
-    const bin = typeof packageJson.bin === 'string'
-      ? packageJson.bin
-      : packageJson.bin?.esbuild;
-    if (typeof bin === 'string') bins.push(path.resolve(node.realpath ?? node.path, bin));
-  }
-  return bins;
-}
-
-function runRuntimeProbes({ nodePath, cwd, nativeEntries, esbuildPaths }) {
-  if (!nativeEntries.length && !esbuildPaths.length) return null;
+function runRuntimeProbes({ nodePath, cwd, nativeEntries }) {
+  if (!nativeEntries.length) return null;
   const nativeProbe = String.raw`
 import { pathToFileURL } from 'node:url';
 const entries = JSON.parse(process.env.STUDIO_DEPENDENCY_NATIVE_ENTRIES || '[]');
@@ -366,17 +348,6 @@ for (const entry of entries) {
     return `native runtime probe failed for ${names || 'a locked native dependency'}`;
   }
 
-  for (const binary of esbuildPaths) {
-    const executable = process.platform === 'win32' ? `${binary}.exe` : binary;
-    const result = spawnSync(executable, ['--version'], {
-      cwd,
-      encoding: 'utf8',
-      timeout: 15_000,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    if (result.error || result.status !== 0) return 'the locked esbuild executable is unavailable';
-  }
   return null;
 }
 
@@ -438,7 +409,6 @@ export async function checkDependencyGroup({ cwd, root, nodePath = process.execP
       nodePath,
       cwd: dependencyRoot,
       nativeEntries: await nativeModuleEntries(actualTree),
-      esbuildPaths: await esbuildBinaries(actualTree),
     });
     if (probeFailure) return notReady(probeFailure);
 

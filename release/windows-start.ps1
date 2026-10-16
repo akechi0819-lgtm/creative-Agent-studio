@@ -23,7 +23,11 @@ try {
   $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
   $form.ControlBox = $false
   $label = New-Object System.Windows.Forms.Label
-  $label.Text = "正在检查随包运行时并启动工作台，请稍候…"
+  $label.Text = if ($action -eq "start") {
+    "正在检查随包运行时并启动工作台，请稍候…"
+  } else {
+    "正在停止工作台及已识别的本机服务，请稍候…"
+  }
   $label.AutoSize = $false
   $label.Left = 18
   $label.Top = 18
@@ -39,7 +43,6 @@ try {
   $progress.Height = 20
   $form.Controls.Add($progress)
 
-  $buffer = [hashtable]::Synchronized(@{ Out = ""; Err = "" })
   $processInfo = New-Object System.Diagnostics.ProcessStartInfo
   $processInfo.FileName = $nodePath
   $processInfo.Arguments = ('"{0}" {1}' -f $launcherPath, $action)
@@ -48,15 +51,13 @@ try {
   $processInfo.CreateNoWindow = $true
   $processInfo.RedirectStandardOutput = $true
   $processInfo.RedirectStandardError = $true
+  $processInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $processInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
   $process = New-Object System.Diagnostics.Process
   $process.StartInfo = $processInfo
-  $stdoutHandler = [System.Diagnostics.DataReceivedEventHandler]{ param($sender, $eventArgs) if ($eventArgs.Data) { $buffer.Out += $eventArgs.Data + [Environment]::NewLine } }
-  $stderrHandler = [System.Diagnostics.DataReceivedEventHandler]{ param($sender, $eventArgs) if ($eventArgs.Data) { $buffer.Err += $eventArgs.Data + [Environment]::NewLine } }
-  $process.add_OutputDataReceived($stdoutHandler)
-  $process.add_ErrorDataReceived($stderrHandler)
   if (-not $process.Start()) { throw "无法启动包内 Node.js。" }
-  $process.BeginOutputReadLine()
-  $process.BeginErrorReadLine()
+  $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+  $stderrTask = $process.StandardError.ReadToEndAsync()
   $form.Show()
   while (-not $process.HasExited) {
     [System.Windows.Forms.Application]::DoEvents()
@@ -65,7 +66,9 @@ try {
   $process.WaitForExit()
   $form.Close()
   $exitCode = $process.ExitCode
-  $output = ($buffer.Out + $buffer.Err).Trim()
+  $stdout = $stdoutTask.GetAwaiter().GetResult()
+  $stderr = $stderrTask.GetAwaiter().GetResult()
+  $output = ($stdout + [Environment]::NewLine + $stderr).Trim()
   $process.Dispose()
   $icon = if ($exitCode -eq 0) { [System.Windows.Forms.MessageBoxIcon]::Information } else { [System.Windows.Forms.MessageBoxIcon]::Warning }
   $title = if ($exitCode -eq 0) { "Creative Agent Studio" } else { "操作未完成" }

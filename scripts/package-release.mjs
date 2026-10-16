@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createWriteStream } from 'node:fs';
-import { access, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -302,8 +302,14 @@ async function makeMacApp(stage, target) {
 
 async function makeWindowsEntry(stage) {
   await copyFile(path.join(stage, 'release/windows-start.vbs'), path.join(stage, 'Start.vbs'));
-  const powershell = await readFile(path.join(stage, 'release/windows-start.ps1'), 'utf8');
+  const scriptPath = path.join(stage, 'release/windows-start.ps1');
+  const powershell = (await readFile(scriptPath, 'utf8')).replace(/^\uFEFF/u, '');
   if (!powershell.includes('node-v22.23.3-win-x64\\node.exe')) throw new Error('Windows 图形启动器未指向随包 Node。');
+  // Windows PowerShell 5.1 needs a BOM to decode Chinese source as UTF-8.
+  await writeFile(scriptPath, `\uFEFF${powershell}`, 'utf8');
+  run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$tokens=$null; $errors=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:CAS_LAUNCHER_SCRIPT,[ref]$tokens,[ref]$errors); if($errors.Count){throw ($errors | Out-String)}'], {
+    env: {...process.env, CAS_LAUNCHER_SCRIPT:scriptPath},
+  });
 }
 
 async function relocatedRuntimeSmoke(stage, target) {
@@ -467,7 +473,6 @@ async function build(options) {
   const rootName = `Creative-Agent-Studio-${options.version}-${targetId}`;
   let stage = path.join(parent, rootName);
   let relocationRoot;
-  await mkdir(stage);
   try {
     const selected = await copyAllowlistedFiles(source, stage, trackedFiles(source));
     process.stdout.write(`按 allowlist 复制 ${selected.length} 个已跟踪源文件。\n`);
