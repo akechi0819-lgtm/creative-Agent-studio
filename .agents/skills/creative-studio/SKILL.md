@@ -1,9 +1,9 @@
 ---
 name: creative-studio
-description: 在本仓库使用共享 CLI 完成经用户确认的单张海报或多页图文任务；P1、P2 与 P3 已按各自授权范围独立复验通过，完整首版安装交付仍未完成。
+description: 在本仓库使用共享 CLI 完成经用户确认的单张海报或多页图文任务；P1 至 P4 已按各自授权范围独立复验通过；普通用户设备体验和上游模型能力按证据范围记录。
 ---
 
-先读 `docs/Codex使用.md`，需要了解当前阶段边界时读 `docs/工程进度.md`。P1、P2 已按授权范围独立复验通过；P3 于 2026-10-16 按已授权源码及本机集成范围独立复验通过，详见 `docs/P3最终独立复验.md`。早期审查与返工记录仍保留，但不代表当前待修状态。真实远端 AI 改图效果和 WorkBuddy 实际能力未验证或未通过，不作为已通过能力。P3 通过不代表完整首版交付：P4 跨平台本地 Web 交付已获授权施工；当前实现与实测边界见 `docs/P4实施与验证.md`，施工自验不代替独立验收。首次准备使用 `node scripts/prepare.mjs`，不启动 DSH。Codex 路径使用本地 Canvas，不启动 DSH，不调用 `codex exec`，也不召唤 Agent。
+先读 `docs/Codex使用.md`，需要了解当前阶段边界时读 `docs/工程进度.md`。P1、P2 已按授权范围独立复验通过；P3 于 2026-10-16 按已授权源码及本机集成范围独立复验通过，详见 `docs/P3最终独立复验.md`。早期审查与返工记录仍保留，但不代表当前待修状态。真实远端 AI 改图效果和 WorkBuddy 实际能力未验证或未通过，不作为已通过能力。P4 已按跨平台本地 Web 源码交付、macOS 隔离运行及 Windows CI 范围独立复验通过，当前结论与未测边界见 `docs/P4最终独立复验.md`。首次准备使用 `node scripts/prepare.mjs`，不启动 DSH。Codex 路径使用本地 Canvas，不启动 DSH，不调用 `codex exec`，也不召唤 Agent。
 
 Codex 入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过 `@payload.json` 文件提供，不要把 JSON 内嵌到 shell 命令。先用 `list` 或 `show TASK_ID` 恢复任务；确认成功后再执行状态变更。基本链路为：
 

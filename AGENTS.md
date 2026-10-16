@@ -1,6 +1,6 @@
 # AGENTS.md
 
-**2026-10-16 P4 小范围返工：透明 PNG 二维码检测、异常存活配套服务状态已修正，本机与 Windows 自验通过，待主审独立复验；未标全部通过。** 首轮发现保留于 [P4独立验收](docs/P4独立验收.md)，最新证据见 [P4返工与自验证](docs/P4返工与自验证.md)。
+**2026-10-16 P4 最终独立复验通过：跨平台本地 Web 源码交付、macOS 隔离运行和 Windows Actions 按授权范围通过。** 两项首轮必修已关闭，229/229 测试、真实浏览器及用户数据完整性核对通过；普通设备双击体验与既有上游限制单独记录。最新结论见 [P4最终独立复验](docs/P4最终独立复验.md)。
 
 - Choose the simplest modular implementation that meets current requirements. Avoid speculative abstractions and throwaway workarounds.
 - Build incrementally from the smallest working end-to-end version. Never replace a working product with unfinished complexity.
@@ -12,7 +12,7 @@
 
 ## 本仓库边界
 
-产品范围以 PRD 为准，施工顺序以开发与施工计划为准。P0 已独立验收通过；P1 返工后已独立复验通过，按阶段范围验收通过；P2 已于 2026-10-14 获用户明确施工批准并按阶段范围独立复验通过，范围为总库自由标签、模型清洗后人工微调确认入库、默认关闭的全局 DNA；原标签清洗竞态及最新结果见 `docs/P2独立验收.md`。P3 于 2026-10-16 按已授权源码及本机集成范围独立复验通过。主审独立重跑 206 项测试、原两种审核顺序恢复案例及归档正确预期流程；CUA 隔离点验关闭版 DNA 应用、无重复草稿确认、已选参考时一次继续、Job 运行中可编辑本地草稿但不能发送。在线 HTTP JavaScript 哈希 `d250bb…` 与 349,851 字节验证构建一致。361 个受保护文件中 359 个未变；变化限 `conversation.json` 和 `operations.json`。85 份旧源、9 张历史图及现存 ZIP 的 24 个 CRC 和 23 个 manifest 文件哈希已核对。首次审查与返工历史保留，最新结论见 `docs/P3最终独立复验.md`。远端 AI 改图效果与 WorkBuddy 实际能力等历史限制未验证或未通过，不作为已通过项；DNA 草稿整理可能覆盖编辑区为非阻断体验观察，见最终报告，不新增阶段门槛。用户已于 2026-10-16 授权启动 P4；P4 主体链路已独立复核，两项必修已返工并自验，待主审独立复验，目标为 GitHub 仓库内跨平台本地 Web 交付，不要求 macOS 原生 App、DMG 或 PKG。Mac `.command` 与 Windows `.cmd` 为共享逻辑的薄入口；P4 还覆盖首次依赖准备、构建、Canvas／插件服务管理、首次配置、备份更新、跨平台区域检测及 Windows Actions 真 runner 回归。CI 不等于 Windows 实机或普通用户双击体验验证。不能把 P3 通过当作完整首版交付；阶段状态和进度见 `docs/工程进度.md` 与 `开发与施工计划.md`。
+产品范围以 PRD 为准，施工顺序以开发与施工计划为准。P0 已独立验收通过；P1 返工后已独立复验通过，按阶段范围验收通过；P2 已于 2026-10-14 获用户明确施工批准并按阶段范围独立复验通过，范围为总库自由标签、模型清洗后人工微调确认入库、默认关闭的全局 DNA；原标签清洗竞态及最新结果见 `docs/P2独立验收.md`。P3 于 2026-10-16 按已授权源码及本机集成范围独立复验通过。主审独立重跑 206 项测试、原两种审核顺序恢复案例及归档正确预期流程；CUA 隔离点验关闭版 DNA 应用、无重复草稿确认、已选参考时一次继续、Job 运行中可编辑本地草稿但不能发送。在线 HTTP JavaScript 哈希 `d250bb…` 与 349,851 字节验证构建一致。361 个受保护文件中 359 个未变；变化限 `conversation.json` 和 `operations.json`。85 份旧源、9 张历史图及现存 ZIP 的 24 个 CRC 和 23 个 manifest 文件哈希已核对。首次审查与返工历史保留，最新结论见 `docs/P3最终独立复验.md`。远端 AI 改图效果与 WorkBuddy 实际能力等历史限制未验证或未通过，不作为已通过项；DNA 草稿整理可能覆盖编辑区为非阻断体验观察，见最终报告，不新增阶段门槛。用户已于 2026-10-16 授权启动 P4；P4 已按跨平台本地 Web 交付范围独立复验通过，两项首轮必修已关闭，目标为 GitHub 仓库内跨平台本地 Web 交付，不要求 macOS 原生 App、DMG 或 PKG。Mac `.command` 与 Windows `.cmd` 为共享逻辑的薄入口；P4 还覆盖首次依赖准备、构建、Canvas／插件服务管理、首次配置、备份更新、跨平台区域检测及 Windows Actions 真 runner 回归。CI 不等于 Windows 实机或普通用户双击体验验证。不能把 P3 通过当作完整首版交付；阶段状态和进度见 `docs/工程进度.md` 与 `开发与施工计划.md`。
 
 P4 边界：只替换 Swift／Vision 区域检测依赖，保留现有跨平台浏览器裁切、分割、拼贴等像素工具；候选库先经代表性样例精度核验再选。Windows 设备暂不可用不阻断其他施工，也不宣称实机通过。WorkBuddy 可辅助部署诊断，不要求用户自行改源码。Web DSH 与 Codex CLI／Skill 分离，Codex 不启动 DSH，Canvas 不召唤 Agent；避免重复确认和过量护栏。旧 RAG-Yuki、旧 Canvas、全局客户端配置只读。用户已于本轮明确授权使用 GitHub 账号创建公开仓库 `creative-Agent-studio`，检查源码与历史后上传并运行 Windows CI；这只授权公开源码，不部署公网服务。验证优先使用隔离夹具和已有证据，不重放历史付费任务；若确需新增真实付费验证，先说明测试内容和成本，不以此阻断无关施工。
 

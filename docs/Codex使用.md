@@ -1,12 +1,39 @@
 # Codex 创作入口
 
-首次准备使用 `node scripts/prepare.mjs` 或双平台入口菜单；该命令只准备依赖与构建，不启动 Web DSH。数据和维护见 [本地 Web 使用与维护](本地Web交付.md)。
+在本地 Codex 中打开下载或克隆的仓库根目录，让当前 Codex 会话通过项目 Skill 和共享 CLI 创作。日常创作不启动 DSH，不调用 `codex exec`；Canvas 按任务独立打开。两个入口的区别见 [README](../README.md)。
 
-2026-10-15 新增受限局部修改入口：用户明确要求修改已有图片时，调用 `edit-pages TASK_ID @payload.json`，不重新走完整素材与制作单确认；恢复单页使用 `restore-page`。首轮完整创作仍按原确认流程。参数、真实原图传递、审核与授权边界见 [对话局部改图](P3对话局部改图.md) 及项目 Skill。
+## 新用户首次使用
 
-**当前状态：P1 返工后已独立复验通过，按阶段范围验收通过。** 返工合同测试 32/32 通过，历史完整性核验确认 19 个原文件哈希一致；未发起收费请求，未修改真实任务或两份历史 ZIP。见 [返工合同测试日志](evidence/p1-rework/contract-tests.log)、[历史完整性回执](evidence/p1-rework/history-integrity.json)、[实施线程记录](P1验收.md) 与 [独立验收记录](P1独立验收.md)。
+1. 从 [GitHub 仓库](https://github.com/akechi0819-lgtm/creative-Agent-studio) 下载 ZIP 并完整解压，或用 Git 克隆；在本地 Codex 中选择包含 `AGENTS.md` 和 `package.json` 的根目录。仅把仓库链接交给无本机执行环境的云端聊天，不会启动你电脑上的 Canvas。
+2. 准备运行依赖。可让 Codex 读取 README 后执行以下对应平台命令，也可自己在仓库终端执行。两条命令只安装和构建，不启动 Web DSH；系统没有合格 Node 时会准备项目私有运行时。
 
-这不代表完整首版或独立 Studio 已交付。P2 本地素材库与 DNA 共享核心及标签清洗冲突修复已独立复验通过（59/59 测试、四种额外并发夹具、206 文件完整性未变），按阶段范围验收，见 [P2独立验收](P2独立验收.md)；P3 Web UI 与创作链路已完成实施自验，仍待独立验收；P4 macOS 安装与完整验收尚未授权。每项新创作仍须取得用户对需求与来源、制作单版本及最终成品的明确确认；本次验收的批准不适用于后续任务。
+   macOS：
+
+   ```sh
+   ./Start.command prepare
+   ```
+
+   Windows PowerShell：
+
+   ```powershell
+   .\Start.cmd prepare
+   ```
+
+   Mac ZIP 解压后如提示无执行权限，在仓库目录执行一次 `chmod +x Start.command scripts/bootstrap-node.sh`；首次准备需要联网，耗时由网络决定。不要只运行 `node scripts/prepare.mjs` 并假设新设备已经有 Node；该命令适合已有合格 Node 的环境。
+3. 首次填写产品生图服务配置。当前可双击平台启动入口，在 Web 的“模型与服务”设置中填写并保存；需要显式素材 AI 清洗时也配置基础 API。配置后在启动菜单选择 `2 停止服务`，再回到 Codex 创作。网页设置是独立入口的配置操作；之后 Codex 的对话推理由宿主承担，日常创作无需保持 Web DSH 运行，也无需给 Codex 更换基础模型。
+4. 在 Codex 输入自然语言需求，例如：
+
+   ```text
+   请读取 AGENTS.md 和 .agents/skills/creative-studio/SKILL.md，使用本项目共享 CLI 帮我制作一组 3 页图文。
+   主题是家长陪练，受众是小学家长；先和我确认内容与参考，再整理制作单。
+   我使用 Codex 入口，不启动 Web DSH。需要我配置生图服务时，请告诉我设置位置。
+   ```
+
+Codex CLI／IDE 可用 `$creative-studio` 显式选择本项目 Skill，也可以直接用上述自然语言。项目 Skill 位于 `.agents/skills/creative-studio/`，无需复制到全局目录；具体发现和调用规则见 [OpenAI 官方 Skills 文档](https://learn.chatgpt.com/docs/build-skills)。如果当前客户端没有列出技能，可让它直接读取上述 `SKILL.md`，按文档执行；必要时重新打开项目会话。普通用户不需要手工填写下面的 CLI payload，它们供宿主 Agent 和开发者使用。
+
+首次完整创作会确认需求与来源、制作单和最终成品。用户明确要求修改已有图片时，使用 `edit-pages` 做局部修改，恢复单页用 `restore-page`，无需重走整套新创作流程；见 [对话局部改图](P3对话局部改图.md)。
+
+P0 至 P4 已按各自授权范围独立验收或复验；最新交付与未测边界见 [P4最终独立复验](P4最终独立复验.md)。普通设备双击体验和上游模型能力按实际证据记录，不把阶段通过当成任意来源或场景的效果承诺。
 
 ## 运行边界与数据位置
 
