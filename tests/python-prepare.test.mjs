@@ -55,17 +55,17 @@ async function writeModels(modelRoot) {
 }
 
 function findMarkerTestPython() {
-  const candidates = process.platform === 'win32'
+  const candidates = [...(process.env.STUDIO_OCR_PYTHON ? [{ command: process.env.STUDIO_OCR_PYTHON, prefix: [] }] : []), ...(process.platform === 'win32'
     ? [{ command: 'py', prefix: ['-3.12'] }, { command: 'python3.12', prefix: [] }]
-    : [{ command: 'python3.12', prefix: [] }, { command: 'python3', prefix: [] }];
-  const probe = 'import importlib.util, json, sys; print(json.dumps({"version": list(sys.version_info[:2]), "platform": sys.platform, "packaging": importlib.util.find_spec("packaging") is not None}))';
+    : [{ command: 'python3.12', prefix: [] }, { command: 'python3', prefix: [] }])];
+  const probe = 'import importlib.util, json, sys; print(json.dumps({"version": list(sys.version_info[:2]), "platform": sys.platform, "venv": sys.prefix, "packaging": importlib.util.find_spec("packaging") is not None}))';
   for (const candidate of candidates) {
     const result = spawnSync(candidate.command, [...candidate.prefix, '-c', probe], { encoding: 'utf8', timeout: 20_000 });
     if (result.status !== 0) continue;
     try {
       const identity = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
       if (identity.version?.[0] === 3 && identity.version?.[1] === 12 && identity.packaging) {
-        return { ...candidate, platform: identity.platform };
+        return { ...candidate, platform: identity.platform, venv: identity.venv };
       }
     } catch { /* Continue through the available Python 3.12 launchers. */ }
   }
@@ -318,9 +318,6 @@ test('lock parser covers transitive pinned packages and rejects direct lock drif
 
 test('does not require an installed package whose PEP 508 marker is false', { skip: !markerTestPython }, async (t) => {
   const { root, paths } = await makeFixture(t, { python: false, models: false });
-  const pythonArgs = [...markerTestPython.prefix, '-m', 'venv', '--system-site-packages', paths.venv];
-  const creation = spawnSync(markerTestPython.command, pythonArgs, { encoding: 'utf8', timeout: 60_000 });
-  assert.equal(creation.status, 0, creation.stderr || 'could not create isolated Python 3.12 venv');
 
   const spec = {
     packages: {
@@ -328,9 +325,30 @@ test('does not require an installed package whose PEP 508 marker is false', { sk
     },
     imports: [],
   };
-  const health = await pythonInternals.inspectPython(pythonInternals.pythonExecutable(paths.venv), paths, spec);
+  const probe = spawnSync(markerTestPython.command, [...markerTestPython.prefix, '-c', 'import sys; print(sys.executable)'], {encoding:'utf8'});
+  assert.equal(probe.status, 0);
+  const health = await pythonInternals.inspectPython(probe.stdout.trim(), {...paths,venv:markerTestPython.venv}, spec);
   assert.equal(health.runtimeHealthy, true);
   assert.equal(health.dependenciesHealthy, true);
   assert.deepEqual(health.versions, {});
   assert.equal(health.ready, true);
+});
+
+test('does not report ready for a dependency lock edited during model preparation', async t => {
+  const {root,paths}=await makeFixture(t);
+  let edited=false;
+  const operations={
+    inspectPython:async(_python,candidatePaths)=>readyHealth(paths,candidatePaths),
+    resolveUv:async()=>{throw new Error('existing dependencies must not be reinstalled');},
+    warmOcr:async(_python,modelRoot)=>{
+      await writeModels(modelRoot);
+      if(!edited){edited=true;await fs.writeFile(paths.lock,LOCK.replace('numpy==2.2.0','numpy==2.2.1'));}
+      return {blankText:'',sampleText:'SAMPLE'};
+    },
+  };
+  await assert.rejects(pythonInternals.prepareWithOperations({root},operations),/依赖清单在准备期间变化/);
+  assert.equal(await fs.readFile(pythonInternals.pythonExecutable(paths.venv),'utf8'),'fixture-python');
+  const result=await pythonInternals.prepareWithOperations({root},operations);
+  assert.equal(result.pythonVersion,'3.12.0');
+  assert.equal(JSON.parse(await fs.readFile(paths.pythonState,'utf8')).status,'ready');
 });

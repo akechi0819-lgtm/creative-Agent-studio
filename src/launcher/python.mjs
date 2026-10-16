@@ -737,6 +737,9 @@ async function preparePythonCore({ root, onProgress = () => {}, nodePath = proce
       changed = true;
     }
 
+    if (await fingerprint(paths) !== digest) {
+      throw new Error('OCR 依赖清单在准备期间变化；保留已完成环境，下次只重新检查 OCR。');
+    }
     report(onProgress, changed ? 'ready' : 'skip', changed
       ? '项目私有 OCR Python、锁定依赖与已验证 RapidOCR 模型缓存就绪。'
       : '项目私有 OCR Python、锁定依赖与已验证 RapidOCR 模型缓存均已就绪。');

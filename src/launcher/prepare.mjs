@@ -1,58 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { preparePython } from './python.mjs';
+import { checkDependencyGroup } from './dependencies.mjs';
+import { buildTargets, captureBuildInputs, inspectBuildOutputs, canAdoptBuild } from './builds.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const lockInputs = [
-  'package.json',
-  'package-lock.json',
-  'third_party/canvas/canvas-agent/package.json',
-  'third_party/canvas/canvas-agent/package-lock.json',
-  'third_party/canvas/web/package.json',
-  'third_party/canvas/web/package-lock.json',
-  'adapters/dsh/package.json',
-  'adapters/dsh/package-lock.json',
-  'scripts/build-web.mjs',
-  'scripts/build-workbuddy-plugin.mjs',
-  'scripts/dsh-p0-build-client.mjs',
-  'scripts/requirements-cleaner-ocr.txt',
-  'scripts/requirements-cleaner-ocr.lock.txt',
-  'scripts/ocr_materials.py',
-  'third_party/our-free-model/workbuddy/upstream-business.mjs',
-];
-const sourceRoots = [
-  'src',
-  'web',
-  'third_party/canvas/canvas-agent',
-  'third_party/canvas/web',
-  'adapters/dsh',
-  'third_party/our-free-model/workbuddy',
-];
-const npmTargets = [
-  '.',
-  'third_party/canvas/canvas-agent',
-  'third_party/canvas/web',
-  'adapters/dsh',
-];
-const buildTargets = [
-  { cwd: '.', args: ['run', 'web:build'], label: 'Studio Web' },
-  { cwd: 'third_party/canvas/canvas-agent', args: ['run', 'build'], label: 'Canvas Agent' },
-  { cwd: 'third_party/canvas/web', args: ['run', 'build'], label: 'Canvas Web' },
-  { cwd: 'adapters/dsh', args: ['run', 'p0:client:build'], label: 'DSH client' },
-];
-const requiredOutputs = [
-  'web/dist/index.html',
-  'web/dist/assets/app.js',
-  'third_party/canvas/canvas-agent/dist/index.js',
-  'third_party/canvas/web/dist/index.html',
-  'adapters/dsh/lib/client.js',
-  'third_party/our-free-model/workbuddy/runtime.mjs',
-];
+const npmTargets = ['.', 'third_party/canvas/canvas-agent', 'third_party/canvas/web', 'adapters/dsh'];
 
 function resolveNpmCli(nodePath) {
   const executableDirs = new Set([path.dirname(nodePath), path.dirname(process.execPath)]);
@@ -67,52 +25,6 @@ function resolveNpmCli(nodePath) {
     if (match) return match;
   }
   return null;
-}
-
-async function listSourceFiles(root, relativeDirectory) {
-  const files = [];
-  async function visit(relativePath) {
-    const absolutePath = path.join(root, relativePath);
-    let entries;
-    try {
-      entries = await readdir(absolutePath, { withFileTypes: true });
-    } catch (error) {
-      if (error.code === 'ENOENT') return;
-      throw error;
-    }
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const childPath = path.posix.join(relativePath.replaceAll(path.sep, '/'), entry.name);
-      if (entry.isDirectory()) {
-        if (['node_modules', 'dist', '.git', '.studio-runtime'].includes(entry.name)) continue;
-        if (childPath === 'adapters/dsh/lib') continue;
-        await visit(childPath.split('/').join(path.sep));
-      } else if (entry.isFile()) {
-        if (childPath === 'third_party/our-free-model/workbuddy/runtime.mjs') continue;
-        files.push(childPath);
-      }
-    }
-  }
-  await visit(relativeDirectory);
-  return files;
-}
-
-async function fingerprint(root) {
-  const hash = createHash('sha256');
-  let sourceFileCount = 0;
-  for (const file of lockInputs) {
-    const bytes = await readFile(path.join(root, file));
-    hash.update(file).update('\0').update(bytes).update('\0');
-  }
-  for (const sourceRoot of sourceRoots) {
-    const files = await listSourceFiles(root, sourceRoot);
-    sourceFileCount += files.length;
-    for (const file of files) {
-      const bytes = await readFile(path.join(root, file));
-      hash.update(file).update('\0').update(bytes).update('\0');
-    }
-  }
-  return { value: hash.digest('hex'), sourceFileCount };
 }
 
 function prependPath(nodePath) {
@@ -241,137 +153,146 @@ async function acquirePrepareLock(root, onProgress) {
   };
 }
 
-async function outputsExist(root) {
-  for (const relativePath of requiredOutputs) {
-    try {
-      const info = await stat(path.join(root, relativePath));
-      if (!info.isFile() || info.size === 0) return false;
-    } catch {
-      return false;
-    }
+async function dependencyFingerprint(cwd) {
+  const hash = createHash('sha256');
+  for (const name of ['package.json', 'package-lock.json']) {
+    hash.update(name).update('\0').update(await readFile(path.join(cwd, name))).update('\0');
   }
-  for (const target of npmTargets) {
-    if (!existsSync(path.join(root, target, 'node_modules'))) return false;
-  }
-  const pythonRelative = process.platform === 'win32' ? '.venv-ocr/Scripts/python.exe' : '.venv-ocr/bin/python';
-  try {
-    const pythonInfo = await stat(path.join(root, pythonRelative));
-    const pythonState = JSON.parse(await readFile(path.join(root, '.studio-runtime', 'python-state.json'), 'utf8'));
-    if (!pythonInfo.isFile() || pythonState.status !== 'ready') return false;
-  } catch {
-    return false;
-  }
-  return true;
+  return hash.digest('hex');
 }
 
-/** Prepare locked dependencies and build outputs. Launcher `update` passes force=true. */
+const outputManifest = outputs => outputs.files.map(({path, sha256, size}) => ({path, sha256, size}));
+const sameOutputs = (saved, current) => JSON.stringify(saved) === JSON.stringify(outputManifest(current));
+
+/** Validate each installed group independently. force rebuilds outputs, never healthy dependencies. */
 export async function prepareWorkspace({
   root = projectRoot,
   nodePath = process.execPath,
   npmPath,
   force = false,
   onProgress = () => {},
+  operations = {},
 } = {}) {
   root = path.resolve(root);
   nodePath = path.resolve(nodePath);
   const statePath = path.join(root, '.studio-runtime', 'prepare-state.json');
-  const { value: lockFingerprint, sourceFileCount } = await fingerprint(root);
-  const runtimeVersion = process.versions.node;
-  const activeNpmCli = npmPath ? path.resolve(npmPath) : resolveNpmCli(nodePath);
-  let previousState;
-
-  try {
-    previousState = JSON.parse(await readFile(statePath, 'utf8'));
-  } catch {
-    previousState = null;
-  }
-
+  const npmCli = npmPath ? path.resolve(npmPath) : resolveNpmCli(nodePath);
+  const env = prependPath(nodePath);
+  const checkDependencies = operations.checkDependencies || checkDependencyGroup;
+  const npm = operations.npm || ((args, cwd) => runNpm(nodePath, npmCli, args, cwd, env));
+  const node = operations.node || ((args, cwd) => runNode(nodePath, args, cwd, env));
+  const python = operations.python || preparePython;
   const releaseLock = await acquirePrepareLock(root, onProgress);
+  let state;
+  let activeStep;
+  const actions = { dependenciesInstalled: [], dependenciesReused: [], buildsRun: [], buildsReused: [] };
+  const ensureOffline = async () => {
+    const active = await liveServer(root);
+    if (active) throw new Error(`同一源码目录已有工作台进程（PID ${active.pid}）正在运行；停止该实例后再修改依赖或构建产物。`);
+  };
   try {
-    // Another launcher may have finished while this process waited for the project lock.
-    try {
-      previousState = JSON.parse(await readFile(statePath, 'utf8'));
-    } catch {
-      previousState = null;
-    }
-    if (!force && previousState?.status === 'ready'
-        && previousState.lockFingerprint === lockFingerprint
-        && previousState.nodeVersion === runtimeVersion
-        && await outputsExist(root)) {
-      const python = await preparePython({ root, force: false, onProgress, nodePath });
-      onProgress({ phase: 'skip', message: '固定依赖与构建产物已就绪，跳过准备。' });
-      return {
-        root,
-        nodePath,
-        npmPath: activeNpmCli,
-        fingerprint: lockFingerprint,
-        skipped: python.skipped,
-      };
-    }
-
-    const activeServer = await liveServer(root);
-    if (activeServer) {
-      throw new Error(`同一源码目录已有工作台进程（PID ${activeServer.pid}）正在运行；停止该实例后再重建依赖或前端产物。`);
-    }
-
-    const state = {
-      status: 'preparing',
-      lockFingerprint,
-      sourceFileCount,
-      nodeVersion: runtimeVersion,
-      startedAt: new Date().toISOString(),
-    };
+    let saved;
+    try { saved = JSON.parse(await readFile(statePath, 'utf8')); } catch { /* No trusted preparation ledger: inspect actual files. */ }
+    const record = value => value && typeof value === 'object' && !Array.isArray(value);
+    state = saved?.schemaVersion === 2 && record(saved.dependencies) && record(saved.builds)
+      ? saved : {schemaVersion: 2, dependencies: {}, builds: {}};
+    state.status = 'preparing';
+    state.startedAt = new Date().toISOString();
+    state.nodeVersion = process.versions.node;
+    delete state.error;
     await writeState(statePath, state);
-    const env = prependPath(nodePath);
-    const npmCli = activeNpmCli;
 
-    try {
-      for (const relativePath of npmTargets) {
-        const cwd = path.join(root, relativePath);
-        onProgress({ phase: 'install', target: relativePath || '.', message: `准备固定依赖：${relativePath || '项目根目录'}` });
-        runNpm(nodePath, npmCli, ['ci', '--no-audit', '--no-fund'], cwd, env);
+    for (const target of npmTargets) {
+      const cwd = path.join(root, target);
+      const input = await dependencyFingerprint(cwd);
+      const current = await checkDependencies({cwd, nodePath, npmPath: npmCli});
+      if (!current.ready) {
+        await ensureOffline();
+        activeStep = {section: 'dependencies', id: target};
+        state.dependencies[target] = {status: 'installing', fingerprint: input, reason: current.reason};
+        await writeState(statePath, state);
+        onProgress({phase: 'install', target, message: `补齐固定依赖：${target}`});
+        await npm(['ci', '--no-audit', '--no-fund'], cwd);
+        const verified = await checkDependencies({cwd, nodePath, npmPath: npmCli});
+        if (!verified.ready) throw new Error(`${target} 安装后依赖验证未通过：${verified.reason}`);
+        if (await dependencyFingerprint(cwd) !== input) throw new Error(`${target} 依赖清单在安装期间变化；保留已完成安装，下次只重新检查本组。`);
+        actions.dependenciesInstalled.push(target);
+      } else {
+        actions.dependenciesReused.push(target);
+        onProgress({phase: 'reuse', target, message: `验证并复用固定依赖：${target}`});
       }
-
-      for (const target of buildTargets) {
-        onProgress({ phase: 'build', target: target.label, message: `构建：${target.label}` });
-        runNpm(nodePath, npmCli, target.args, path.join(root, target.cwd), env);
-      }
-
-      onProgress({ phase: 'build', target: 'WorkBuddy plugin', message: '构建：模型来源插件' });
-      runNode(nodePath, [path.join(root, 'scripts/build-workbuddy-plugin.mjs')], root, env);
-
-      await preparePython({ root, force, onProgress, nodePath });
-
-      if (!(await outputsExist(root))) {
-        throw new Error('准备命令结束，但一个或多个必要构建产物缺失。');
-      }
-
-      const readyState = {
-        ...state,
-        status: 'ready',
-        completedAt: new Date().toISOString(),
-      };
-      await writeState(statePath, readyState);
-      onProgress({ phase: 'ready', message: '首次准备完成。' });
-      return {
-        root,
-        nodePath,
-        npmPath: npmCli,
-        fingerprint: lockFingerprint,
-        skipped: false,
-      };
-    } catch (error) {
-      await writeState(statePath, {
-        ...state,
-        status: 'failed',
-        failedAt: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
+      state.dependencies[target] = {status: 'ready', fingerprint: input, verifiedAt: new Date().toISOString()};
+      activeStep = null;
+      await writeState(statePath, state);
     }
+
+    for (const target of buildTargets) {
+      if (await dependencyFingerprint(path.join(root, target.dependency)) !== state.dependencies[target.dependency].fingerprint) {
+        throw new Error(`${target.dependency} 依赖清单在准备期间变化；下次只重新检查变更的组件。`);
+      }
+      const inputs = await captureBuildInputs(root, target);
+      let outputs = await inspectBuildOutputs(root, target);
+      const savedBuild = state.builds[target.id];
+      const reuse = !force && outputs.ready && (savedBuild
+        ? savedBuild.status === 'ready' && savedBuild.fingerprint === inputs.fingerprint && sameOutputs(savedBuild.outputs, outputs)
+        : canAdoptBuild(inputs, outputs));
+      if (!reuse) {
+        await ensureOffline();
+        activeStep = {section: 'builds', id: target.id};
+        state.builds[target.id] = {status: 'building', fingerprint: inputs.fingerprint};
+        await writeState(statePath, state);
+        onProgress({phase: 'build', target: target.id, message: `构建：${target.id}`});
+        if (target.nodeScript) await node([path.join(root, target.nodeScript)], path.join(root, target.cwd));
+        else await npm(target.npmArgs, path.join(root, target.cwd));
+        const finishedInputs = await captureBuildInputs(root, target);
+        outputs = await inspectBuildOutputs(root, target);
+        if (!outputs.ready) throw new Error(`${target.id} 构建产物不完整：${outputs.reason}`);
+        if (finishedInputs.fingerprint !== inputs.fingerprint) {
+          throw new Error(`${target.id} 源码在构建期间变化；未认领不确定的产物，下次仅重建本组件。`);
+        }
+        actions.buildsRun.push(target.id);
+      } else {
+        actions.buildsReused.push(target.id);
+        onProgress({phase: 'reuse', target: target.id, message: `验证并复用构建：${target.id}`});
+      }
+      state.builds[target.id] = {status: 'ready', fingerprint: inputs.fingerprint, outputs: outputManifest(outputs), verifiedAt: new Date().toISOString()};
+      activeStep = null;
+      await writeState(statePath, state);
+    }
+
+    const pythonResult = await python({root, nodePath, onProgress, beforeChange: ensureOffline});
+    for (const target of npmTargets) {
+      if (await dependencyFingerprint(path.join(root, target)) !== state.dependencies[target].fingerprint) {
+        throw new Error(`${target} 依赖清单在准备期间变化；未将过期检查标记为就绪。`);
+      }
+    }
+    for (const target of buildTargets) {
+      if ((await captureBuildInputs(root, target)).fingerprint !== state.builds[target.id].fingerprint) {
+        throw new Error(`${target.id} 源码在准备期间变化；下次只重建变更的组件。`);
+      }
+    }
+    state.python = {fingerprint: pythonResult.fingerprint, pythonExecutable: pythonResult.pythonExecutable};
+    state.status = 'ready';
+    state.completedAt = new Date().toISOString();
+    state.fingerprint = createHash('sha256').update(JSON.stringify({
+      dependencies: Object.fromEntries(Object.entries(state.dependencies).map(([id, value]) => [id, value.fingerprint])),
+      builds: Object.fromEntries(Object.entries(state.builds).map(([id, value]) => [id, value.fingerprint])),
+      python: pythonResult.fingerprint,
+    })).digest('hex');
+    await writeState(statePath, state);
+    const skipped = !actions.dependenciesInstalled.length && !actions.buildsRun.length && pythonResult.skipped;
+    onProgress({phase: skipped ? 'skip' : 'ready', message: skipped ? '依赖、构建与 OCR 已验证复用，无需安装。' : '必要准备已完成，其余环境保持复用。'});
+    return {root, nodePath, npmPath: npmCli, fingerprint: state.fingerprint, skipped, ...actions, python: pythonResult};
+  } catch (error) {
+    if (state && activeStep) {
+      const entry = state[activeStep.section][activeStep.id];
+      state[activeStep.section][activeStep.id] = {...entry, status: 'failed', error: error.message};
+    }
+    if (state) await writeState(statePath, {...state, status: 'failed', failedAt: new Date().toISOString(), error: error.message});
+    throw error;
   } finally {
     await releaseLock();
   }
 }
 
-export const preparationInternals = Object.freeze({ fingerprint, listSourceFiles, resolveNpmCli, outputsExist, liveServer });
+export const preparationInternals = Object.freeze({resolveNpmCli, dependencyFingerprint, liveServer});
