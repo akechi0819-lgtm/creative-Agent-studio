@@ -88,7 +88,7 @@ test('an open Canvas refreshes the saved image key before generation and proxies
       readConfig: async () => configRecord,
     });
     open = await manager.ensure(task.id);
-    browser = await chromium.launch({ channel: 'chrome', headless: true });
+    browser = await chromium.launch({ headless: true });
     context = await browser.newContext();
     page = await context.newPage();
     await page.goto(open.openUrl, { waitUntil: 'domcontentloaded' });

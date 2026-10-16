@@ -39,7 +39,10 @@ test('managed source routes tools and images, filters paid models and protects l
   assert.ok(upstream[1].url.includes('kilo'));
   assert.equal((await request('/studio/models',{source:'eac'})).status,400);
   assert.equal((await request('/v1/chat/completions',{model:'eac/private',messages:[]})).status,404);
-  assert.equal((await fs.stat(path.join(root,'model-plugin','instance.json'))).mode&0o777,0o600);
+  const instanceInfo = await fs.stat(path.join(root,'model-plugin','instance.json'));
+  assert.ok(instanceInfo.isFile());
+  // Windows uses the user's inherited directory ACL; Node mode bits do not represent POSIX 0600 there.
+  if (process.platform !== 'win32') assert.equal(instanceInfo.mode & 0o777, 0o600);
   const first = await saveConfig({expectedRevision:1,base:{source:'custom',baseUrl:'https://example.invalid/v1',apiKey:'private-fixture',model:'own'}},{root});
   const saved = await saveConfig({expectedRevision:first.revision,base:{source:'opencode',model:'opencode/mimo-v2.5-free'}},{root});
   assert.equal(saved.base.apiKey,'private-fixture');

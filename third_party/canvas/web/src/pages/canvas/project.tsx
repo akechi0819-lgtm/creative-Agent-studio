@@ -242,7 +242,8 @@ function InfiniteCanvasPage() {
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
-    const [projectLoaded, setProjectLoaded] = useState(false);
+    const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
+    const projectLoaded = loadedProjectId === projectId;
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
@@ -431,15 +432,16 @@ function InfiniteCanvasPage() {
 
     useEffect(() => {
         if (!hydrated) return;
-        setProjectLoaded(false);
+        let active = true;
         const project = openProject(projectId);
         if (!project) {
             navigate("/canvas", { replace: true });
-            return;
+            return () => { active = false; };
         }
 
         const restore = async () => {
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
+            if (!active) return;
             setNodes(restoredNodes);
             setConnections(project.connections);
             setBackgroundMode(project.backgroundMode);
@@ -457,9 +459,10 @@ function InfiniteCanvasPage() {
                 showImageInfo: project.showImageInfo || false,
             };
             setHistoryState({ canUndo: false, canRedo: false });
-            setProjectLoaded(true);
+            setLoadedProjectId(projectId);
         };
         void restore();
+        return () => { active = false; };
     }, [hydrated, navigate, openProject, projectId]);
 
     useEffect(() => {
@@ -783,6 +786,7 @@ function InfiniteCanvasPage() {
     }, [connections, nodeById]);
     const referenceConnectedNodeIds = useMemo(() => new Set([referencePickerNodeId, ...(referencePickerNodeId ? connectedNodesByNodeId.get(referencePickerNodeId)?.flatMap((node) => node.type === CanvasNodeType.Group ? [node.id, ...getGroupResourceNodes(node.id, nodes).map((child) => child.id)] : [node.id]) || [] : [])].filter((id): id is string => Boolean(id))), [connectedNodesByNodeId, nodes, referencePickerNodeId]);
     const { applyAgentOps } = useAgentBridge({
+        projectLoaded,
         projectId,
         title: currentProject?.title,
         nodes,

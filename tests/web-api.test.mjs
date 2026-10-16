@@ -118,8 +118,15 @@ test('config API masks keys, persists private mode, and explicitly clears an omi
   assert.equal(publicRead.data.config.base.apiKey, undefined);
   assert.equal(publicRead.data.config.base.apiKeyConfigured, true);
   const configPath = path.join(f.root, 'config', 'studio.json');
-  assert.equal((await fs.stat(configPath)).mode & 0o777, 0o600);
-  assert.equal((await fs.stat(path.dirname(configPath))).mode & 0o777, 0o700);
+  const configInfo = await fs.stat(configPath);
+  const configDirectoryInfo = await fs.stat(path.dirname(configPath));
+  assert.ok(configInfo.isFile());
+  assert.ok(configDirectoryInfo.isDirectory());
+  // Windows uses the user's inherited directory ACL; Node mode bits do not represent POSIX 0600/0700 there.
+  if (process.platform !== 'win32') {
+    assert.equal(configInfo.mode & 0o777, 0o600);
+    assert.equal(configDirectoryInfo.mode & 0o777, 0o700);
+  }
 
   const cleared = await f.request('/api/config', { method: 'POST', json: { expectedRevision: 2, clearKeys: ['base'] } });
   assert.equal(cleared.response.status, 200);

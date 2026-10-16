@@ -14,6 +14,11 @@ function dataDir() {
   return dir
 }
 
+function assertPosixMode(mode, expected) {
+  // Windows uses the user's inherited directory ACL; Node mode bits do not represent POSIX permissions there.
+  if (process.platform !== 'win32') assert.equal(mode & 0o777, expected)
+}
+
 test.after(() => {
   for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -48,7 +53,8 @@ test('worker manager starts only the two Buddy providers with local idle status'
     assert.ok(models.some(model => model.id.startsWith('buddy/')))
     assert.ok(models.some(model => model.id.startsWith('workbuddy/')))
     assert.equal(fs.existsSync(path.join(dir, 'workbuddy-state.json')), false)
-    assert.equal(fs.statSync(dir).mode & 0o777, 0o700)
+    assert.ok(fs.statSync(dir).isDirectory())
+    assertPosixMode(fs.statSync(dir).mode, 0o700)
   } finally {
     await instance.close()
   }
@@ -66,7 +72,8 @@ test('worker manager starts only the two Buddy providers with local idle status'
       accounts: [{ id: 'workbuddy-fixture', region: 'intl', name: 'Restored Fixture' }],
       login: { status: 'idle' },
     })
-    assert.equal(fs.statSync(statePath).mode & 0o777, 0o600)
+    assert.ok(fs.statSync(statePath).isFile())
+    assertPosixMode(fs.statSync(statePath).mode, 0o600)
   } finally {
     await restored.close()
   }
@@ -193,8 +200,10 @@ test('login persists one private account, completion streams, status restores wi
 
     const statePath = path.join(dir, 'workbuddy-state.json')
     const stateStat = fs.statSync(statePath)
-    assert.equal(stateStat.mode & 0o777, 0o600)
-    assert.equal(fs.statSync(dir).mode & 0o777, 0o700)
+    assert.ok(stateStat.isFile())
+    assert.ok(fs.statSync(dir).isDirectory())
+    assertPosixMode(stateStat.mode, 0o600)
+    assertPosixMode(fs.statSync(dir).mode, 0o700)
     const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8'))
     assert.deepEqual(persisted.accounts.map(({ region, name }) => ({ region, name })), [
       { region: 'intl', name: 'Fixture User' },

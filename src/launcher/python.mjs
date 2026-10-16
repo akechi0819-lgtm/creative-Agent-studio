@@ -124,7 +124,6 @@ function environmentFor(paths) {
     UV_CACHE_DIR: paths.uvCache,
     UV_PYTHON_INSTALL_DIR: paths.pythonHome,
     UV_PYTHON_BIN_DIR: path.join(paths.runtime, 'python-bin'),
-    UV_PYTHON_PREFERENCE: 'only-managed',
     UV_NO_CONFIG: '1',
     UV_NO_PROGRESS: '1',
   };

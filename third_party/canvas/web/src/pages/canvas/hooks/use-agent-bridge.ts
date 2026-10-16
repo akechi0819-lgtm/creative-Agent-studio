@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useLayoutEffect, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import i18n from "@/i18n";
 import { nanoid } from "nanoid";
@@ -15,6 +15,7 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Contex
 type GenerateNodeRef = MutableRefObject<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>;
 
 type AgentBridgeParams = {
+    projectLoaded: boolean;
     projectId: string;
     title: string | undefined;
     nodes: CanvasNodeData[];
@@ -39,7 +40,7 @@ type AgentBridgeParams = {
  * capabilities to the drawing-tool store. All members except applyAgentOps are internal.
  */
 export function useAgentBridge(params: AgentBridgeParams) {
-    const { projectId, title, nodes, connections, selectedNodeIds, viewport, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, generateNodeRef, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setViewport, setContextMenu } =
+    const { projectLoaded, projectId, title, nodes, connections, selectedNodeIds, viewport, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, generateNodeRef, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setViewport, setContextMenu } =
         params;
     const setAgentCanvasContext = useCanvasToolStore((state) => state.setCanvasContext);
     const [agentUndoSnapshot, setAgentUndoSnapshot] = useState<CanvasAgentSnapshot | null>(null);
@@ -195,10 +196,14 @@ export function useAgentBridge(params: AgentBridgeParams) {
         return { ...agentUndoSnapshot, projectId, title: projectTitle };
     }, [agentUndoSnapshot, projectTitle, projectId]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
+        if (!projectLoaded) {
+            setAgentCanvasContext(null);
+            return;
+        }
         setAgentCanvasContext({ snapshot: agentSnapshot, getSnapshot: getAgentSnapshot, applyOps: applyAgentOps, runImageOperation, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
         return () => setAgentCanvasContext(null);
-    }, [agentSnapshot, applyAgentOps, getAgentSnapshot, runImageOperation, agentUndoSnapshot, setAgentCanvasContext, undoAgentOps]);
+    }, [agentSnapshot, applyAgentOps, getAgentSnapshot, runImageOperation, agentUndoSnapshot, projectLoaded, setAgentCanvasContext, undoAgentOps]);
 
     return { applyAgentOps };
 }

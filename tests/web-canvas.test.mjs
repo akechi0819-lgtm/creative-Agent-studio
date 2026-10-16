@@ -13,6 +13,11 @@ const PNG_BLUE = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0
 const dataUrl = (buffer) => `data:image/png;base64,${buffer.toString('base64')}`;
 const digest = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
 
+async function assertPrivateFileMode(file) {
+  if (process.platform === 'win32') return;
+  assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+}
+
 async function confirmedTask(root, title, pageCount = 1) {
   let task = await createTask({ title, brief: '隔离 Canvas 连接与人工选图测试' }, root);
   task = await confirmInputs(task.id, { revision: task.revision, by: '隔离测试用户', note: '仅测试夹具' }, { root });
@@ -41,35 +46,21 @@ async function waitForConnection(manager, taskId, page, diagnostics) {
 
 async function persistedCanvasProjectIds(page) {
   return page.evaluate(async () => {
-    const databases = await indexedDB.databases();
-    const diagnostics = { databases: databases.map(({ name, version }) => ({ name, version })), stores: [], keys: [], projectIds: [] };
-    if (!databases.some((database) => database.name === 'infinite-canvas')) return diagnostics;
-    return new Promise((resolve) => {
-    const request = indexedDB.open('infinite-canvas');
-    request.onerror = () => resolve(diagnostics);
-    request.onsuccess = () => {
-      const database = request.result;
-      diagnostics.stores = Array.from(database.objectStoreNames);
-      const stores = diagnostics.stores;
-      if (!stores.length) { database.close(); resolve(diagnostics); return; }
-      const transaction = database.transaction(stores, 'readonly');
-      const reads = stores.map((store) => new Promise((done) => {
-        const request = transaction.objectStore(store).getAllKeys();
-        request.onsuccess = () => { diagnostics.keys.push(...request.result.map(String)); done(); };
-        request.onerror = () => done();
-      }));
-      Promise.all(reads).then(() => {
-        const stateStore = stores.includes('app_state') ? transaction.objectStore('app_state') : null;
-        if (!stateStore) { database.close(); resolve(diagnostics); return; }
-        const read = stateStore.get('infinite-canvas:canvas_store');
-        read.onsuccess = () => {
-          try { diagnostics.projectIds = JSON.parse(read.result).state.projects.map((project) => project.id); } catch {}
-          database.close(); resolve(diagnostics);
-        };
-        read.onerror = () => { database.close(); resolve(diagnostics); };
-      });
-    };
-    });
+    const diagnostics = { storageStatus: null, keys: [], projectIds: [] };
+    const options = { cache: 'no-store', credentials: 'same-origin' };
+    const keysResponse = await fetch('/__studio/storage/app_state', options).catch(() => null);
+    diagnostics.storageStatus = keysResponse?.status ?? null;
+    if (!keysResponse?.ok) return diagnostics;
+    diagnostics.keys = await keysResponse.json().catch(() => []);
+    const key = 'infinite-canvas:canvas_store';
+    if (!diagnostics.keys.includes(key)) return diagnostics;
+    const valueResponse = await fetch(`/__studio/storage/app_state/${encodeURIComponent(key)}`, options).catch(() => null);
+    if (!valueResponse?.ok) return diagnostics;
+    try {
+      const state = JSON.parse(await valueResponse.text()).state;
+      diagnostics.projectIds = state?.projects?.map((project) => project.id) ?? [];
+    } catch {}
+    return diagnostics;
   });
 }
 
@@ -103,7 +94,7 @@ test('Canvas manager binds isolated browser projects, selection hashes, and same
   const externalRequests = [];
   const diagnostics = [];
   try {
-    browser = await chromium.launch({ channel: 'chrome', headless: true });
+    browser = await chromium.launch({ headless: true });
     context = await browser.newContext();
     const [openFirst, openSecond] = await Promise.all([manager.ensure(firstTask.id), manager.ensure(secondTask.id)]);
     const firstInstance = JSON.parse(await fs.readFile(path.join(root, 'canvas', firstTask.id, 'canvas-instance.json'), 'utf8'));
@@ -141,7 +132,7 @@ test('Canvas manager binds isolated browser projects, selection hashes, and same
 
     const instancePath = path.join(root, 'canvas', firstTask.id, 'canvas-instance.json');
     const instance = JSON.parse(await fs.readFile(instancePath, 'utf8'));
-    assert.equal((await fs.stat(instancePath)).mode & 0o777, 0o600);
+    await assertPrivateFileMode(instancePath);
     assert.equal(instance.projectId, firstTask.id);
     assert.ok(!Object.hasOwn(instance, 'browserUrl'), 'task instances do not persist ticket-bearing browser URLs');
     assert.equal((await fetch(`${instance.bridgeUrl}/agent/codex/threads/new`, {
@@ -213,7 +204,7 @@ test('Canvas manager binds isolated browser projects, selection hashes, and same
     const selectedHash = selected.task.execution.pages[0].image.sha256;
     assert.equal(selectedHash, digest(PNG_BLUE));
     assert.ok(selected.candidates.some((candidate) => candidate.nodeId === alternateNodeId && candidate.selected));
-    assert.equal((await fs.stat(path.join(root, 'canvas', firstTask.id, 'canvas-selection-evidence.json'))).mode & 0o777, 0o600);
+    await assertPrivateFileMode(path.join(root, 'canvas', firstTask.id, 'canvas-selection-evidence.json'));
     assert.deepEqual(await manager.assertFresh(firstTask.id, {
       expectedRevision: selected.revision, version: 1, images: [{ page: 1, sha256: selectedHash }],
     }), { ok: true, projectId: firstTask.id, version: 1, revision: selected.revision, images: [{ page: 1, sha256: selectedHash }] });
@@ -248,9 +239,47 @@ test('Canvas manager binds isolated browser projects, selection hashes, and same
     const persistedProjectState = await waitForPersistedCanvasProject(firstPage, firstTask.id);
     assert.ok(persistedProjectState.projectIds.includes(firstTask.id), `the browser project is persisted before reload: ${JSON.stringify(persistedProjectState)}`);
 
-    await firstPage.reload({ waitUntil: 'domcontentloaded' });
+    let releaseCanvasStoreRead;
+    let markCanvasStoreRead;
+    const canvasStoreReadStarted = new Promise((resolve) => { markCanvasStoreRead = resolve; });
+    const canvasStoreReadGate = new Promise((resolve) => { releaseCanvasStoreRead = resolve; });
+    const canvasStoreRoute = '**/__studio/storage/app_state/**';
+    await firstPage.route(canvasStoreRoute, async (route) => {
+      const request = route.request();
+      const pathname = decodeURIComponent(new URL(request.url()).pathname);
+      if (request.method() === 'GET' && pathname.endsWith('/infinite-canvas:canvas_store')) {
+        markCanvasStoreRead();
+        await canvasStoreReadGate;
+      }
+      await route.continue();
+    });
+    try {
+      await firstPage.reload({ waitUntil: 'domcontentloaded' });
+      const readWasDelayed = await new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(false), 5_000);
+        canvasStoreReadStarted.then(() => { clearTimeout(timeout); resolve(true); });
+      });
+      assert.ok(readWasDelayed, 'reload requests the persisted Canvas store through the Studio storage API');
+
+      let unreadyTargets = [];
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const response = await fetch(`${instance.bridgeUrl}/health`, { headers: { 'x-canvas-agent-token': instance.token } });
+        const health = await response.json();
+        unreadyTargets = (health.targets || []).filter((target) => target.projectId === firstTask.id);
+        if (unreadyTargets.length > 0 && unreadyTargets.every((target) => !target.hasCanvas)) break;
+        await firstPage.waitForTimeout(50);
+      }
+      assert.ok(unreadyTargets.length > 0 && unreadyTargets.every((target) => !target.hasCanvas), `the connected browser must stay unready while app_state hydrate is blocked: ${JSON.stringify(unreadyTargets)}`);
+      await assert.rejects(options.tool('canvas_get_state', {}, options.config, {}), /尚未连接/);
+    } finally {
+      releaseCanvasStoreRead();
+      await firstPage.unroute(canvasStoreRoute);
+    }
     firstState = await waitForConnection(manager, firstTask.id, firstPage, diagnostics);
     assert.equal(firstState.projectId, firstTask.id, 'reload recovers the same project through its HttpOnly session');
+    const restoredOptions = await manager.executionOptions(firstTask.id);
+    const restoredSnapshot = await restoredOptions.tool('canvas_get_state', {}, restoredOptions.config, {});
+    assert.ok(restoredSnapshot.nodes.some((node) => node.id === imageNodeId), 'the bridge advertises readiness only after the stored image node is restored');
 
     assert.equal(secondState.projectId, secondTask.id);
     assert.equal((await manager.state(firstTask.id)).projectId, firstTask.id, 'opening another task never cross-binds the first Canvas');

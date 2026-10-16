@@ -31,7 +31,10 @@ const isolatedData = path.join(temporaryRoot, 'data');
 const fixtureImagePath = path.join(temporaryRoot, 'p4-fixture.png');
 const env = { ...process.env, STUDIO_DATA_DIR: isolatedData };
 const browserErrors = [];
-const externalRequests = new Set();
+const allowedLoopbackOrigins = new Set();
+const allowedLoopbackRequests = [];
+const allowedPromptCatalogRequests = [];
+const rejectedExternalRequests = [];
 const canvasStorageWrites = new Set();
 const contexts = [];
 let browser;
@@ -76,6 +79,33 @@ async function status() {
   return jsonFromOutput(await launcherCommand(['status'], { timeout: 10_000 }));
 }
 
+function requestEvidence(page, requestUrl, method) {
+  const pageUrl = new URL(page.url());
+  const targetUrl = new URL(requestUrl);
+  return {
+    pageUrl: `${pageUrl.origin}${pageUrl.pathname}`,
+    requestUrl: `${targetUrl.origin}${targetUrl.pathname}`,
+    method,
+  };
+}
+
+function isAllowedPromptCatalogRequest(url, method) {
+  return url.protocol === 'https:'
+    && url.hostname === 'raw.githubusercontent.com'
+    && /^\/yukkcat\/image-prompts\/main\/dist\/sources\/[^/]+\.json$/.test(url.pathname)
+    && !url.search
+    && !url.hash
+    && method === 'GET';
+}
+
+function registerLoopbackOrigin(value) {
+  const url = new URL(value);
+  assert.equal(url.protocol, 'http:');
+  assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname), `Expected a loopback URL, got ${url.origin}`);
+  allowedLoopbackOrigins.add(url.origin);
+  return url.origin;
+}
+
 async function waitFor(predicate, description, timeoutMs = 30_000, delayMs = 200) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -115,7 +145,17 @@ function observePage(page, origin) {
     let url;
     try { url = new URL(request.url()); } catch { return; }
     if (url.protocol === 'data:' || url.protocol === 'blob:') return;
-    if (url.origin !== origin) externalRequests.add(url.origin);
+    if (url.origin === origin) return;
+    const evidence = requestEvidence(page, request.url(), request.method());
+    if (allowedLoopbackOrigins.has(url.origin)
+        && url.protocol === 'http:'
+        && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
+      allowedLoopbackRequests.push(evidence);
+    } else if (isAllowedPromptCatalogRequest(url, request.method())) {
+      allowedPromptCatalogRequests.push(evidence);
+    } else {
+      rejectedExternalRequests.push(evidence);
+    }
   });
   page.on('response', (response) => {
     const url = new URL(response.url());
@@ -159,6 +199,7 @@ try {
   assert.ok(Number(origin.port) > 0, 'The launcher must choose an available dynamic port.');
   assert.notEqual(Number(origin.port), 4310, 'The regression must use a dynamic port, not the existing development port.');
   assert.equal(origin.protocol, 'http:');
+  const workbenchOrigin = registerLoopbackOrigin(origin);
 
   const duplicate = jsonFromOutput(await launcherCommand(['start', '--no-open', '--port', '0']));
   assert.equal(duplicate.running, true);
@@ -171,7 +212,7 @@ try {
   browser = await chromium.launch({ headless: true });
   const workbenchContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   contexts.push(workbenchContext);
-  const workbenchPage = observePage(await workbenchContext.newPage(), origin.origin);
+  const workbenchPage = observePage(await workbenchContext.newPage(), workbenchOrigin);
 
   const home = await workbenchPage.goto(origin.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   assert.equal(home?.status(), 200, 'The Studio home page must load successfully.');
@@ -223,10 +264,12 @@ try {
   canvasInstance = JSON.parse(await fs.readFile(instancePath, 'utf8'));
   const modelPluginPath = path.join(isolatedData, 'model-plugin', 'instance.json');
   pluginInstance = JSON.parse(await fs.readFile(modelPluginPath, 'utf8'));
+  const canvasOrigin = registerLoopbackOrigin(canvasInstance.webUrl);
+  registerLoopbackOrigin(canvasInstance.bridgeUrl);
 
   const firstCanvasContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   contexts.push(firstCanvasContext);
-  const firstCanvasPage = observePage(await firstCanvasContext.newPage(), new URL(canvasInstance.webUrl).origin);
+  const firstCanvasPage = observePage(await firstCanvasContext.newPage(), canvasOrigin);
   await firstCanvasPage.goto(openedCanvas.payload.openUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await firstCanvasPage.waitForURL((url) => url.pathname === `/canvas/${task.id}` && !url.hash, { timeout: 20_000 });
   await connectCanvas(canvasInstance, task.id);
@@ -293,7 +336,7 @@ try {
   assert.equal(reopenedCanvas.payload.projectId, task.id);
   const secondCanvasContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   contexts.push(secondCanvasContext);
-  const secondCanvasPage = observePage(await secondCanvasContext.newPage(), new URL(canvasInstance.webUrl).origin);
+  const secondCanvasPage = observePage(await secondCanvasContext.newPage(), canvasOrigin);
   await secondCanvasPage.goto(reopenedCanvas.payload.openUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await secondCanvasPage.waitForURL((url) => url.pathname === `/canvas/${task.id}` && !url.hash, { timeout: 20_000 });
   await connectCanvas(canvasInstance, task.id);
@@ -304,7 +347,14 @@ try {
   const restoredBytes = Buffer.from(restoredImage.dataUrl.split(',')[1], 'base64');
   assert.equal(imageSha256(restoredBytes), imageSha256(PNG_FIXTURE), 'Canvas must restore the original image bytes in the new browser context.');
   assert.deepEqual(browserErrors, [], 'The workbench and Canvas pages must not produce uncaught runtime errors.');
-  assert.deepEqual([...externalRequests], [], 'The browser regression must not call external services.');
+  console.log(JSON.stringify({
+    check: 'browser-network-policy',
+    loopbackOrigins: [...allowedLoopbackOrigins].sort(),
+    loopbackRequests: allowedLoopbackRequests,
+    promptCatalogRequests: allowedPromptCatalogRequests,
+    rejectedRequests: rejectedExternalRequests,
+  }));
+  assert.deepEqual(rejectedExternalRequests, [], 'The browser regression must reject unapproved external or non-GET requests.');
 
   await Promise.all(contexts.map((context) => context.close().catch(() => {})));
   contexts.length = 0;
