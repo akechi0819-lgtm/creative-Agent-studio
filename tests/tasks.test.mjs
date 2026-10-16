@@ -197,6 +197,45 @@ test("withTask serializes writers and persists only explicit checkpoints after a
   await assert.rejects(setBrief(initial.id, "stale", { root, expectedRevision: initial.revision }), (error) => error.code === "ERR_TASK_REVISION_CONFLICT");
 });
 
+test("normalizes Windows EPERM lock renames only when an actual lock directory exists", async (t) => {
+  const { root } = await fixture(t);
+  const lockedTask = await createTask({ title: "已锁定任务", brief: "brief" }, root);
+  const unlockedTask = await createTask({ title: "无锁任务", brief: "brief" }, root);
+  const malformedTask = await createTask({ title: "无效锁路径", brief: "brief" }, root);
+  const lockedPath = path.join(taskDirectory(lockedTask.id, root), ".lock");
+  const unlockedPath = path.join(taskDirectory(unlockedTask.id, root), ".lock");
+  const malformedPath = path.join(taskDirectory(malformedTask.id, root), ".lock");
+  const lockOwner = { pid: process.pid, token: "existing-test-owner", acquiredAt: new Date().toISOString() };
+  await fs.mkdir(lockedPath);
+  await fs.writeFile(path.join(lockedPath, "owner.json"), JSON.stringify(lockOwner));
+  await fs.writeFile(malformedPath, "not a lock directory");
+
+  const originalRename = fs.rename;
+  const deniedTargets = new Set([lockedPath, unlockedPath, malformedPath]);
+  fs.rename = async (source, destination) => {
+    if (deniedTargets.has(destination)) {
+      const error = new Error("simulated Windows rename denial");
+      error.code = "EPERM";
+      throw error;
+    }
+    return originalRename(source, destination);
+  };
+  try {
+    await assert.rejects(withTask(lockedTask.id, () => {}, { root }), (error) =>
+      error.code === "ERR_TASK_LOCKED" && error.owner?.token === lockOwner.token);
+    await assert.rejects(withTask(unlockedTask.id, () => {}, { root }), (error) => error.code === "EPERM");
+    await assert.rejects(withTask(malformedTask.id, () => {}, { root }), (error) => error.code === "EPERM");
+  } finally {
+    fs.rename = originalRename;
+  }
+
+  assert.ok((await fs.readdir(lockedPath)).includes("owner.json"), "an existing lock is not changed by the failed contender");
+  for (const task of [unlockedTask, malformedTask]) {
+    const names = await fs.readdir(taskDirectory(task.id, root));
+    assert.ok(!names.some((name) => name.startsWith(".lock-pending-")), "failed acquisition removes its private staging directory");
+  }
+});
+
 test("clears a dead lock only explicitly and refuses to clear a live owner", async (t) => {
   const { root } = await fixture(t);
   const task = await createTask({ title: "锁恢复", brief: "brief" }, root);

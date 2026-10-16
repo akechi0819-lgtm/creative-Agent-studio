@@ -264,6 +264,15 @@ async function readLockOwner(lockPath) {
   }
 }
 
+async function isLockDirectory(lockPath) {
+  try {
+    return (await fs.lstat(lockPath)).isDirectory();
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 async function acquireTaskLock(id, root) {
   const directory = taskDirectory(id, root);
   const lockPath = path.join(directory, ".lock");
@@ -272,10 +281,18 @@ async function acquireTaskLock(id, root) {
   await fs.mkdir(staging, { mode: 0o700 });
   try {
     await atomicWriteJson(path.join(staging, "owner.json"), owner);
+  } catch (error) {
+    await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+  try {
     await fs.rename(staging, lockPath);
   } catch (error) {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
     if (["EEXIST", "ENOTEMPTY"].includes(error.code)) {
+      throw new TaskLockError(id, await readLockOwner(lockPath));
+    }
+    if (error.code === "EPERM" && await isLockDirectory(lockPath)) {
       throw new TaskLockError(id, await readLockOwner(lockPath));
     }
     throw error;
