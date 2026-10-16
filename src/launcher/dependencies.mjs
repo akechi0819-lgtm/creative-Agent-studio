@@ -391,10 +391,13 @@ export async function checkDependencyGroup({ cwd, root, nodePath = process.execP
       readFile(path.join(dependencyRoot, 'package-lock.json'), 'utf8').then(JSON.parse),
     ]);
     if (lockfile.lockfileVersion !== 3) {
-      return notReady('package-lock.json must use lockfileVersion 3');
+      return { ...notReady('package-lock.json must use lockfileVersion 3'), repairable: false };
     }
     const modulesPath = path.join(dependencyRoot, 'node_modules');
-    const modulesStat = await stat(modulesPath).catch(() => null);
+    const modulesStat = await stat(modulesPath).catch(error => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
     if (!modulesStat?.isDirectory()) return notReady('node_modules is missing');
 
     const { Arborist, checkPlatform } = loadNpmInternals({ npmPath, nodePath });
@@ -442,6 +445,6 @@ export async function checkDependencyGroup({ cwd, root, nodePath = process.execP
     return ready();
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    return notReady(`could not verify the locked npm dependency tree: ${detail}`);
+    return { ...notReady(`could not verify the locked npm dependency tree: ${detail}`), repairable: false };
   }
 }

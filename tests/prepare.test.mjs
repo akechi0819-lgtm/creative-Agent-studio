@@ -133,3 +133,9 @@ test('an active source instance permits verified reuse but prevents changing bui
   await put(f.root,'web/src/main.js','export const changed=10;');
   await assert.rejects(f.run(),/正在运行/);assert.deepEqual(f.installs,[]);assert.deepEqual(f.builds,[]);
 });
+test('a verification failure without evidence of missing dependencies does not trigger installation',async t=>{
+  const f=await fixture(t);
+  f.operations.checkDependencies=async()=>({ready:false,repairable:false,reason:'fixture validator unavailable'});
+  await assert.rejects(f.run(),/无法完成依赖验证，未尝试重装/);
+  assert.deepEqual(f.installs,[]);assert.deepEqual(f.builds,[]);
+});

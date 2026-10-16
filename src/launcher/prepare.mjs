@@ -207,6 +207,7 @@ export async function prepareWorkspace({
       const input = await dependencyFingerprint(cwd);
       const current = await checkDependencies({cwd, nodePath, npmPath: npmCli});
       if (!current.ready) {
+        if (current.repairable === false) throw new Error(`${target} 无法完成依赖验证，未尝试重装：${current.reason}`);
         await ensureOffline();
         activeStep = {section: 'dependencies', id: target};
         state.dependencies[target] = {status: 'installing', fingerprint: input, reason: current.reason};
