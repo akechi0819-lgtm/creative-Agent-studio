@@ -295,11 +295,12 @@ test('OCR helper emits parseable UTF-8 JSON with Chinese text under a cp1252 std
   const helperPath = path.resolve('scripts/ocr_materials.py');
   await writeFile(inputPath, 'fake image');
   await writeFile(fakeModulePath, [
+    'import os',
     'class Result:',
     '    txts = ["中文识别结果"]',
     'class RapidOCR:',
     '    def __init__(self, params=None):',
-    '        pass',
+    '        assert params["Global.model_root_dir"] == os.environ["STUDIO_RAPIDOCR_MODEL_DIR"]',
     '    def __call__(self, image):',
     '        return Result()',
   ].join('\n'), 'utf8');
@@ -311,6 +312,7 @@ test('OCR helper emits parseable UTF-8 JSON with Chinese text under a cp1252 std
       env: {
         ...process.env,
         PYTHONIOENCODING: 'cp1252',
+        STUDIO_RAPIDOCR_MODEL_DIR: path.join(dir, 'model-cache'),
         PYTHONPATH: [dir, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
       },
       stdio: ['ignore', 'pipe', 'pipe'],

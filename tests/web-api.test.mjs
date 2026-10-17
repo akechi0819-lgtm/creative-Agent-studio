@@ -135,6 +135,29 @@ test('config API masks keys, persists private mode, and explicitly clears an omi
   assert.equal((await readConfigRecord({ root: f.root })).revision, 3);
 });
 
+test('config API copies an explicitly shared custom base key and never returns plaintext', async (t) => {
+  const f = await fixture(t);
+  const secret = 'fixture-shared-base-secret';
+  const saved = await f.request('/api/config', {
+    method: 'POST',
+    json: {
+      expectedRevision: 1,
+      base: { source: 'custom', baseUrl: 'https://provider.invalid/v1', model: 'fixture-chat', apiKey: secret },
+      image: { model: 'fixture-image', useBaseCredentials: true },
+    },
+  });
+
+  assert.equal(saved.response.status, 200, JSON.stringify(saved.data));
+  assert.equal(saved.data.config.base.apiKey, undefined);
+  assert.equal(saved.data.config.image.apiKey, undefined);
+  assert.equal(saved.data.config.image.baseUrl, 'https://provider.invalid/v1');
+  assert.equal(saved.data.config.image.apiKeyConfigured, true);
+  assert.equal(JSON.stringify(saved.data).includes(secret), false);
+  const record = await readConfigRecord({ root: f.root });
+  assert.equal(record.image.apiKey, secret);
+  assert.equal(record.image.baseUrl, record.base.baseUrl);
+});
+
 test('config save remains successful while reporting an active Canvas sync failure', async (t) => {
   const fakeKey = 'fake-image-key-for-sync-status';
   let syncCall = null;
@@ -1470,4 +1493,46 @@ test('Canvas bootstrap ticket is only returned by the explicit open route; image
   assert.equal(preview.response.status, 200);
   assert.equal(preview.response.headers.get('content-type'), 'image/png');
   assert.deepEqual(Buffer.from(preview.data), png);
+});
+
+test('one explicit delivery decision records the displayed set and exports without per-page forms',async t=>{
+ const f=await fixture(t,{canvas:{assertFresh:async()=>{}}});
+ const {task}=await prepareTask(f.root);
+ const payload={expectedRevision:task.revision,version:task.sheetVersion,images:task.execution.pages.map(page=>({page:page.page,sha256:page.image.sha256}))};
+ const result=await f.request(`/api/tasks/${task.id}/approve-and-export`,{method:'POST',json:payload});
+ assert.equal(result.response.status,200,JSON.stringify(result.data));
+ assert.equal(result.data.task.finalApproval.by,'本机用户');assert.equal(result.data.task.exports.length,1);
+ assert.equal(result.data.task.reviews.at(-1).reviewer,'本机用户');assert.ok(result.data.export.downloadUrl);
+ const repeat=await f.request(`/api/tasks/${task.id}/approve-and-export`,{method:'POST',json:payload});assert.equal(repeat.response.status,409);assert.equal((await readTask(task.id,f.root)).exports.length,1);
+});
+
+test('changed Canvas invalidates combined delivery approval before a package can escape',async t=>{
+ let calls=0;const f=await fixture(t,{canvas:{assertFresh:async()=>{if(++calls===2)throw Object.assign(new Error('changed fixture'),{code:'ERR_CANVAS_STALE_REVIEW',status:409});}}});
+ const {task}=await prepareTask(f.root);
+ const result=await f.request(`/api/tasks/${task.id}/approve-and-export`,{method:'POST',json:{expectedRevision:task.revision,version:task.sheetVersion,images:task.execution.pages.map(page=>({page:page.page,sha256:page.image.sha256}))}});
+ assert.equal(result.response.status,409);const current=await readTask(task.id,f.root);assert.equal(current.finalApproval,null);assert.equal(current.exports.length,0);
+});
+
+test('natural delivery confirms displayed hashes, exports once, and bypasses agent approval', async t => {
+  let agentCalls = 0;
+  const f = await fixture(t, {canvas:{assertFresh:async()=>{}},agent:{chat:async()=>{agentCalls++;throw new Error('Human delivery must not ask the model to approve');}}});
+  const {task} = await prepareTask(f.root);
+  const payload = {text:'确认交付并下载',requestId:crypto.randomUUID(),expectedRevision:task.revision,displayed:{revision:task.revision,sheetVersion:task.sheetVersion,images:task.execution.pages.map(page=>({page:page.page,sha256:page.image.sha256}))}};
+  const wrongImage = await f.request(`/api/tasks/${task.id}/chat`,{method:'POST',json:{...payload,requestId:crypto.randomUUID(),displayed:{...payload.displayed,images:[{page:1,sha256:'f'.repeat(64)}]}}});
+  assert.equal(wrongImage.response.status,409);
+  assert.equal((await readTask(task.id,f.root)).finalApproval,null);
+  const accepted = await f.request(`/api/tasks/${task.id}/chat`,{method:'POST',json:payload});
+  assert.equal(accepted.response.status,202,JSON.stringify(accepted.data));
+  const job = await waitFor(async()=>{const current=await readJob(f,accepted.data.job.id);return ['succeeded','failed'].includes(current.status)&&current;},'delivery job finishes');
+  assert.equal(job.status,'succeeded',JSON.stringify(job.error));
+  const current = await readTask(task.id,f.root);
+  assert.equal(current.finalApproval.by,'本机用户');
+  assert.equal(current.exports.length,1);
+  assert.equal(agentCalls,0);
+  const downloaded = await f.request(job.result.downloadUrl);
+  assert.equal(downloaded.response.status,200);
+  assert.equal(crypto.createHash('sha256').update(Buffer.from(downloaded.data)).digest('hex'),current.exports[0].archiveSha256);
+  const replay = await f.request(`/api/tasks/${task.id}/chat`,{method:'POST',json:payload});
+  assert.equal(replay.data.job.id,job.id);
+  assert.equal((await readTask(task.id,f.root)).exports.length,1);
 });

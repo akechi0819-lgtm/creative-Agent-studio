@@ -571,8 +571,10 @@ export async function appendConversation(taskId, message, root) {
     ...(message.requestId === undefined ? {} : { requestId: message.requestId }),
     ...(attachmentSourceIds === undefined ? {} : { attachmentSourceIds }),
     ...(attachments === undefined ? {} : { attachments }),
+    ...(message.role === 'assistant' && Array.isArray(message.deliverables) ? {deliverables:message.deliverables} : {}),
     ...(answers ? { answers: answers.answers } : {}),
     ...(message.questions === undefined ? {} : { questions: validateQuestions(message.questions) }),
+    ...(message.role === 'assistant' && message.referenceProposal ? {referenceProposal:message.referenceProposal} : {}),
     ...(message.model === undefined ? {} : { model: validateModelId(message.model) }),
     createdAt: message.createdAt || new Date().toISOString(),
   });

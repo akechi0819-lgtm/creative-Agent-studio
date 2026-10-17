@@ -43,7 +43,7 @@ jobs:
             .studio-runtime/python
             .studio-runtime/rapidocr-models
             .venv-ocr
-          key: ${{ runner.os }}-${{ runner.arch }}-runtime-${{ hashFiles('scripts/bootstrap-node.ps1', 'Start.cmd', 'scripts/requirements-cleaner-ocr.lock.txt', 'src/launcher/python.mjs', 'scripts/ocr_materials.py') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-${{ hashFiles('scripts/bootstrap-node.ps1', 'Start.cmd', 'scripts/requirements-cleaner-ocr.lock.txt', 'scripts/requirements-workspace.lock.txt', 'src/launcher/python.mjs', 'scripts/ocr_materials.py') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-runtime-
 

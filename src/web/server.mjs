@@ -55,6 +55,8 @@ import {
 import { callModelPlugin, MODEL_SOURCES } from './model-plugin.mjs';
 import { publicConfig, resolveBasicConfig, readConfig as defaultReadConfig, readConfigRecord, saveConfig } from './config.mjs';
 import { validateModelId } from './model-id.mjs';
+import { createWorkspaceArtifactReader } from '../workspace/artifacts.mjs';
+import { dialogueIntent, referenceProposal } from './dialogue.mjs';
 import { validateAnswers, validateQuestions } from './clarifications.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -496,13 +498,13 @@ function taskExtraction(result, originalName) {
 async function extractTaskUploads(files, signal) {
   const extractions = [];
   let totalLength = 0;
-  const allowed = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.pdf', '.txt', '.md']);
+  const allowed = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.pdf', '.txt', '.md', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.zip']);
   for (const file of files) {
     const extension = path.extname(file.name).toLowerCase();
     if (!allowed.has(extension)) throw error('ERR_ATTACHMENT_TYPE', `暂不支持附件格式：${extension || '无扩展名'}`, 415);
     signal?.throwIfAborted();
     let extracted;
-    try { extracted = taskExtraction(await extractFile(file.path, { signal }), file.name); }
+    try { extracted = ['.docx','.doc','.xlsx','.xls','.csv','.zip'].includes(extension) ? {name:file.name,text:'原件已保存。助手可通过任务文件工具读取、提取或处理。',pages:[],warnings:[]} : taskExtraction(await extractFile(file.path, { signal }), file.name); }
     catch (cause) {
       const message = sanitizeText(cause?.safeMessage || cause?.message || '本地提取失败；任务未更新。');
       const failure = error('ERR_ATTACHMENT_EXTRACTION', message, 422);
@@ -831,6 +833,22 @@ export function createStudioServer({
     return { id, task };
   }
 
+  async function approveAndExport(id, body) {
+    let {task:current}=await currentFreshTask(id,body.expectedRevision,body.version,body.images);
+    const images=(current.execution?.pages || []).map(page=>({page:page.page,sha256:page.image?.sha256}));
+    if(current.sheetVersion!==body.version || current.execution?.status!=='succeeded' || !images.length
+      || JSON.stringify(images)!==JSON.stringify(body.images)) throw error('ERR_FINAL_APPROVAL_STALE','当前成品与展示版本不一致，请查看最新预览。',409);
+    // One explicit human delivery decision covers the displayed set; there is no separate per-page form.
+    for(const image of images) current=await recordReview(id,{...image,decision:'pass',reviewer:'本机用户',notes:'用户在对话中确认当前展示的整套图片用于交付。'},{root:data,expectedRevision:current.revision});
+    current=await approveFinal(id,{version:body.version,images,by:'本机用户',note:'用户在左侧对话明确确认当前展示版本并交付。'},{root:data,expectedRevision:current.revision});
+    await assertFreshOrRollbackApproval(id,current,body.version,images);
+    const result=await exportTask(id,{root:data,expectedRevision:current.revision});
+    try {await currentFreshTask(id,result.task.revision,body.version,images);}
+    catch(freshError){await rollbackExport(id,result.task,result.export);throw freshError;}
+    const assistantMessage = await appendConversation(id,{role:'assistant',text:'当前成品已按你的确认打包，可以下载交付文件。'},data);
+    return {task:result.task,assistantMessage,export:{...result.export,downloadUrl:`/api/tasks/${encodeURIComponent(id)}/exports/${encodeURIComponent(result.export.version)}`}};
+  }
+
   function sameApproval(left, right) {
     return Boolean(left && right
       && left.version === right.version
@@ -903,6 +921,27 @@ export function createStudioServer({
       await rollbackApproval(taskId, task);
       throw freshError;
     }
+  }
+
+  async function inspectGeneratedTask(taskId, generated, {signal,onEvent=()=>{}}={}) {
+    if(typeof agent?.review!=='function') return generated;
+    let current=generated;
+    try {
+      const config=await privateConfig(taskId);
+      for(const page of current.execution?.pages || []) {
+        if(page.status!=='succeeded'||!page.image?.sha256)continue;
+        signal?.throwIfAborted();
+        const result=await agent.review({taskId,page:page.page,expectedRevision:current.revision,model:defaultBaseModel(config.basic),signal,onEvent,
+          beforeRecordReview:review=>currentFreshTask(taskId,review.expectedRevision,review.version,[{page:review.page,sha256:review.sha256}])});
+        current=result.task || await readTask(taskId,data);
+        if(result.text)await appendConversation(taskId,{role:'assistant',text:result.text},data);
+      }
+    } catch {
+      signal?.throwIfAborted();
+      await appendConversation(taskId,{role:'assistant',text:'图片已生成，助手检查未完成。你可以直接查看预览、提出修改，或确认当前成品交付。'},data);
+      current=await readTask(taskId,data);
+    }
+    return current;
   }
 
   async function actionTask(taskId, action, body) {
@@ -981,9 +1020,9 @@ export function createStudioServer({
         };
       });
     }
-    if (action === 'execute' || action === 'resume') {
+    if (action === 'execute' || action === 'resume' || action === 'confirm-and-execute') {
       requiredRevision(body.expectedRevision);
-      const task = await readTask(id, data);
+      let task = await readTask(id, data);
       if (task.revision !== body.expectedRevision) {
         const stale = error('ERR_TASK_REVISION_CONFLICT', '任务版本已更新，请重新读取', 409);
         stale.expectedRevision = body.expectedRevision;
@@ -994,16 +1033,18 @@ export function createStudioServer({
       return jobs.start({
         taskId: id,
         kind: action,
-        run: async ({ signal }) => {
+        run: async ({ signal, onEvent }) => {
           const executionOptions = await canvas.executionOptions(id, { target: task.execution?.target });
-          return executeTask(id, {
+          if (action === 'confirm-and-execute') task = await confirmSheet(id, { version: body.version, by: '本机用户', note: body.note || '用户在左侧对话确认并开始绘图' }, {root:data, expectedRevision:body.expectedRevision});
+          const generated=await executeTask(id, {
             ...executionOptions,
             version: body.version,
-            expectedRevision: body.expectedRevision,
+            expectedRevision: task.revision,
             retryPage: body.retryPage,
             root: data,
             signal,
           });
+          return action==='confirm-and-execute' ? inspectGeneratedTask(id,generated,{signal,onEvent}) : generated;
         },
         resultView: (result) => ({ taskRevision: result.revision, executionStatus: result.execution?.status }),
       });
@@ -1035,6 +1076,9 @@ export function createStudioServer({
         if (!image || image.sha256 !== body.sha256) throw error('ERR_CANVAS_STALE_REVIEW', '复审图像已变化，请重新打开并检查当前图片', 409);
         await currentFreshTask(id, body.expectedRevision, current.sheetVersion, [{ page: body.page, sha256: body.sha256 }]);
         task = await recordReview(id, body, opts);
+      } else if (action === 'approve-and-export') {
+        const result = await approveAndExport(id, body);
+        return {task:publicTask(result.task),export:result.export};
       } else if (action === 'approve-final') {
         await currentFreshTask(id, body.expectedRevision, body.version, body.images);
         task = await approveFinal(id, body, opts);
@@ -1233,6 +1277,7 @@ export function createStudioServer({
           }
           return ids;
         };
+        const humanIntent = dialogueIntent(task, body);
         const attachmentSourceIds = validateAttachmentSourceIds(task);
         if (body.answers !== undefined) validateAnswers(await readConversation(taskId, data), body.answers);
         const config = await privateConfig();
@@ -1244,7 +1289,7 @@ export function createStudioServer({
           requestId,
           fingerprint,
           run: async ({ signal, onEvent }) => {
-            const currentTask = await readTask(taskId, data);
+            let currentTask = await readTask(taskId, data);
             if (currentTask.revision !== body.expectedRevision) {
               const stale = error('ERR_TASK_REVISION_CONFLICT', '任务版本已更新，请重新读取', 409);
               stale.expectedRevision = body.expectedRevision;
@@ -1262,8 +1307,36 @@ export function createStudioServer({
               ...(validatedAnswers ? { answers: validatedAnswers.answers } : {}),
             }, data);
             const conversation = await readConversation(taskId, data);
+            if (humanIntent === 'delivery') {
+              return approveAndExport(taskId, {expectedRevision:currentTask.revision,version:body.displayed.sheetVersion,images:body.displayed.images});
+            }
+            if (humanIntent === 'sheet') {
+              if (typeof canvas?.executionOptions !== 'function') throw error('ERR_CANVAS_UNAVAILABLE', 'Canvas 当前不可用', 503);
+              const options = await canvas.executionOptions(taskId, {target:currentTask.execution?.target});
+              const confirmed = await confirmSheet(taskId, {version:currentTask.sheetVersion,by:'本机用户',note:`用户对展示版本明确回复：${body.text}`}, {root:data,expectedRevision:currentTask.revision});
+              const done = await executeTask(taskId, {...options,root:data,version:confirmed.sheetVersion,expectedRevision:confirmed.revision,signal});
+              const assistantMessage = await appendConversation(taskId,{role:'assistant',text:`已按你确认的制作单 v${confirmed.sheetVersion} 执行，请检查当前成品。`},data);
+              return {assistantMessage, task:await inspectGeneratedTask(taskId,done,{signal,onEvent})};
+            }
+            if (humanIntent === 'inputs' || humanIntent === 'references') {
+              let items;
+              if (humanIntent === 'references') {
+                const proposedMessage = [...conversation].reverse().find(message=>message.referenceProposal);
+                const proposal = proposedMessage?.referenceProposal;
+                if (!proposal || proposedMessage.id !== body.displayed?.referenceProposalId || proposal.revision !== currentTask.revision) throw error('ERR_DIALOGUE_STALE','参考方案已过期，请重新讨论当前选择。',409);
+                items = referenceProposal(currentTask,proposal.items);
+              } else items = currentTask.sources.map(source=>({kind:'existing',id:source.id,decision:source.decision==='pending'?'excluded':source.decision,purpose:source.purpose,factBoundary:source.factBoundary}));
+              if (items.length) currentTask = await setReferences(taskId,items,{root:data,expectedRevision:currentTask.revision});
+              currentTask = await confirmInputs(taskId,{revision:currentTask.revision,by:'本机用户',note:`用户对展示版本明确回复：${body.text}`},{root:data,expectedRevision:currentTask.revision});
+            }
             let questionsMessage = null;
             const handleAgentEvent = async (event) => {
+              if (event?.type === 'reference-proposal') {
+                const latest = await readTask(taskId,data);
+                const items = referenceProposal(latest,event.items);
+                await appendConversation(taskId,{role:'assistant',text:'请检查这份参考方案；回复“确认参考方案并继续”即可按此选择整理制作单。',referenceProposal:{revision:latest.revision,brief:latest.brief,items}},data);
+                return onEvent({type:'status',text:'已展示参考方案，等待你确认。'});
+              }
               if (event?.type === 'questions') {
                 if (questionsMessage) throw error('ERR_CLARIFICATION_ALREADY_ASKED', '本轮已经提出点选问题');
                 const questions = validateQuestions(event.questions);
@@ -1362,11 +1435,11 @@ export function createStudioServer({
             };
             const result = await agent.chat({
               taskId,
-              text: userMessage.text,
+              text: humanIntent ? `${userMessage.text}。宿主已记录本次人工需求和参考确认，请继续整理制作单等待人工确认。` : userMessage.text,
               conversation,
               signal,
               onEvent: handleAgentEvent,
-              expectedRevision: body.expectedRevision,
+              expectedRevision: currentTask.revision,
               model,
               editPages,
               canvasState,
@@ -1380,10 +1453,11 @@ export function createStudioServer({
               text: result.text,
               model,
               ...(mechanicalAttachments.size ? { attachments: [...mechanicalAttachments.values()] } : {}),
+              ...(Array.isArray(result.deliverables) ? {deliverables:result.deliverables} : {}),
             }, data);
             return { assistantMessage, task: result.task || await readTask(taskId, data) };
           },
-          resultView: (result) => ({ text: result.assistantMessage.text, taskRevision: result.task?.revision ?? null }),
+          resultView: (result) => ({ text: result.assistantMessage.text, taskRevision: result.task?.revision ?? null, ...(result.export ? {downloadUrl:result.export.downloadUrl} : {}) }),
         });
         return json(response, 202, { job });
       }
@@ -1472,6 +1546,17 @@ export function createStudioServer({
       const job = await jobs.cancel(segments[2]);
       if (!job) throw error('ERR_JOB_NOT_FOUND', 'Job 不存在', 404);
       return json(response, 200, { job });
+    }
+
+    if (segments[1] === 'tasks' && segments.length === 5 && method === 'GET' && segments[3] === 'workspace-artifacts') {
+      const {id} = await requireTask(segments[2]);
+      let file;
+      try { file = await createWorkspaceArtifactReader(path.join(taskDirectory(id,data),'workspace')).readArtifact(segments[4]); }
+      catch { throw error('ERR_FILE_NOT_FOUND','交付文件不存在或路径无效',404); }
+      if (url.searchParams.get('sha256') !== file.sha256) throw error('ERR_ARTIFACT_STALE','交付文件已变化，请读取最新任务结果。',409);
+      const inline = ['image/png','image/jpeg','image/webp','image/bmp'].includes(file.mimeType) && url.searchParams.get('download') !== '1';
+      response.writeHead(200,{'content-type':file.mimeType,'content-length':file.bytes.length,'content-disposition':contentDisposition(file.name,inline),'cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','cross-origin-resource-policy':'same-origin'});
+      return response.end(file.bytes);
     }
 
     if (segments[1] === 'tasks' && segments.length === 5 && method === 'GET' && segments[3] === 'images') {
