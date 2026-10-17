@@ -6,14 +6,12 @@
 
 ## 当前成品下载
 
-本地 Canvas 版 `company-p5.1.3` 正在构建；下表 `company-p5.1.2` 是上一轮远端画布版本，暂不作为本轮本地化交付。
-
 | 设备 | 应下载版本 | 下载 |
 | --- | --- | --- |
-| Apple 芯片 Mac | `company-p5.1.2`，模型配置修正版 | [Mac 修正版](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39028548455/artifacts/12099502867) |
-| Windows 64 位 | `company-p5.1.2`，模型配置修正版 | [Windows 公司包](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39028548455/artifacts/12099841796) |
+| Apple 芯片 Mac | `company-p5.1.3`，本地 Canvas 版 | [Mac 修正版](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39030283951/artifacts/12100615928) |
+| Windows 64 位 | `company-p5.1.3`，本地 Canvas 版 | [Windows 公司包](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39030283951/artifacts/12099574086) |
 
-Actions 下载可能要求 GitHub 登录；外层 ZIP 内还有产品 ZIP，请完整解压产品包。本轮文件保留至 2026-10-31。两平台均使用本轮修正版，旧包保留作历史记录。
+Actions 下载可能要求 GitHub 登录；外层 ZIP 内还有产品 ZIP，请完整解压产品包。本轮文件保留至 2026-10-31。两平台均使用本轮本地 Canvas 版，旧包保留作历史记录。
 
 ## 普通同事使用
 
