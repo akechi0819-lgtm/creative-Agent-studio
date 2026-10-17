@@ -43,7 +43,7 @@ async function makeWebFixture(t) {
       import { appendFile, readFile, readdir } from 'node:fs/promises';
       export function alive(pid) { return pid === 999999; }
       export async function readJson(filename) {
-        if (filename.endsWith('/prepare.lock')) {
+        if (filename.endsWith('prepare.lock')) {
           await appendFile(process.env.TEST_TRACE, 'prepare-check\\n');
           const markers = await readdir(process.env.TEST_SOURCE_SERVERS).catch(() => []);
           if (markers.some(name => name.endsWith('.json'))) await appendFile(process.env.TEST_TRACE, 'marker-present\\n');
