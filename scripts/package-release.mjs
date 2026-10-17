@@ -13,6 +13,9 @@ import {
   hashFile, materializeBundleSymlinks, normalizeTargetId, pathWithin, pruneBuildState,
   trackedFiles, writeBundleManifest,
 } from '../src/launcher/distribution.mjs';
+import {
+  assembleMacApp, resolveRuntimeRoot, sealMacAppBundle, verifyMacAppBundle, verifyMacAppSeal,
+} from '../src/launcher/macos-bundle.mjs';
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NODE_VERSION = '22.23.3';
@@ -240,24 +243,6 @@ async function writeLicenseInventory(stage, target, nodePath) {
   return inventory;
 }
 
-async function makeMacApp(stage, target) {
-  const bundle = path.join(stage, 'Creative Agent Studio.app');
-  const sourcePath = path.join(stage, 'release/macos-launcher.applescript');
-  const source = await readFile(sourcePath, 'utf8');
-  const marker = '__NODE_DIRECTORY__';
-  if (!source.includes(marker)) throw new Error('macOS 启动脚本缺少 Node 目录占位符。');
-  const nodeDirectoryName = path.posix.basename(path.posix.dirname(path.posix.dirname(target.nodeRelative)));
-  const compiledSource = path.join(stage, '.studio-runtime', 'macos-launcher.applescript');
-  await writeFile(compiledSource, source.replaceAll(marker, nodeDirectoryName), { flag: 'wx' });
-  run('osacompile', ['-o', bundle, compiledSource]);
-  const compiledScript = path.join(bundle, 'Contents/Resources/Scripts/main.scpt');
-  const decompiled = execFileSync('osadecompile', [compiledScript], { encoding: 'utf8' });
-  if (!decompiled.includes(nodeDirectoryName) || decompiled.includes(marker)) {
-    throw new Error('编译后的 macOS 图形启动器没有指向本平台随包 Node。');
-  }
-  await rm(compiledSource, { force: true });
-}
-
 async function makeWindowsEntry(stage) {
   await copyFile(path.join(stage, 'release/windows-start.vbs'), path.join(stage, 'Start.vbs'));
   const scriptPath = path.join(stage, 'release/windows-start.ps1');
@@ -270,15 +255,15 @@ async function makeWindowsEntry(stage) {
   });
 }
 
-async function relocatedRuntimeSmoke(stage, target) {
-  const nodePath = path.join(stage, target.nodeRelative);
+async function relocatedRuntimeSmoke(runtimeRoot, target) {
+  const nodePath = path.join(runtimeRoot, target.nodeRelative);
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), 'cas-release-smoke-data-'));
   const env = {
-    ...environmentWithoutSystemPython(stage, nodePath),
+    ...environmentWithoutSystemPython(runtimeRoot, nodePath),
     STUDIO_DATA_DIR: dataRoot,
     STUDIO_RELEASE_NO_OPEN: '1',
   };
-  const launcherPath = path.join(stage, 'release/launcher.mjs');
+  const launcherPath = path.join(runtimeRoot, 'release/launcher.mjs');
   const workspace = path.join(dataRoot, 'office-smoke');
   const diagnosticTail = async () => {
     const contents = await readFile(path.join(dataRoot, 'python-prepare.log'), 'utf8').catch(() => '');
@@ -291,28 +276,28 @@ async function relocatedRuntimeSmoke(stage, target) {
   };
   try {
     const forbiddenRuntimePaths = [
-      path.join(stage, '.venv-ocr'),
-      path.join(stage, '.studio-runtime/python'),
-      path.join(stage, '.studio-runtime/rapidocr-models'),
+      path.join(runtimeRoot, '.venv-ocr'),
+      path.join(runtimeRoot, '.studio-runtime/python'),
+      path.join(runtimeRoot, '.studio-runtime/rapidocr-models'),
     ];
     for (const runtimePath of forbiddenRuntimePaths) {
-      await access(runtimePath).then(() => { throw new Error(`Release ZIP staging 意外带入 Python/OCR 资源：${path.relative(stage, runtimePath)}`); }, error => {
+      await access(runtimePath).then(() => { throw new Error(`Release ZIP staging 意外带入 Python/OCR 资源：${path.relative(runtimeRoot, runtimePath)}`); }, error => {
         if (error.code !== 'ENOENT') throw error;
       });
     }
-    const nodeVersion = execFileSync(nodePath, ['--version'], { cwd: stage, env, encoding: 'utf8', windowsHide: true }).trim();
+    const nodeVersion = execFileSync(nodePath, ['--version'], { cwd: runtimeRoot, env, encoding: 'utf8', windowsHide: true }).trim();
     if (nodeVersion !== REQUIRED_NODE_VERSION) throw new Error(`搬移后 Node 运行检查失败：${nodeVersion}`);
     const nodeImports = execFileSync(nodePath, ['--input-type=module', '-e', "await import('sharp'); await import('@deepseek-ai/libreoffice-kit'); console.log('native node imports ready')"], {
-      cwd: path.join(stage, 'adapters/dsh'), env, encoding: 'utf8', windowsHide: true,
+      cwd: path.join(runtimeRoot, 'adapters/dsh'), env, encoding: 'utf8', windowsHide: true,
     }).trim();
     if (!nodeImports.includes('native node imports ready')) throw new Error('搬移后的 Node 原生依赖导入未通过。');
 
     const startOutput = execFileSync(nodePath, [launcherPath, 'start'], {
-      cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 45 * 60 * 1000,
+      cwd: runtimeRoot, env, encoding: 'utf8', windowsHide: true, timeout: 45 * 60 * 1000,
     }).trim();
     if (!startOutput.includes('工作台已启动')) throw new Error('首次 Python/OCR 准备后未启动本机 Web 工作台。');
-    const runtimeRoot = path.join(dataRoot, 'runtime');
-    const sharedRuntimeRoot = path.join(runtimeRoot, '.studio-runtime');
+    const pythonRuntimeRoot = path.join(dataRoot, 'runtime');
+    const sharedRuntimeRoot = path.join(pythonRuntimeRoot, '.studio-runtime');
     const [pythonState, dependencyState, modelState] = await Promise.all([
       readFile(path.join(sharedRuntimeRoot, 'python-runtime-state.json'), 'utf8').then(JSON.parse),
       readFile(path.join(sharedRuntimeRoot, 'python-state.json'), 'utf8').then(JSON.parse),
@@ -321,7 +306,7 @@ async function relocatedRuntimeSmoke(stage, target) {
     const pythonPath = pythonState.pythonExecutable;
     const modelRoot = modelState.modelRoot;
     if (pythonState.status !== 'ready' || dependencyState.status !== 'ready' || modelState.status !== 'ready'
-        || !pathWithin(runtimeRoot, pythonPath) || !pathWithin(runtimeRoot, modelRoot)) {
+        || !pathWithin(pythonRuntimeRoot, pythonPath) || !pathWithin(pythonRuntimeRoot, modelRoot)) {
       throw new Error('首次启动没有在临时用户数据目录准备完整 Python/OCR 环境。');
     }
     const pythonEnv = {
@@ -338,11 +323,11 @@ async function relocatedRuntimeSmoke(stage, target) {
       'assert pathlib.Path(sys.prefix).resolve().is_relative_to(root), sys.prefix',
       'print("private OCR/Office imports ready")',
     ].join('; ');
-    const pythonResult = execFileSync(pythonPath, ['-I', '-c', pythonCode, runtimeRoot], { cwd: stage, env: pythonEnv, encoding: 'utf8', windowsHide: true }).trim();
+    const pythonResult = execFileSync(pythonPath, ['-I', '-c', pythonCode, pythonRuntimeRoot], { cwd: runtimeRoot, env: pythonEnv, encoding: 'utf8', windowsHide: true }).trim();
     if (!pythonResult.includes('private OCR/Office imports ready')) throw new Error('用户数据目录中的 OCR/Office Python 导入未通过。');
 
-    const ocr = execFileSync(pythonPath, ['-I', path.join(stage, 'scripts/ocr_materials.py'), 'image', path.join(stage, 'adapters/dsh/connection-check.png')], {
-      cwd: stage, env: pythonEnv, encoding: 'utf8', windowsHide: true, timeout: 120_000,
+    const ocr = execFileSync(pythonPath, ['-I', path.join(runtimeRoot, 'scripts/ocr_materials.py'), 'image', path.join(runtimeRoot, 'adapters/dsh/connection-check.png')], {
+      cwd: runtimeRoot, env: pythonEnv, encoding: 'utf8', windowsHide: true, timeout: 120_000,
     }).trim();
     const ocrResult = JSON.parse(ocr);
     if (ocrResult.kind !== 'image' || !Array.isArray(ocrResult.pages) || ocrResult.pages.length !== 1) {
@@ -353,7 +338,7 @@ async function relocatedRuntimeSmoke(stage, target) {
     await mkdir(path.join(workspace, 'outputs'), { recursive: true });
     const documentPath = path.join(workspace, 'inputs/release-smoke.docx');
     execFileSync(pythonPath, ['-I', '-c', 'import sys; from docx import Document; doc=Document(); doc.add_paragraph("portable runtime smoke"); doc.save(sys.argv[1])', documentPath], {
-      cwd: stage, env: pythonEnv, windowsHide: true,
+      cwd: runtimeRoot, env: pythonEnv, windowsHide: true,
     });
     const conversionScript = [
       "import { CONVERSION_FORMATS, createConverter } from '@deepseek-ai/libreoffice-kit';",
@@ -374,7 +359,7 @@ async function relocatedRuntimeSmoke(stage, target) {
       "console.log(JSON.stringify(result));",
     ].join('\n');
     const conversionOutput = execFileSync(nodePath, ['--input-type=module', '-e', conversionScript], {
-      cwd: path.join(stage, 'adapters/dsh'), env, encoding: 'utf8', windowsHide: true, timeout: 180_000,
+      cwd: path.join(runtimeRoot, 'adapters/dsh'), env, encoding: 'utf8', windowsHide: true, timeout: 180_000,
     }).trim();
     const conversionResult = JSON.parse(conversionOutput);
     if (conversionResult.format !== 'pdf' || conversionResult.backend !== 'native' || conversionResult.bytes < 1) {
@@ -387,14 +372,14 @@ async function relocatedRuntimeSmoke(stage, target) {
     });
     const healthBody = await health.json();
     if (!health.ok || healthBody.instanceId !== runtime.instanceId) throw new Error('搬移后 Web 工作台健康 API 身份检查失败。');
-    const statusOutput = execFileSync(nodePath, [launcherPath, 'status'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 }).trim();
+    const statusOutput = execFileSync(nodePath, [launcherPath, 'status'], { cwd: runtimeRoot, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 }).trim();
     if (!statusOutput.includes('正在运行')) throw new Error('搬移后的运行状态检查未识别健康工作台。');
-    execFileSync(nodePath, [launcherPath, 'stop'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 });
-    const stoppedOutput = execFileSync(nodePath, [launcherPath, 'status'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 }).trim();
+    execFileSync(nodePath, [launcherPath, 'stop'], { cwd: runtimeRoot, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 });
+    const stoppedOutput = execFileSync(nodePath, [launcherPath, 'status'], { cwd: runtimeRoot, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 }).trim();
     if (!stoppedOutput.includes('未运行')) throw new Error('搬移后的停止检查未完成。');
 
     const secondStart = execFileSync(nodePath, [launcherPath, 'start'], {
-      cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 3 * 60 * 1000,
+      cwd: runtimeRoot, env, encoding: 'utf8', windowsHide: true, timeout: 3 * 60 * 1000,
     }).trim();
     if (!secondStart.includes('工作台已启动')) throw new Error('Python/OCR 健康复用后的第二次启动失败。');
     const reusedPythonState = JSON.parse(await readFile(path.join(sharedRuntimeRoot, 'python-state.json'), 'utf8'));
@@ -402,14 +387,14 @@ async function relocatedRuntimeSmoke(stage, target) {
     if (reusedPythonState.checkedAt !== dependencyState.checkedAt || reusedModelState.warmedAt !== modelState.warmedAt) {
       throw new Error('第二次启动没有复用健康的 Python 依赖与 OCR 模型状态。');
     }
-    execFileSync(nodePath, [launcherPath, 'stop'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 });
+    execFileSync(nodePath, [launcherPath, 'stop'], { cwd: runtimeRoot, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 });
     process.stdout.write(`搬移后首启检查通过：${target.id} / Node / Web health / Python imports / OCR JSON / Office PDF；第二次启动复用 Python/OCR 状态。\n`);
   } catch (error) {
     const details = await diagnosticTail();
     if (details) throw new Error(`${error.message}\nPython/OCR 准备日志尾部（已清理凭据与 URL 查询参数）：\n${details}`);
     throw error;
   } finally {
-    try { execFileSync(nodePath, [launcherPath, 'stop'], { cwd: stage, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 }); } catch { /* The normal test path stops cleanly; this is only failure cleanup. */ }
+    try { execFileSync(nodePath, [launcherPath, 'stop'], { cwd: runtimeRoot, env, encoding: 'utf8', windowsHide: true, timeout: 45_000 }); } catch { /* The normal test path stops cleanly; this is only failure cleanup. */ }
     await rm(dataRoot, { recursive: true, force: true });
   }
 }
@@ -509,12 +494,29 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 async function verifyArchiveAfterExtraction(archivePath, extractionRoot, rootName, target) {
   await extractArchive(archivePath, extractionRoot, target);
   const extracted = path.join(extractionRoot, rootName);
-  const manifest = JSON.parse(await readFile(path.join(extracted, 'release-manifest.json'), 'utf8'));
+  const runtimeRoot = resolveRuntimeRoot(extracted, target);
+  if (target.platform === 'darwin') {
+    const outerEntries = await readdir(extracted);
+    if (outerEntries.length !== 1 || outerEntries[0] !== 'Creative Agent Studio.app') {
+      throw new Error('macOS ZIP 外层只能包含自包含的 Creative Agent Studio.app。');
+    }
+    const bundle = path.join(extracted, 'Creative Agent Studio.app');
+    await verifyMacAppBundle(bundle, target);
+    verifyMacAppSeal(bundle);
+  }
+  const manifest = JSON.parse(await readFile(path.join(runtimeRoot, 'release-manifest.json'), 'utf8'));
   if (manifest.target !== target.id || manifest.pythonRuntime?.bundled !== false) {
     throw new Error('归档解压后的 Release manifest 与目标或 Python 首次准备布局不符。');
   }
-  for (const file of manifest.files) await access(path.join(extracted, file.path));
-  await relocatedRuntimeSmoke(extracted, target);
+  for (const file of manifest.files) {
+    const filePath = path.join(runtimeRoot, file.path);
+    if (!pathWithin(runtimeRoot, filePath)) throw new Error(`归档 manifest 路径越界：${file.path}`);
+    const info = await lstat(filePath);
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== file.size || await hashFile(filePath) !== file.sha256) {
+      throw new Error(`归档解压文件与 manifest 的大小或 SHA-256 不符：${file.path}`);
+    }
+  }
+  await relocatedRuntimeSmoke(runtimeRoot, target);
 }
 
 async function build(options) {
@@ -578,21 +580,23 @@ async function build(options) {
     await ensureLibreOfficeKitWindowsPathFix(stage);
     await packageNodeRuntime(nodePath, stage);
     await writeLicenseInventory(stage, target, nodePath);
-    if (target.platform === 'darwin') await makeMacApp(stage, target);
-    else await makeWindowsEntry(stage);
+    if (target.platform === 'win32') await makeWindowsEntry(stage);
     await pruneBuildState(stage);
     await materializeBundleSymlinks(stage);
+    if (target.platform === 'darwin') await assembleMacApp(stage, target);
     relocationRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cas-release-moved-')));
     const relocatedStage = path.join(relocationRoot, rootName);
     await rename(stage, relocatedStage);
     stage = relocatedStage;
-    const manifest = await writeBundleManifest(stage, targetId, options.version);
+    const runtimeRoot = resolveRuntimeRoot(stage, target);
+    const manifest = await writeBundleManifest(runtimeRoot, targetId, options.version);
     if (manifest.pythonRuntime?.bundled !== false || manifest.pythonRuntime?.preparedOnFirstStart !== true
         || manifest.files.some(file => file.path.startsWith('.venv-ocr/')
           || file.path.startsWith('.studio-runtime/python/')
           || file.path.startsWith('.studio-runtime/rapidocr-models/'))) {
       throw new Error('主运行包必须排除 Python/OCR 首次准备资源，并保留首次准备元数据。');
     }
+    if (target.platform === 'darwin') sealMacAppBundle(path.join(stage, 'Creative Agent Studio.app'));
     await mkdir(outputRoot, { recursive: true });
     const filename = archiveName(options.version, targetId);
     const archivePath = path.join(outputRoot, filename);

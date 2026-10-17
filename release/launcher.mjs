@@ -39,6 +39,7 @@ async function verifyBundle() {
 function packageEnvironment(pythonRuntime) {
   return {
     ...process.env,
+    STUDIO_RELEASE_BUNDLE: '1',
     STUDIO_OCR_PYTHON: pythonRuntime.pythonPath,
     STUDIO_RAPIDOCR_MODEL_DIR: pythonRuntime.modelRoot,
     PYTHONNOUSERSITE: '1',

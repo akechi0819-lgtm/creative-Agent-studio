@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile, lstat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +8,10 @@ import {
   hashFile, isReleasePathAllowed, materializeBundleSymlinks, normalizeTargetId,
   writeBundleManifest,
 } from '../src/launcher/distribution.mjs';
+import {
+  assembleMacApp, moveMacPayloadIntoBundle, resolveRuntimeRoot, sealMacAppBundle,
+  verifyMacAppBundle, verifyMacAppSeal,
+} from '../src/launcher/macos-bundle.mjs';
 
 async function temporaryDirectory() { return mkdtemp(path.join(os.tmpdir(), 'cas-distribution-test-')); }
 
@@ -155,6 +158,45 @@ test('manifest accepts locked SDK session code while still rejecting user sessio
   assert.ok(manifest.files.some(file => file.path === sdkFile));
 });
 
+test('self-contained macOS app keeps its payload after mock AppTranslocation and Windows stays flat', async t => {
+  const fixture = await temporaryDirectory();
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const stage = path.join(fixture, 'stage');
+  const bundle = path.join(stage, 'Creative Agent Studio.app');
+  const shell = path.join(bundle, 'Contents/Resources/Scripts');
+  const nodeDirectory = 'node-v22.23.3-darwin-arm64';
+  const nodePath = path.join(stage, `.studio-runtime/node/${nodeDirectory}/bin/node`);
+  await mkdir(shell, { recursive: true });
+  await writeFile(path.join(bundle, 'Contents/Info.plist'), 'fixture');
+  await writeFile(path.join(shell, 'main.scpt'), 'fixture');
+  await mkdir(path.dirname(nodePath), { recursive: true });
+  await writeFile(nodePath, 'node');
+  await mkdir(path.join(stage, 'release'), { recursive: true });
+  await writeFile(path.join(stage, 'release/launcher.mjs'), 'launcher');
+  await writeFile(path.join(stage, 'release-manifest.json'), 'stale flat manifest');
+  await mkdir(path.join(stage, '.hidden'), { recursive: true });
+  await writeFile(path.join(stage, '.hidden/payload'), 'hidden payload');
+
+  const stagedRuntimeRoot = await moveMacPayloadIntoBundle(stage, bundle);
+  assert.equal(stagedRuntimeRoot, resolveRuntimeRoot(stage, 'darwin-arm64'));
+  assert.deepEqual(await readdir(stage), ['Creative Agent Studio.app']);
+  await assert.rejects(readFile(path.join(stage, 'release-manifest.json')));
+  await writeBundleManifest(stagedRuntimeRoot, 'darwin-arm64', 'fixture');
+
+  const translocationRoot = path.join(fixture, 'AppTranslocation', 'A1B2C3', 'd');
+  await mkdir(translocationRoot, { recursive: true });
+  await rename(bundle, path.join(translocationRoot, 'Creative Agent Studio.app'));
+  const relocatedRoot = resolveRuntimeRoot(translocationRoot, 'darwin-arm64');
+  assert.equal(await readFile(path.join(relocatedRoot, `.studio-runtime/node/${nodeDirectory}/bin/node`), 'utf8'), 'node');
+  assert.equal(await readFile(path.join(relocatedRoot, 'release/launcher.mjs'), 'utf8'), 'launcher');
+  assert.equal(await readFile(path.join(relocatedRoot, '.hidden/payload'), 'utf8'), 'hidden payload');
+  assert.ok(JSON.parse(await readFile(path.join(relocatedRoot, 'release-manifest.json'), 'utf8')).files.length > 0);
+
+  const windowsStage = path.join(fixture, 'windows-stage');
+  await mkdir(windowsStage, { recursive: true });
+  assert.equal(resolveRuntimeRoot(windowsStage, 'win32-x64'), windowsStage);
+});
+
 test('compiled macOS launcher points to the native bundled Node path without opening its GUI', async t => {
   if (process.platform !== 'darwin') return t.skip('osacompile is available only on macOS runners.');
   const fixture = await temporaryDirectory();
@@ -162,15 +204,32 @@ test('compiled macOS launcher points to the native bundled Node path without ope
   const source = await readFile(new URL('../release/macos-launcher.applescript', import.meta.url), 'utf8');
   const architecture = process.arch === 'arm64' ? 'arm64' : 'x64';
   const nodeDirectory = `node-v22.23.3-darwin-${architecture}`;
-  const resolved = source.replaceAll('__NODE_DIRECTORY__', nodeDirectory);
-  assert.ok(!resolved.includes('__NODE_DIRECTORY__'));
-  const sourcePath = path.join(fixture, 'launcher.applescript');
-  const appPath = path.join(fixture, 'Creative Agent Studio.app');
-  await writeFile(sourcePath, resolved);
-  execFileSync('osacompile', ['-o', appPath, sourcePath], { stdio: 'pipe' });
-  const compiledSource = execFileSync('osadecompile', [path.join(appPath, 'Contents/Resources/Scripts/main.scpt')], { encoding: 'utf8' });
+  assert.match(source, /set packageRoot to bundlePath & "\/Contents\/Resources\/studio"/);
+  assert.doesNotMatch(source, /set packageRoot to do shell script .*dirname/);
+  assert.ok(source.includes('__NODE_DIRECTORY__'));
+  const stage = path.join(fixture, 'stage');
+  const sourcePath = path.join(stage, 'release/macos-launcher.applescript');
+  const nodeRelative = `.studio-runtime/node/${nodeDirectory}/bin/node`;
+  const nodePath = path.join(stage, nodeRelative);
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  await writeFile(sourcePath, source);
+  await mkdir(path.dirname(nodePath), { recursive: true });
+  await writeFile(nodePath, 'fixture node');
+  await writeFile(path.join(stage, 'release/launcher.mjs'), 'fixture launcher');
+  const runtimeRoot = await assembleMacApp(stage, { platform: 'darwin', nodeRelative });
+  assert.equal(runtimeRoot, resolveRuntimeRoot(stage, 'darwin-arm64'));
+  assert.deepEqual(await readdir(stage), ['Creative Agent Studio.app']);
+  const appPath = path.join(stage, 'Creative Agent Studio.app');
+  const compiledSource = await verifyMacAppBundle(appPath, {
+    platform: 'darwin', nodeRelative,
+  });
+  sealMacAppBundle(appPath);
+  verifyMacAppSeal(appPath);
   assert.ok(compiledSource.includes(nodeDirectory));
-  assert.ok(compiledSource.includes('/.studio-runtime/node/'));
+  assert.ok(compiledSource.includes('/Contents/Resources/studio'));
+  assert.ok(compiledSource.includes('/release/launcher.mjs'));
+  assert.equal(await readFile(path.join(runtimeRoot, nodeRelative), 'utf8'), 'fixture node');
+  assert.equal(await readFile(path.join(runtimeRoot, 'release/launcher.mjs'), 'utf8'), 'fixture launcher');
 });
 
 test('Windows archive writer includes hidden app files, checks the first-start runtime contract, and excludes Python assets', async () => {
@@ -182,6 +241,11 @@ test('Windows archive writer includes hidden app files, checks the first-start r
   assert.match(source, /third_party\/canvas\/web\/dist\/index\.html/);
   assert.match(source, /release\/prepare-python\.mjs/);
   assert.match(source, /verifyArchiveAfterExtraction\(archivePath/);
+  assert.match(source, /await assembleMacApp\(stage, target\)/);
+  assert.match(source, /resolveRuntimeRoot\(stage, target\)/);
+  assert.match(source, /info\.size !== file\.size/);
+  assert.match(source, /await hashFile\(filePath\) !== file\.sha256/);
+  assert.match(source, /sealMacAppBundle\(path\.join\(stage, 'Creative Agent Studio\.app'\)\)/);
   assert.match(source, /\.studio-runtime\/python\//);
   assert.match(source, /\.studio-runtime\/rapidocr-models\//);
   assert.doesNotMatch(source, /\.venv-ocr\/Scripts\/python\.exe/);
