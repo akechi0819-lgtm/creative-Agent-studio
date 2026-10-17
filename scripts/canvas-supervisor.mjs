@@ -3,11 +3,10 @@ import { createServer as netServer } from 'node:net';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, open, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { canvasStorageHandler } from '../src/canvas/storage.mjs';
 import { root, dataRoot } from '../src/canvas/client.mjs';
+import { createImageProxyHandler, validateImageProxyConfig } from '../src/web/image-proxy.mjs';
 
 const data = dataRoot();
 await mkdir(data, {recursive:true,mode:0o700});
@@ -35,10 +34,6 @@ const bootstrapTickets=new Map();
 const browserSessions=new Map();
 let currentImageConfig=null;
 let currentConfigRevision=0;
-const imageResultUrlTtlMs=60*60_000;
-const maxImageResultUrlsPerSession=64;
-const maxImageResultUrlLength=8192;
-const maxImageJsonCaptureBytes=1024*1024;
 
 function safeJson(res,status,value) {
   res.writeHead(status,{'content-type':'application/json','cache-control':'no-store','referrer-policy':'no-referrer'});
@@ -54,17 +49,6 @@ async function readRequestJson(req,limit=64*1024) {
   for await(const chunk of req) {size+=chunk.length;if(size>limit)throw new Error('request too large');chunks.push(chunk);}
   return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');
 }
-function validImageConfig(value) {
-  if(value==null)return null;
-  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('invalid image config');
-  const baseUrl=typeof value.baseUrl==='string'?value.baseUrl.trim():'';
-  const model=typeof value.model==='string'?value.model.trim():'';
-  const apiKey=typeof value.apiKey==='string'?value.apiKey:'';
-  const apiFormat=value.apiFormat==='gemini'?'gemini':'openai';
-  if(baseUrl.length>2000||model.length>300||apiKey.length>5000)throw new Error('invalid image config');
-  if(baseUrl){const parsed=new URL(baseUrl);if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password||parsed.search||parsed.hash)throw new Error('invalid image config');}
-  return {baseUrl,model,apiKey,apiFormat};
-}
 function sessionCookie(req) {
   const prefix=`${cookieName}=`;
   for(const part of String(req.headers.cookie||'').split(';')) {
@@ -78,140 +62,11 @@ function browserSession(req) {
   if(!session||session.expiresAt<Date.now()){browserSessions.delete(sessionId);return null;}
   return session;
 }
-function allowedImageTarget(session, target, method) {
-  const image=session.imageConfig;
-  if(!image?.baseUrl||!image.model||!image.apiKey)return false;
-  let base;
-  try {base=new URL(image.baseUrl);} catch {return false;}
-  if(target.protocol!==base.protocol||target.origin!==base.origin||target.username||target.password||target.search||target.hash)return false;
-  const basePath=base.pathname.replace(/\/+$/,'');
-  const apiPath=/\/v1$/i.test(basePath)?basePath:`${basePath}/v1`;
-  const path=target.pathname;
-  return (method==='GET'&&path===`${apiPath}/models`)
-    || (method==='POST'&&(path===`${apiPath}/images/generations`||path===`${apiPath}/images/edits`));
-}
-function isImageCreationTarget(session,target,method) {
-  if(method!=='POST')return false;
-  const image=session.imageConfig;
-  if(!image?.baseUrl)return false;
-  let base;
-  try {base=new URL(image.baseUrl);} catch {return false;}
-  if(target.protocol!==base.protocol||target.origin!==base.origin||target.username||target.password||target.search||target.hash)return false;
-  const basePath=base.pathname.replace(/\/+$/,'');
-  const apiPath=/\/v1$/i.test(basePath)?basePath:`${basePath}/v1`;
-  return target.pathname===`${apiPath}/images/generations`||target.pathname===`${apiPath}/images/edits`;
-}
-function cleanImageResultUrls(session,now=Date.now()) {
-  const urls=session.imageResultUrls;
-  if(!(urls instanceof Map))return;
-  for(const [value,expiresAt] of urls)if(expiresAt<=now)urls.delete(value);
-  while(urls.size>maxImageResultUrlsPerSession)urls.delete(urls.keys().next().value);
-}
-function rememberImageResultUrls(session,body) {
-  let parsed;
-  try {parsed=JSON.parse(body.toString('utf8'));} catch {return;}
-  if(!Array.isArray(parsed?.data))return;
-  if(!(session.imageResultUrls instanceof Map))session.imageResultUrls=new Map();
-  const expiresAt=Math.min(session.expiresAt,Date.now()+imageResultUrlTtlMs);
-  for(const item of parsed.data) {
-    const value=item?.url;
-    if(typeof value!=='string'||!value||value.length>maxImageResultUrlLength)continue;
-    let target;
-    try {target=new URL(value);} catch {continue;}
-    if(!['http:','https:'].includes(target.protocol)||target.username||target.password||target.hash)continue;
-    session.imageResultUrls.delete(value);
-    session.imageResultUrls.set(value,expiresAt);
-  }
-  cleanImageResultUrls(session);
-}
-function imageResultUrlAllowed(session,value) {
-  cleanImageResultUrls(session);
-  return session.imageResultUrls instanceof Map&&session.imageResultUrls.has(value);
-}
-function decodeImageProxyTarget(rawTarget) {
-  // Existing raw target fixtures include the whole URL after the route prefix.
-  // The app itself now encodes the URL so its signed query cannot become the proxy query.
-  return /^https?:\/\//i.test(rawTarget)?rawTarget:decodeURIComponent(rawTarget);
-}
-async function relayUpstreamBody(upstream,res,{captureImageUrls=false,session}={}) {
-  if(!upstream.body){res.end();return;}
-  const canCapture=captureImageUrls&&/^application\/json(?:\s*;|$)/i.test(upstream.headers.get('content-type')||'');
-  if(!canCapture){await pipeline(Readable.fromWeb(upstream.body),res);return;}
-  const reader=upstream.body.getReader();
-  const captured=[];let size=0,done=false;
-  while(size<=maxImageJsonCaptureBytes) {
-    const chunk=await reader.read();
-    if(chunk.done){done=true;break;}
-    const bytes=Buffer.from(chunk.value);
-    captured.push(bytes);size+=bytes.length;
-    if(size>maxImageJsonCaptureBytes)break;
-  }
-  const prefix=Buffer.concat(captured);
-  if(done) {
-    rememberImageResultUrls(session,prefix);
-    res.end(prefix);
-    return;
-  }
-  const remaining=Readable.from((async function*(){
-    if(prefix.length)yield prefix;
-    try {
-      while(true) {
-        const chunk=await reader.read();
-        if(chunk.done)break;
-        yield Buffer.from(chunk.value);
-      }
-    } finally {reader.releaseLock();}
-  })());
-  await pipeline(remaining,res);
-}
-async function proxyImageRequest(req,res) {
-  if(!sameOrigin(req)){res.writeHead(403,{'cache-control':'no-store'}).end();return;}
-  const session=browserSession(req);
-  if(!session){safeJson(res,401,{error:'Studio session required'});return;}
-  const prefix='/__studio/image-proxy/';
-  const raw=String(req.url||'');
-  if(!raw.startsWith(prefix)){res.writeHead(404,{'cache-control':'no-store'}).end();return;}
-  const rawTarget=raw.slice(prefix.length);
-  let targetValue,target;
-  try {targetValue=decodeImageProxyTarget(rawTarget);target=new URL(targetValue);} catch {res.writeHead(400,{'cache-control':'no-store'}).end();return;}
-  const method=req.method||'GET';
-  const isApiTarget=allowedImageTarget(session,target,method);
-  const isIssuedImageResult=method==='GET'&&imageResultUrlAllowed(session,targetValue);
-  if(!isApiTarget&&!isIssuedImageResult){res.writeHead(403,{'cache-control':'no-store'}).end();return;}
-  const controller=new AbortController();
-  const timeoutMs=isIssuedImageResult?10*60_000:method==='GET'?15_000:10*60_000;
-  const timeout=setTimeout(()=>controller.abort(),timeoutMs);
-  req.once('aborted',()=>controller.abort());
-  res.once('finish',()=>clearTimeout(timeout));
-  res.once('close',()=>{clearTimeout(timeout);if(!res.writableEnded)controller.abort();});
-  const headers=new Headers();
-  if(isApiTarget)headers.set('authorization',`Bearer ${session.imageConfig.apiKey}`);
-  for(const name of isApiTarget?['accept','content-type']:['accept']) {
-    const value=req.headers[name];
-    if(typeof value==='string')headers.set(name,value);
-  }
-  const init={method:req.method,headers,signal:controller.signal,redirect:'manual'};
-  if((req.method||'GET')==='POST'){
-    init.body=Readable.toWeb(req);
-    init.duplex='half';
-  }
-  try {
-    const upstream=await fetch(targetValue,init);
-    if(upstream.status>=300&&upstream.status<400){res.writeHead(502,{'cache-control':'no-store'}).end();return;}
-    const forwarded={};
-    for(const name of ['content-type','etag','last-modified','retry-after']){
-      const value=upstream.headers.get(name);if(value)forwarded[name]=value;
-    }
-    forwarded['cache-control']='no-store';
-    res.writeHead(upstream.status,forwarded);
-    if(!upstream.body){res.end();return;}
-    try { await relayUpstreamBody(upstream,res,{captureImageUrls:isApiTarget&&isImageCreationTarget(session,target,method)&&upstream.status>=200&&upstream.status<300,session}); }
-    catch { if(!res.destroyed)res.destroy(); }
-  } catch {
-    if(!res.destroyed&&!res.headersSent)safeJson(res,502,{error:'图片服务转发失败'});
-    else if(!res.destroyed)res.destroy();
-  }
-}
+const proxyImageRequest=createImageProxyHandler({
+  prefix:'/__studio/image-proxy/',
+  authorize:req=>sameOrigin(req),
+  getSession:req=>browserSession(req),
+});
 const storageHandler=canvasStorageHandler({data,authorize:req=>sameOrigin(req)&&Boolean(browserSession(req))});
 const server = createServer(async (req,res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
@@ -241,7 +96,7 @@ const server = createServer(async (req,res) => {
       const body=await readRequestJson(req,12*1024);
       if(!Number.isInteger(body.configRevision)||body.configRevision<1)throw new Error('invalid config revision');
       if(body.configRevision<currentConfigRevision){safeJson(res,409,{error:'stale config revision'});return;}
-      const imageConfig=validImageConfig(body.imageConfig);
+      const imageConfig=validateImageProxyConfig(body.imageConfig);
       currentImageConfig=imageConfig;
       currentConfigRevision=body.configRevision;
       for(const session of browserSessions.values()) {

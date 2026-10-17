@@ -2,3 +2,6 @@
 * text=auto eol=lf
 # The Windows thin entry uses the native batch-file line ending.
 *.cmd text eol=crlf
+
+# 合成 PDF 夹具按二进制处理，保留交叉引用表字节偏移。
+*.pdf binary

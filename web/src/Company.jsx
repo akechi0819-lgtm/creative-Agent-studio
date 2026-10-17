@@ -1,23 +1,36 @@
 import { useEffect, useState } from 'react';
 import { api } from './api.js';
 
-export function CompanySettings({ onRun, task }) {
-  const [config, setConfig] = useState(null);
-  const [draft, setDraft] = useState({ teedy: {}, canvas: {} });
+export function CompanySettings({ onRun, task, initial = null, onConfigured = () => {} }) {
+  const [config, setConfig] = useState(initial);
+  const [draft, setDraft] = useState({ username: initial?.teedy?.username || '', password: '' });
+  const [clearPassword, setClearPassword] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [canvasReport, setCanvasReport] = useState(null);
-  useEffect(() => { api.companyConfig().then(({ config }) => { setConfig(config); setDraft({ teedy: { ...config.teedy, password: '' }, canvas: { webUrl: config.canvas.webUrl } }); }).catch(cause => setError(cause.message)); }, []);
-  const field = (group, key, label, placeholder, secret = false) => <label className="field-label" key={key}>{label}<input type={secret ? 'password' : 'text'} value={draft[group][key] || ''} onChange={event => setDraft(current => ({ ...current, [group]: { ...current[group], [key]: event.target.value } }))} placeholder={placeholder} autoComplete={secret ? 'new-password' : 'off'} /></label>;
+  useEffect(() => {
+    let active = true;
+    if (initial) {
+      setConfig(initial);
+      setDraft(current => ({ username: initial.teedy?.username || '', password: current.password }));
+      return () => { active = false; };
+    }
+    api.companyConfig().then(({ config: next }) => {
+      if (!active) return;
+      setConfig(next);
+      setDraft({ username: next.teedy?.username || '', password: '' });
+    }).catch(cause => { if (active) setError(cause.message); });
+    return () => { active = false; };
+  }, [initial]);
   async function save(event) {
     event.preventDefault(); setBusy(true); setError(''); setNotice('');
     try {
-      const { config: next } = await onRun(() => api.saveCompanyConfig({ expectedRevision: config.revision,
-        teedy: Object.fromEntries(['baseUrl', 'username', 'password'].map(key => [key, draft.teedy[key] || ''])), canvas: { webUrl: draft.canvas.webUrl || '' },
-      }), { refresh: false });
-      setConfig(next); setDraft({ teedy: { ...next.teedy, password: '' }, canvas: { webUrl: next.canvas.webUrl } });
-      setNotice('公司连接已保存。账号与连接密钥保存在当前电脑的公司版私有目录。');
+      const payload = { expectedRevision: config.revision, teedy: { username: draft.username.trim(), password: draft.password } };
+      if (clearPassword) payload.clearSecrets = ['teedy.password'];
+      const { config: next } = await onRun(() => api.saveCompanyConfig(payload), { refresh: false });
+      setConfig(next); onConfigured(next); setDraft({ username: next.teedy.username || '', password: '' }); setClearPassword(false);
+      setNotice('个人 Teedy 账号已保存到当前电脑的私有配置。');
     } catch (cause) { setError(cause.message); }
     finally { setBusy(false); }
   }
@@ -32,28 +45,32 @@ export function CompanySettings({ onRun, task }) {
     const child = window.open('', '_blank');
     if (!child) { setError('请允许打开画布窗口后重试。'); return; }
     child.opener = null; setBusy(true); setError('');
-    try { const result = await api.canvasOpen(task.id); child.location.replace(result.openUrl); setNotice('已打开当前任务的独立画布。模型在远端画布中配置，成品仍返回本任务审核。'); }
+    try { const result = await api.canvasOpen(task.id); child.location.replace(result.openUrl); setNotice('已打开当前任务的独立画布。基础和图片模型使用本机个人配置，成品仍返回本任务审核。'); }
     catch (cause) { child.close(); setError(cause.message); }
     finally { setBusy(false); }
   }
   return <section className="settings-page">
-    <header className="section-header"><div><span className="eyebrow">公司版 · 本机运行</span><h1>公司连接</h1><p>使用自己的素材库账号和新版远端画布。每个创作任务自动建立独立画布连接。</p></div></header>
+    <header className="section-header"><div><span className="eyebrow">公司版 · 本机运行</span><h1>公司连接</h1><p>公司服务地址由管理员预配置。每位同事只保存自己的 Teedy 账号；任务画布会自动建立独立连接。</p></div></header>
     {error && <p className="inline-banner error" role="alert">{error}</p>}{notice && <p className="inline-banner success" role="status">{notice}</p>}
-    {!config ? <p>正在读取公司连接…</p> : <form onSubmit={save}>
+    {!config ? <p>正在读取公司连接…</p> : <>
+      {!config.deploymentConfigured && <p className="inline-banner error" role="alert">公司服务地址尚未由管理员预配置，请联系管理员完成部署。</p>}
       <div className="settings-columns"><section className="settings-section"><h2>公司素材库</h2>
-        {field('teedy', 'baseUrl', 'Teedy HTTPS 地址', 'https://素材库域名')}
-        {field('teedy', 'username', '个人账号', '自己的 Reader 账号')}
-        {field('teedy', 'password', '密码', config.teedy.passwordConfigured ? '已保存，留空保留' : '输入密码', true)}
-        <p className="field-help">只检索、预览和下载。素材、标签及员工权限继续由原素材库管理。更换服务地址或账号时请重新填写密码。</p>
-      </section><section className="settings-section"><h2>新版远端 Canvas</h2>
-        {field('canvas', 'webUrl', '画布 HTTPS 地址', 'https://画布域名')}
-        <p className="field-help">保存站点地址后，在任务中点击“打开 Canvas”即可连接。每个任务自动获得自己的画布与本机工具连接，无需填写画布 ID 或连接密钥。</p>
-        <p className="field-help">生图模型在远端画布中配置。公司版使用当前选定的远端模型。</p>
-        <p>{task ? `当前任务：${task.title}` : '先创建或选择一个任务，再打开画布。'}</p>
+        <label className="field-label">固定素材库地址<output className="readonly-service-address">{config.teedy?.baseUrl || '管理员尚未配置'}</output></label>
+        <form onSubmit={save}>
+          <label className="field-label">个人账号<input value={draft.username} onChange={event => setDraft(current => ({ ...current, username: event.target.value }))} placeholder="自己的 Reader 账号" autoComplete="username" /></label>
+          <label className="field-label">个人密码<input type="password" value={draft.password} onChange={event => { setDraft(current => ({ ...current, password: event.target.value })); setClearPassword(false); }} placeholder={config.teedy.passwordConfigured ? '已保存；留空保留' : '输入自己的密码'} autoComplete="new-password" /></label>
+          {config.teedy.passwordConfigured && <label className="check-row"><input type="checkbox" checked={clearPassword} onChange={event => setClearPassword(event.target.checked)} /><span>明确清除本机保存的密码</span></label>}
+          <p className="field-help">只检索、预览并在人工保留后下载原件。素材、标签及员工权限继续由原素材库管理。账号与密码仅保存在当前电脑。</p>
+          <div className="settings-actions"><button className="button primary" disabled={busy || !config.deploymentConfigured || (!draft.username.trim() && !clearPassword) || (!draft.password && !config.teedy.passwordConfigured && !clearPassword) || (draft.username.trim() !== (config.teedy.username || '') && !draft.password && !clearPassword)}>{busy ? '处理中…' : '保存个人账号'}</button></div>
+        </form>
+      </section><section className="settings-section"><h2>公司 Canvas</h2>
+        <label className="field-label">固定画布地址<output className="readonly-service-address">{config.canvas?.webUrl || '管理员尚未配置'}</output></label>
+        <p className="field-help">Canvas 负责任务画布连接与成品回传。基础和图片模型使用本机个人配置，无需在远端重复填写。</p>
+        <p>{task ? `当前任务：${task.title}` : '先创建或选择一个任务，再打开 Canvas。'}</p>
       </section></div>
-      <div className="settings-actions"><button className="button primary" disabled={busy}>{busy ? '处理中…' : '保存公司连接'}</button><button type="button" className="button outline" onClick={connect} disabled={busy || !task || !config.canvas.webUrl}>打开当前任务画布</button><button type="button" className="button outline" onClick={check} disabled={busy}>检查画布连接</button></div>
+      <div className="settings-actions"><button type="button" className="button outline" onClick={connect} disabled={busy || !task || !config.canvas?.webUrl}>打开当前任务画布</button><button type="button" className="button outline" onClick={check} disabled={busy || !config.deploymentConfigured}>检查画布连接</button></div>
       {canvasReport && <div className="settings-section"><h2>画布连接检查</h2>{(canvasReport.missing || []).length > 0 && <p>待补齐：{canvasReport.missing.join('、')}</p>}{(canvasReport.targets || []).map(target => <p key={`${target.projectId}-${target.clientId}`}>{target.title || '当前任务画布'} · {target.hasCanvas ? '已连接' : '等待页面加载'}</p>)}</div>}
-    </form>}
+    </>}
   </section>;
 }
 
@@ -75,12 +92,12 @@ export function CompanySearch({ task, onRun }) {
     } catch (cause) { setError(cause.message); }
     finally { setBusy(false); }
   }
-  return <section className="settings-section company-search"><h2>公司素材库</h2><p>{task ? '检索结果加入本任务待选参考；点击保留后下载本次原件。' : '检索现有公司库。选择创作任务后可把候选加入任务参考。'}</p>
+  return <section className="settings-section company-search"><h2>公司素材库</h2><p>{task ? '检索候选加入本任务预览，在对话中确认是否使用；只有保留后才下载原件。' : '检索现有公司库。选择创作任务后可把候选加入任务预览。'}</p>
     <form className="search-form" onSubmit={search}><label className="visually-hidden" htmlFor={`company-query-${task?.id || 'browse'}`}>检索公司素材</label><input id={`company-query-${task?.id || 'browse'}`} value={query} onChange={event => setQuery(event.target.value)} placeholder="输入公司素材主题或关键词" required /><button className="button outline" disabled={busy}>{busy ? '检索中…' : '检索公司库'}</button></form>
     <details><summary>限定标签或必须包含的内容</summary><label className="field-label">指定标签<input value={tags} onChange={event => setTags(event.target.value)} placeholder="逗号分隔；不填则按关键词检索" /></label><label className="field-label">必须包含的内容<textarea value={concepts} onChange={event => setConcepts(event.target.value)} rows={2} placeholder="每行一个必需条件；同一行用 | 分隔同义或备选说法" /></label></details>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {searched && !items.length && <p role="status">当前条件未命中图文素材；可自行调整条件后再查。</p>}
-    <div className="company-results">{items.map(item => <article key={item.documentId} className="reference-item">{item.previews?.[0]?.preview_url && <img src={item.previews[0].preview_url} alt={`${item.title}预览`} loading="lazy" />}<div><strong>{item.title}</strong><small>公司素材 · {item.documentId}</small><p>{item.summary}</p><small>{item.tags?.join(' · ')}</small></div></article>)}</div>
+    <div className="company-results">{items.map(item => <article key={item.documentId} className="reference-item">{item.previews?.[0]?.preview_url && <img src={item.previews[0].preview_url} alt={`${item.title}缩略预览`} loading="lazy" decoding="async" />}<div><strong>{item.title}</strong><small>公司素材 · {item.documentId}</small><p>{item.summary}</p><small>{item.tags?.join(' · ')}</small></div></article>)}</div>
   </section>;
 }
 

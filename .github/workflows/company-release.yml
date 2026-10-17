@@ -1,0 +1,93 @@
+name: Company runtime packages
+
+on:
+  push:
+    branches: ['codex/company-edition']
+    paths: ['.github/workflows/company-release.yml']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Company package version
+        required: true
+        default: company-p5.1
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: Build Company ${{ matrix.target }} on its native runner
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+            archive: Creative-Agent-Studio-p5-pr.1.9-macOS-arm64.zip
+          - target: win32-x64
+            runner: windows-2025
+            archive: Creative-Agent-Studio-p5-pr.1.9-Windows-x64.zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - name: Download the matching verified P5 runtime base
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          repository: ${{ github.repository }}
+          run-id: 39001846741
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/p5-base
+      - name: Build current Company user interfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run web:build
+          npm ci --prefix third_party/canvas/web
+          VITE_STUDIO_CANVAS_DEPLOYMENT=remote npm run build --prefix third_party/canvas/web
+          npm ci --prefix third_party/canvas/canvas-agent
+          npm run build --prefix third_party/canvas/canvas-agent
+          npm run p0:client:build --prefix adapters/dsh
+      - name: Create the private service profile file
+        shell: bash
+        env:
+          STUDIO_COMPANY_SERVICES_JSON: ${{ secrets.STUDIO_COMPANY_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$STUDIO_COMPANY_SERVICES_JSON" ]]; then
+            echo '::error::Configure the STUDIO_COMPANY_SERVICES_JSON repository secret before building Company packages.'
+            exit 1
+          fi
+          TEMP_DIR="$RUNNER_TEMP"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then TEMP_DIR="$(cygpath -u "$RUNNER_TEMP")"; fi
+          umask 077
+          printf '%s' "$STUDIO_COMPANY_SERVICES_JSON" > "$TEMP_DIR/company-services.json"
+      - name: Overlay Company sources on the P5 base and verify the archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BASE_ARCHIVE: ${{ runner.temp }}/p5-base/${{ matrix.archive }}
+          OUTPUT_DIRECTORY: ${{ runner.temp }}/company-output
+          PACKAGE_VERSION: ${{ inputs.version || 'company-p5.1' }}
+          COMPANY_SERVICES_FILE: ${{ runner.temp }}/company-services.json
+        run: |
+          set -euo pipefail
+          node scripts/package-release.mjs \
+            --profile company \
+            --target "$TARGET" \
+            --version "$PACKAGE_VERSION" \
+            --base-package "$BASE_ARCHIVE" \
+            --company-services-file "$COMPANY_SERVICES_FILE" \
+            --output "$OUTPUT_DIRECTORY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: company-release-${{ matrix.target }}
+          path: ${{ runner.temp }}/company-output/*
+          if-no-files-found: error
+          retention-days: 14

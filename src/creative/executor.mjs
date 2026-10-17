@@ -84,6 +84,7 @@ async function loadReferenceImages(taskId, sheet, pages, root) {
       });
       pageImages.push({
         kind: 'source',
+        ...(reference.role ? {role:reference.role} : {}),
         sourceId: reference.sourceId,
         fileOrder: reference.fileOrder,
         name: file.name,
@@ -127,7 +128,7 @@ async function ensurePageNodes({ page, sheet, record, images, model, call }) {
   const composerTokens = [record.textNodeId, ...(record.referenceNodes || []).map(reference => reference.nodeId)]
     .map(nodeId => `@[node:${nodeId}]`);
   const composerContent = composerTokens.join(' ');
-  const imageRoles = images.some(image => image.role) ? '\n\n本次图片用途（图片编号与实际传入顺序一致）：\n' + images.map((image, index) => `图片${index + 1}：${image.role === 'edit-base' ? '待修改原图' : image.role === 'style' ? '仅供画风参考，不替换原图主体或引入品牌、文字' : '已保留的参考图片'}${image.kind === 'output' ? `（任务第${image.page}页）` : ''}`).join('\n') : '';
+  const imageRoles = images.some(image => image.role) ? '\n\n本次图片用途（图片编号与实际传入顺序一致）：\n' + images.map((image, index) => `图片${index + 1}：${image.role === 'edit-base' ? '待修改原图' : image.role === 'style' ? '仅供画风参考，不替换原图主体或引入品牌、文字' : image.role === 'content' ? '仅参考内容与信息，不照搬视觉风格；事实以确认文案为准' : '已保留的内容与风格参考图片'}${image.kind === 'output' ? `（任务第${image.page}页）` : ''}`).join('\n') : '';
   const textContent = (page.copyMode === 'preserve-source-text'
     ? `${page.prompt}\n保留输入原图中的全部文字，不改写、删除或新增文字。`
     : `${page.prompt}\n以下是必须准确呈现的全部文字：\n${page.copy}`) + imageRoles;
@@ -155,7 +156,7 @@ async function ensurePageNodes({ page, sheet, record, images, model, call }) {
   for (const [index, reference] of (record.referenceNodes || []).entries()) {
     const expected = images[index];
     if (!expected || (reference.kind || 'source') !== expected.kind || expected.sha256 !== reference.sha256
-      || (expected.kind === 'source' && (expected.sourceId !== reference.sourceId || expected.fileOrder !== reference.fileOrder))
+      || (expected.kind === 'source' && (expected.sourceId !== reference.sourceId || expected.fileOrder !== reference.fileOrder || expected.role !== reference.role))
       || (expected.kind === 'upload' && (expected.sourceId !== reference.sourceId || expected.fileOrder !== reference.fileOrder || expected.role !== reference.role))
       || (expected.kind === 'output' && (expected.page !== reference.page || expected.baseVersion !== reference.baseVersion || expected.role !== reference.role))) {
       throw new Error('参考图片记录与已确认制作单不一致，停止生成');
@@ -279,7 +280,7 @@ export async function executeTask(id, { version, expectedRevision, root, signal,
                 ? {page:image.page,baseVersion:image.baseVersion,role:image.role}
                 : image.kind === 'upload'
                   ? {sourceId:image.sourceId,fileOrder:image.fileOrder,role:image.role}
-                : {sourceId:image.sourceId,fileOrder:image.fileOrder}),
+                : {sourceId:image.sourceId,fileOrder:image.fileOrder,...(image.role ? {role:image.role} : {})}),
               sha256:image.sha256,
               nodeId:`image-ref-${randomUUID()}`,
             })),

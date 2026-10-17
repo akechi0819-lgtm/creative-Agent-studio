@@ -181,7 +181,8 @@ function normalizeReferenceImages(value, label) {
     const key = `${sourceId}\u0000${reference.fileOrder}`;
     if (seen.has(key)) throw new Error(`${label}不能重复引用同一附件`);
     seen.add(key);
-    return { sourceId, fileOrder: reference.fileOrder };
+    if (reference.role !== undefined && !['content','style','both'].includes(reference.role)) throw new Error(`${label}用途必须为 content、style 或 both`);
+    return { sourceId, fileOrder: reference.fileOrder, ...(reference.role ? {role:reference.role} : {}) };
   });
 }
 
@@ -626,7 +627,7 @@ export async function attachTaskFiles(id, {files,title="当前资料",purpose="�
       for(const [index,file] of files.entries()) {
         if(typeof file.path!=="string"||typeof file.name!=="string")throw new Error("附件文件无效");
         const extension=path.extname(file.name).toLowerCase();
-        if(!new Set([".png",".jpg",".jpeg",".webp",".bmp",".pdf",".txt",".md"]).has(extension))throw new Error("附件格式不支持");
+        if(!new Set([".png",".jpg",".jpeg",".webp",".bmp",".pdf",".txt",".md",".docx",".doc",".xlsx",".xls",".csv",".zip"]).has(extension))throw new Error("附件格式不支持");
         const stat=await fs.lstat(file.path);
         if(!stat.isFile()||stat.size>100*1024*1024)throw new Error("附件须为100MB以内的普通文件");
         const bytes=await fs.readFile(file.path);
@@ -862,11 +863,11 @@ function referenceImageMimeType(bytes) {
   return null;
 }
 
-async function readTaskSourceImageBytes(taskId, sourceId, fileOrder, { sources, root, uploadedImage = false } = {}) {
+export async function readTaskSourceFileBytes(taskId, sourceId, fileOrder, { sources, root, uploadedImage = false, allowCurrentAttachment = false } = {}) {
   if (!Array.isArray(sources)) throw new Error("制作单缺少来源快照，无法读取参考图片");
   const source = sources.find((item) => item.id === sourceId);
   if (!source) throw new Error(`参考图片引用了未知来源：${sourceId}`);
-  if (uploadedImage) {
+  if (uploadedImage || (allowCurrentAttachment && source.type === "current_attachment")) {
     if (source.type !== "current_attachment" || source.decision === "excluded") {
       throw new Error(`上传改图来源 ${sourceId} 必须是本任务未排除的当前附件`);
     }
@@ -897,9 +898,14 @@ async function readTaskSourceImageBytes(taskId, sourceId, fileOrder, { sources, 
   if (!/^[0-9a-f]{64}$/.test(declaredHash)) throw new Error(`来源 ${sourceId} 的参考图片缺少有效 SHA-256`);
   const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
   if (sha256 !== declaredHash) throw new Error(`来源 ${sourceId} 第 ${fileOrder} 个参考图片哈希不一致`);
-  const mimeType = referenceImageMimeType(bytes);
+  return { bytes, mimeType: file.mimeType || 'application/octet-stream', sha256, name: String(file.name || fileOrder) };
+}
+
+async function readTaskSourceImageBytes(taskId, sourceId, fileOrder, options = {}) {
+  const file = await readTaskSourceFileBytes(taskId, sourceId, fileOrder, options);
+  const mimeType = referenceImageMimeType(file.bytes);
   if (!mimeType) throw new Error(`来源 ${sourceId} 第 ${fileOrder} 个附件不是有效的 PNG、JPEG 或 WebP 图片`);
-  return { bytes, mimeType, sha256, name: String(file.name ?? `${fileOrder}.${mimeType.split("/")[1]}`) };
+  return {...file,mimeType};
 }
 
 /** Read a retained source image only from its task-owned, hash-checked snapshot. */

@@ -3,7 +3,7 @@ name: creative-studio
 description: 在本仓库使用共享 CLI 完成经用户确认的单张海报或多页图文任务；P1 至 P4 已按各自授权范围独立复验通过；普通用户设备体验和上游模型能力按证据范围记录。
 ---
 
-当前为公司版，先读 `docs/公司版接入.md`。公司素材检索使用 `node scripts/company.mjs search @payload.json`，含 taskId、expectedRevision、query 及明确标签／必需条件；候选进入待选区，不代表人工保留。用户保留时通过共享 `studio set-references` 下载本次原件并冻结来源。公司库未配置、无权限、无结果时如实说明，不拿本机结果替代。只有用户明确选择本机素材才用 assets CLI。连接配置使用 company CLI 的 config-show/config-save，凭据输入保存在仓库外，不读取或覆盖旧全局凭据。Canvas 采用新版协议，用户负责更新远端；不适配旧 npm bridge。图片模型与远端画布由本人配置，公司版本地不覆盖远端模型设置。词库辅助检查使用 `company check-copy`，命中逐项交由用户判断，不自动批准。
+当前为公司版，先读 `docs/公司版接入.md`。公司素材检索使用 `node scripts/company.mjs search @payload.json`，含 taskId、expectedRevision、query 及明确标签／必需条件；候选进入待选区，不代表人工保留。用户保留时通过共享 `studio set-references` 下载本次原件并冻结来源。公司库未配置、无权限、无结果时如实说明，不拿本机结果替代。只有用户明确选择本机素材才用 assets CLI。连接配置使用 company CLI 的 config-show/config-save，凭据输入保存在仓库外，不读取或覆盖旧全局凭据。Canvas 采用新版协议，用户负责更新远端；不适配旧 npm bridge。基础／生图 API 均在本机公司工作台配置；远端 Canvas 通过任务内存配置与本机受限图片代理访问模型，不让员工去远端重复填写，也不把钥匙发送或持久化到远端。词库辅助检查使用 `company check-copy`，命中逐项交由用户判断，不自动批准。
 
 
 先读 `docs/Codex使用.md`，需要了解当前阶段边界时读 `docs/工程进度.md`。P1、P2 已按授权范围独立复验通过；P3 于 2026-10-16 按已授权源码及本机集成范围独立复验通过，详见 `docs/P3最终独立复验.md`。早期审查与返工记录仍保留，但不代表当前待修状态。真实远端 AI 改图效果和 WorkBuddy 实际能力未验证或未通过，不作为已通过能力。P4 已按跨平台本地 Web 源码交付、macOS 隔离运行及 Windows CI 范围独立复验通过，当前结论与未测边界见 `docs/P4最终独立复验.md`。首次准备使用 `node scripts/prepare.mjs`，不启动 DSH。Codex 路径使用公司远端新版 Canvas，不启动 DSH，不调用 `codex exec`，也不召唤 Agent。
@@ -12,7 +12,7 @@ Codex 入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过
 
 1. `create` 创建任务，以 `set-brief` 和 `set-sources` 保存需求及来源决定。
 2. 用户明确确认需求和来源后，读取最新 revision，运行 `confirm-inputs`；再生成制作单、读取当前版本，由用户明确确认后运行 `confirm-sheet`。
-3. 用户授权生成后先运行 `canvas-open TASK_ID` 准备并打开任务专属 Canvas，再运行 `execute`。`execute`、`resume`、`edit-pages` 和 `select-image` 使用该任务的远端 Canvas 目标与本人浏览器中已保存的图片配置；CLI 会在启动 Canvas 前核对 revision 和制作单授权。中断后用同一版本调用 `resume`，只查询并续接原节点；不得自动重发状态未知的收费请求。只有确认页面失败时才显式传 `retryPage`。
+3. 用户授权生成后先运行 `canvas-open TASK_ID` 准备并打开任务专属 Canvas，再运行 `execute`。`execute`、`resume`、`edit-pages` 和 `select-image` 使用该任务的远端 Canvas 目标与本机公司工作台已保存的图片配置；CLI 会在启动 Canvas 前核对 revision 和制作单授权。中断后用同一版本调用 `resume`，只查询并续接原节点；不得自动重发状态未知的收费请求。只有确认页面失败时才显式传 `retryPage`。
 4. 用实际读图工具打开当前成品，逐页检查准确文案、手机可读性、品牌一致性、主题对应和修改位置，然后运行 `record-review`。用户修改或 `select-image` 更新当前文件后，必须重新打开并审核；修改和选图会使旧审核与最终确认失效。
 5. 等用户明确确认最终成品后才运行 `approve-final`，再运行 `export`。
 

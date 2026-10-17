@@ -98,6 +98,13 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
   const seenRevision = useRef(firstConfig.revision);
   const [config, setConfig] = useState(firstConfig);
   const [base, setBase] = useState(() => providerDraft(firstConfig.base));
+  const [image, setImage] = useState(() => providerDraft(firstConfig.image));
+  const [reuseBaseCredentials, setReuseBaseCredentials] = useState(() => Boolean(
+    (firstConfig.base?.source || 'custom') === 'custom'
+    && firstConfig.base?.baseUrl
+    && firstConfig.image?.baseUrl === firstConfig.base?.baseUrl
+    && firstConfig.image?.apiKeyConfigured,
+  ));
   const [pluginState, setPluginState] = useState(null);
   const [pluginError, setPluginError] = useState('');
   const [pluginBusy, setPluginBusy] = useState('');
@@ -115,6 +122,13 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
     seenRevision.current = current.revision;
     setConfig(current);
     setBase(providerDraft(current.base));
+    setImage(providerDraft(current.image));
+    setReuseBaseCredentials(Boolean(
+      (current.base?.source || 'custom') === 'custom'
+      && current.base?.baseUrl
+      && current.image?.baseUrl === current.base?.baseUrl
+      && current.image?.apiKeyConfigured,
+    ));
     setClearKeys([]);
   }, [initial]);
 
@@ -153,7 +167,7 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
   }, [loginStatus]);
 
   function updateModel(kind, field, value) {
-    const setter = setBase;
+    const setter = kind === 'base' ? setBase : setImage;
     setter((current) => field === 'source'
       ? { ...current, source: value, model: '' }
       : { ...current, [field]: value });
@@ -167,12 +181,20 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
   async function save() {
     setSaving(true); setError(''); setNotice('');
     try {
-      const response = await onRun(() => api.saveConfig({ expectedRevision: config.revision, base: { ...base, source: base.source || 'custom' }, clearKeys }), { success: '配置已保存。' });
+      const payload = {
+        expectedRevision: config.revision,
+        base: { ...base, source: base.source || 'custom' },
+        image: reuseBaseCredentials
+          ? { model: image.model, useBaseCredentials: true }
+          : { baseUrl: image.baseUrl, model: image.model, apiKey: image.apiKey },
+        clearKeys: reuseBaseCredentials ? clearKeys.filter((kind) => kind !== 'image') : clearKeys,
+      };
+      const response = await onRun(() => api.saveConfig(payload), { success: '配置已保存。' });
       const next = response.config;
       seenRevision.current = next.revision;
       setConfig(next);
-      setBase((value) => ({ ...value, apiKey: '' })); setClearKeys([]); setChecks(null);
-      setNotice('基础模型配置已保存；远端 Canvas 的生图模型继续在画布中配置。');
+      setBase((value) => ({ ...value, apiKey: '' })); setImage((value) => ({ ...value, apiKey: '' })); setClearKeys([]); setChecks(null);
+      setNotice('基础模型和图片模型配置已保存到本机私有目录。');
     } catch (cause) { setError(cause.message || '配置保存失败。'); }
     finally { setSaving(false); }
   }
@@ -190,9 +212,10 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
     const payload = { kind };
     const source = kind === 'base' ? (draft.source || 'custom') : 'custom';
     if (kind === 'base') payload.source = source;
+    const credentials = kind === 'image' && reuseBaseCredentials ? base : draft;
     if (kind !== 'base' || source === 'custom') {
-      if (draft.baseUrl.trim()) payload.baseUrl = draft.baseUrl.trim();
-      if (draft.apiKey) payload.apiKey = draft.apiKey;
+      if (credentials.baseUrl.trim()) payload.baseUrl = credentials.baseUrl.trim();
+      if (credentials.apiKey) payload.apiKey = credentials.apiKey;
     }
     return api.models(payload);
   }
@@ -215,15 +238,19 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
     if (source === 'custom') return Boolean(savedBase.baseUrl && savedBase.apiKeyConfigured);
     return ['opencode', 'kilo', 'workbuddy-cn', 'workbuddy-intl'].includes(source);
   })();
+  const canCheckImage = Boolean(config.image?.model && config.image?.baseUrl && config.image?.apiKeyConfigured);
 
   return <section className="settings-page">
-    <header className="section-header"><div><span className="eyebrow">基础能力与图像生成分开配置</span><h1>模型与服务</h1><p>清洗、对话、工具调用和读图共用基础模型。生图模型在远端 Canvas 配置，本页只保存基础模型。</p></div><span className="revision-chip">配置 v{config.revision || 1}</span></header>
+    <header className="section-header"><div><span className="eyebrow">个人模型配置</span><h1>模型与服务</h1><p>基础模型负责对话、工具调用、读图和清洗；图片模型负责按已确认方案生成图片。两路密钥分别保存在当前电脑。</p></div><span className="revision-chip">配置 v{config.revision || 1}</span></header>
     {(error || notice) && <div className={`inline-banner ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}>{error || notice}</div>}
     <div className="provider-grid">
       <ProviderFields key={base.source || 'custom'} title="基础模型" description="清洗、对话、工具调用和读图共用当前模型。" kind="base" model={{ ...base, source: base.source || 'custom' }} saved={config.base || {}} clearSelected={clearKeys.includes('base')} configRevision={config.revision} onChange={updateModel} onClear={toggleClear} canCheck={canCheckBase} checking={checkKind === 'base'} onCheck={() => check('base')} onFetchModels={fetchModels} pluginState={pluginState} pluginError={pluginError} pluginBusy={pluginBusy} pluginNotice={pluginNotice} onPluginAction={runPluginAction} />
-      <section className="settings-section"><h2>远端 Canvas 图片模型</h2><p>打开任务画布后，在远端 Canvas 设置生图服务并选择模型。公司版会读取画布当前模型，不覆盖远端设置。</p><p>公司站点地址在“公司连接”中保存。</p></section>
+      <div className="image-provider-settings">
+        <div className="onboarding-shared-provider settings-share-provider"><label><input type="checkbox" checked={reuseBaseCredentials} disabled={(base.source || 'custom') !== 'custom' || (clearKeys.includes('base') && !base.apiKey)} onChange={(event) => { setReuseBaseCredentials(event.target.checked); if (event.target.checked) setClearKeys((current) => current.filter((kind) => kind !== 'image')); setChecks(null); }} /> 图片模型与对话模型共用服务地址和 API 密钥</label><small>{(base.source || 'custom') !== 'custom' ? '托管来源不提供可复用的自用 API 密钥。' : clearKeys.includes('base') && !base.apiKey ? '请先恢复基础模型密钥，或为图片模型单独填写凭据。' : '开启后只保存一份自用 API 地址和密钥。'}</small></div>
+        <ProviderFields key={`image-${reuseBaseCredentials}`} title="图片模型" description="执行已确认的制作方案时逐页生成图片。" kind="image" model={image} saved={config.image || {}} clearSelected={clearKeys.includes('image')} sharedCredentials={reuseBaseCredentials} configRevision={config.revision} onChange={updateModel} onClear={toggleClear} canCheck={canCheckImage} checking={checkKind === 'image'} onCheck={() => check('image')} onFetchModels={fetchModels} pluginState={pluginState} pluginError={pluginError} pluginBusy={pluginBusy} pluginNotice={pluginNotice} onPluginAction={runPluginAction} />
+      </div>
     </div>
-    <div className="config-save-row"><div><strong>保存后新请求会使用新配置</strong><p>检查连接始终读取已保存的基础模型配置。自用 API 的密钥留空表示保留，勾选清除后保存才会移除。</p></div><button className="button primary" onClick={save} disabled={saving}>{saving ? '正在保存…' : '保存配置'}</button></div>
+    <div className="config-save-row"><div><strong>保存后新请求会使用新配置</strong><p>检查连接始终读取已保存的模型配置。自用 API 的密钥留空表示保留，勾选清除后保存才会移除。</p></div><button className="button primary" onClick={save} disabled={saving}>{saving ? '正在保存…' : '保存配置'}</button></div>
     {checks && <div className="check-results"><div className="settings-section-head"><span className="section-index">✓</span><div><h2>连接检查结果</h2><p>以下结果仅来自本次显式检查。</p></div></div><div className="check-result-grid">{Object.entries(checks).filter(([, value]) => value && typeof value === 'object').map(([kind, result]) => {
       const connected = result.status === 'connected';
       const neutral = result.status === 'unverified' || result.status === 'not_configured';
@@ -239,7 +266,7 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
         : '没有完成服务连接验证；没有发起生图请求。') : '';
       return <article className="check-result" key={kind}><span className={`large-status ${stateClass}`}><i />{stateText}</span><h3>{kind === 'base' ? '基础模型' : '图片模型'}</h3><p>{result.message}</p>{imageCheckDetail && <small className="check-detail-note">{imageCheckDetail}</small>}{kind === 'base' && result.capabilities.length > 0 && <ul>{result.capabilities.map((item) => <li key={item}>{item}</li>)}</ul>}<small>{result.checkedAt ? new Date(result.checkedAt).toLocaleString('zh-CN') : ''}</small></article>;
     })}</div></div>}
-    <div className="canvas-info-note"><span className="footer-icon">◇</span><div><strong>Canvas 在任务工作台中打开</strong><p>每个任务会自动绑定自己的远端画布项目。首次连接、项目身份和连接状态在打开或同步时由服务端核对。</p></div></div>
+    <div className="canvas-info-note"><span className="footer-icon">◇</span><div><strong>Canvas 在任务工作台中打开</strong><p>公司 Canvas 站点地址由管理员固定配置。任务会自动绑定独立画布，图像生成使用上方个人图片 API 配置。</p></div></div>
   </section>;
 }
 
@@ -248,7 +275,7 @@ function providerDraft(channel = {}) {
 }
 
 
-function ProviderFields({ title, description, kind, model, saved, clearSelected, configRevision, onChange, onClear, canCheck, checking, onCheck, onFetchModels, pluginState, pluginError, pluginBusy, pluginNotice, onPluginAction }) {
+function ProviderFields({ title, description, kind, model, saved, clearSelected, sharedCredentials = false, configRevision, onChange, onClear, canCheck, checking, onCheck, onFetchModels, pluginState, pluginError, pluginBusy, pluginNotice, onPluginAction }) {
   const [models, setModels] = useState([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -325,7 +352,7 @@ function ProviderFields({ title, description, kind, model, saved, clearSelected,
       : source === 'custom' ? <p className="source-notice">填写你自己的兼容服务地址和 API 密钥。</p>
         : <p className="source-notice">登录你自己的 WorkBuddy {regionName}账号；后续请求使用此账号的平台额度。</p>}
     </div>}
-    {isCustomSource && <label className="field-label">服务地址<input type="url" value={model.baseUrl} onChange={(event) => change('baseUrl', event.target.value)} placeholder="https://…" autoComplete="url" /></label>}
+    {isCustomSource && !(kind === 'image' && sharedCredentials) && <label className="field-label">模型服务地址<input type="url" value={model.baseUrl} onChange={(event) => change('baseUrl', event.target.value)} placeholder="https://…" autoComplete="url" /></label>}
     <label className="field-label">模型名称<input value={model.model} onChange={(event) => change('model', event.target.value)} placeholder={isCustomSource ? '可手动填写自定义模型 ID' : '填写模型 ID'} autoComplete="off" /></label>
     <div className="model-fetch-row">
       <label className="field-label model-fetch-select-label">从模型列表选择<select aria-label={`${title}模型列表`} value={model.model} onChange={(event) => change('model', event.target.value)} disabled={!modelsLoaded || !models.length}>
@@ -336,12 +363,13 @@ function ProviderFields({ title, description, kind, model, saved, clearSelected,
       <button type="button" className="button outline small" onClick={fetchAvailableModels} disabled={fetchingModels || keyBlocked || !modelSourceReady}>{fetchingModels ? '正在获取…' : modelsLoaded ? '刷新模型' : '获取模型'}</button>
     </div>
     {fetchError ? <small className="model-fetch-message error" role="alert">{fetchError}</small> : keyBlocked ? <small className="model-fetch-message">已选择清除已保存密钥；请先保存清除或填写新密钥后获取模型。</small> : !modelSourceReady ? <small className="model-fetch-message">请先登录此区域的 WorkBuddy 账号，再获取模型列表。</small> : modelsLoaded && !models.length ? <small className="model-fetch-message" role="status">服务没有返回模型列表；仍可手动填写模型 ID。</small> : modelsLoaded ? <small className="model-fetch-message" role="status">已获取 {models.length} 个模型；选择后也可继续手动修改 ID。</small> : <small className="model-fetch-message">{isCustomSource ? '可先填写服务地址和密钥，再获取模型；也可直接手动填写模型 ID。' : '获取此来源提供的模型列表，选择后也可继续手动修改 ID。'}</small>}
-    {isCustomSource && <>
+    {isCustomSource && !(kind === 'image' && sharedCredentials) && <>
       {kind === 'image' && <label className="field-label">API 密钥<input type="password" value={model.apiKey} onChange={(event) => change('apiKey', event.target.value)} placeholder={saved.apiKeyConfigured ? '已保存密钥 · 留空则保留' : '尚未配置'} autoComplete="new-password" /></label>}
       {kind === 'base' && <label className="field-label">API 密钥<input type="password" value={model.apiKey} onChange={(event) => change('apiKey', event.target.value)} placeholder={saved.apiKeyConfigured ? '已保存密钥 · 留空则保留' : '尚未配置'} autoComplete="new-password" />
         <small className="field-help">已保存密钥不会显示；需要替换时直接输入新密钥。</small></label>}
       <label className="check-row clear-key"><input type="checkbox" checked={clearSelected} onChange={(event) => changeClearSelection(event.target.checked)} /><span>明确清除已保存密钥</span></label>
     </>}
+    {kind === 'image' && sharedCredentials && <p className="field-help">使用基础模型的服务地址和密钥。图片模型 ID 独立保存。</p>}
     {(isWorkBuddy || pluginLogin.status === 'pending') && <div className="workbuddy-panel">
       <div className="workbuddy-panel-head"><div><strong>{isWorkBuddy ? `WorkBuddy ${regionName}账号` : 'WorkBuddy 登录状态'}</strong><span className={`plugin-status ${pluginState?.running ? 'ready' : ''}`}><i />{pluginState ? (pluginState.running ? '登录服务可用' : '登录服务未运行') : '正在读取状态…'}</span></div>
         {isWorkBuddy && <button type="button" className="button outline small" onClick={() => onPluginAction(api.loginModelPlugin, { region }, `login-${region}`)} disabled={!pluginState?.running || pluginBusy !== '' || pluginLogin.status === 'pending'}>{pluginBusy === `login-${region}` ? '正在连接…' : relevantAccounts.length ? '添加账号' : `登录${regionName}`}</button>}</div>

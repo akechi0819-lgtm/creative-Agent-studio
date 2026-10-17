@@ -30,7 +30,7 @@ const root = repositoryRoot(process.argv.slice(2));
 const testDirectory = path.join(root, 'tests');
 const files = await listTests(testDirectory);
 assert.ok(files.length > 0, `No .test.mjs files found under ${testDirectory}`);
-const python = path.join(root, '.venv-ocr', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+const python = process.env.STUDIO_OCR_PYTHON || path.join(root, '.venv-ocr', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 await fs.access(python).catch(() => {
   throw new Error(`The private OCR runtime is missing: ${python}. Run node scripts/prepare.mjs first.`);
 });

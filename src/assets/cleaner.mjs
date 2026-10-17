@@ -133,9 +133,19 @@ async function runOcr(args, options) {
     fail('OCR_RUNTIME_MISSING', '本地 OCR 环境尚未准备；请通过 Start.command / Start.cmd 自动准备，或运行 node scripts/prepare.mjs 后重试');
   }
   checkAbort(options.signal);
+  const isolatedEnv = options.isolatedEnv === true
+    ? {
+      LANG: 'C.UTF-8',
+      PYTHONUTF8: '1',
+      ...(process.env.STUDIO_RAPIDOCR_MODEL_DIR ? { STUDIO_RAPIDOCR_MODEL_DIR: process.env.STUDIO_RAPIDOCR_MODEL_DIR } : {}),
+      PYTHONDONTWRITEBYTECODE: '1',
+      PYTHONNOUSERSITE: '1',
+      ...(process.platform === 'win32' && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+    }
+    : { ...process.env, PYTHONUNBUFFERED: '1' };
   const child = spawn(python, [helperPath, ...args], {
     cwd: workspaceRoot,
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: isolatedEnv,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
   const timeoutMs = Number.isFinite(options.ocrTimeoutMs) && options.ocrTimeoutMs > 0

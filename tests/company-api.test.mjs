@@ -6,9 +6,11 @@ import path from 'node:path';
 import { listenStudioServer } from '../src/web/server.mjs';
 import { createTask, readTask } from '../src/creative/tasks.mjs';
 import { saveCompanyConfig } from '../src/company/config.mjs';
+import { configureCompanyServices } from './helpers/company-services.mjs';
 
 async function fixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'company-api-'));
+  await configureCompanyServices(t, root);
   const server = await listenStudioServer({ root, port: 0, ...options });
   t.after(async () => { await server.close(); await fs.rm(root, { recursive: true, force: true }); });
   const origin = `http://127.0.0.1:${server.address.port}`;
@@ -18,7 +20,7 @@ async function fixture(t, options = {}) {
 
 test('company config endpoints never return passwords or bridge tokens and reject cross-origin writes', async t => {
   const { call } = await fixture(t);
-  const payload = { expectedRevision: 1, teedy: { baseUrl: 'https://library.fixture.test', username: 'reader', password: 'private-fixture-password' }, canvas: { webUrl: 'https://canvas.fixture.test' } };
+  const payload = { expectedRevision: 1, teedy: { username: 'reader', password: 'private-fixture-password' } };
   assert.equal((await call('/api/company/config', payload, { origin: 'https://outside.fixture.test' })).status, 403);
   const response = await call('/api/company/config', payload);
   assert.equal(response.status, 200);
@@ -54,7 +56,7 @@ test('company candidates require an explicit retained decision before the API fr
 test('remote Canvas open links are confined to the configured HTTPS origin and project with no raw token', async t => {
   let openUrl = 'https://canvas.fixture.test/canvas?mode=recent&projectId=remote-project#companyBridge=http%3A%2F%2F127.0.0.1%3A18420&companyTicket=fixture-ticket';
   const { root, call } = await fixture(t, { canvas: { ensure: async () => ({ openUrl, projectId: 'remote-project', clientConnected: true }), connect: async () => ({ openUrl }) } });
-  await saveCompanyConfig({ expectedRevision: 1, canvas: { webUrl: 'https://canvas.fixture.test' } }, { root });
+  await saveCompanyConfig({ expectedRevision: 1 }, { root });
   const task = await createTask({ title: '远端连接', brief: '测试' }, root);
   const route = `/api/tasks/${task.id}/canvas/open`;
   openUrl = openUrl.replace('remote-project', task.id);

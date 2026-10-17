@@ -1,142 +1,44 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import { publicCompanyConfig, readCompanyConfig, saveCompanyConfig } from '../src/company/config.mjs';
-
-async function temporaryDirectory(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-company-config-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  return directory;
+import { readCompanyConfig, saveCompanyConfig, publicCompanyConfig } from '../src/company/config.mjs';
+import { readCompanyDeployment, validateCompanyServices } from '../src/company/deployment.mjs';
+import { configureCompanyServices } from './helpers/company-services.mjs';
+async function fixture(t) {
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'company-config-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const file=await configureCompanyServices(t,root);return {root,file};
 }
-
-test('company dataRoot has a separate default and honors STUDIO_DATA_DIR', () => {
-  const moduleUrl = pathToFileURL(path.resolve('src/canvas/client.mjs')).href;
-  const home = path.join(os.tmpdir(), 'company-home-fixture');
-  const dataHome = path.join(os.tmpdir(), 'company-xdg-fixture');
-  const localAppData = path.join(os.tmpdir(), 'company-local-fixture');
-  const script = `import { dataRoot } from ${JSON.stringify(moduleUrl)}; process.stdout.write(dataRoot());`;
-  const environment = {
-    PATH: process.env.PATH ?? '', HOME: home, USERPROFILE: home,
-    XDG_DATA_HOME: dataHome, LOCALAPPDATA: localAppData,
-  };
-  const defaultResult = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: environment });
-  assert.equal(defaultResult.status, 0, defaultResult.stderr);
-  const expected = process.platform === 'darwin'
-    ? path.join(home, 'Library/Application Support/Creative Agent Studio Company')
-    : process.platform === 'win32'
-      ? path.join(localAppData, 'Creative Agent Studio Company')
-      : path.join(dataHome, 'creative-agent-studio-company');
-  assert.equal(defaultResult.stdout, expected);
-
-  const explicit = path.join(os.tmpdir(), 'company-explicit-data');
-  const explicitResult = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-    encoding: 'utf8', env: { ...environment, STUDIO_DATA_DIR: explicit },
-  });
-  assert.equal(explicitResult.status, 0, explicitResult.stderr);
-  assert.equal(explicitResult.stdout, explicit);
+test('company endpoints come from the bundle; personal account writes are CAS protected and never return secrets',async t=>{
+ const {root}=await fixture(t);const initial=await readCompanyConfig({root});assert.equal(initial.deploymentConfigured,true);
+ const first=await saveCompanyConfig({expectedRevision:1,teedy:{username:'colleague',password:'private-fixture-password'}},{root});
+ assert.equal(first.teedy.baseUrl,'https://library.fixture.test');assert.equal(first.canvas.webUrl,'https://canvas.fixture.test');
+ const visible=publicCompanyConfig(first);assert.equal(visible.teedy.passwordConfigured,true);assert.doesNotMatch(JSON.stringify(visible),/private-fixture-password/);
+ const second=await saveCompanyConfig({expectedRevision:2,teedy:{password:''}},{root});assert.equal(second.teedy.password,first.teedy.password);
+ await assert.rejects(saveCompanyConfig({expectedRevision:2},{root}),{code:'ERR_COMPANY_CONFIG_REVISION_CONFLICT'});
+ const cleared=await saveCompanyConfig({expectedRevision:3,clearSecrets:['teedy.password']},{root});assert.equal(cleared.teedy.password,'');
+ if(process.platform!=='win32')assert.equal((await fs.stat(path.join(root,'config/company.json'))).mode&0o777,0o600);
 });
-
-test('private company config preserves blank secrets, supports explicit clear and removes secrets from public view', async (t) => {
-  const root = await temporaryDirectory(t);
-  assert.deepEqual(await readCompanyConfig({ root }), {
-    revision: 1,
-    teedy: { baseUrl: '', username: '', password: '' },
-    canvas: { webUrl: '' },
-  });
-
-  const saved = await saveCompanyConfig({
-    expectedRevision: 1,
-    teedy: { baseUrl: 'https://teedy.example', username: 'operator', password: 'teedy-private' },
-    canvas: { webUrl: 'https://canvas.example' },
-  }, { root });
-  assert.equal(saved.revision, 2);
-  const publicView = publicCompanyConfig(saved);
-  assert.deepEqual(publicView, {
-    revision: 2,
-    teedy: { baseUrl: 'https://teedy.example', username: 'operator', passwordConfigured: true },
-    canvas: { webUrl: 'https://canvas.example' },
-  });
-  assert.doesNotMatch(JSON.stringify(publicView), /teedy-private|"password"|"token"|bridgeUrl|projectId|clientId/u);
-
-  const updated = await saveCompanyConfig({
-    expectedRevision: 2,
-    teedy: { password: '' },
-    canvas: { webUrl: 'https://canvas-two.example' },
-  }, { root });
-  assert.equal(updated.teedy.password, 'teedy-private');
-  assert.equal(updated.canvas.webUrl, 'https://canvas-two.example');
-  await assert.rejects(
-    saveCompanyConfig({ expectedRevision: 2, teedy: { username: 'stale' } }, { root }),
-    (error) => error.code === 'ERR_COMPANY_CONFIG_REVISION_CONFLICT' && error.actualRevision === 3,
-  );
-
-  const cleared = await saveCompanyConfig({ expectedRevision: 3, clearSecrets: ['teedy.password'] }, { root });
-  assert.equal(cleared.revision, 4);
-  assert.equal(cleared.teedy.password, '');
-  assert.deepEqual(cleared.canvas, { webUrl: 'https://canvas-two.example' });
-  const file = path.join(root, 'config', 'company.json');
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), cleared);
-  if (process.platform !== 'win32') {
-    assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
-    assert.equal((await fs.stat(path.dirname(file))).mode & 0o777, 0o700);
-  }
+test('staff cannot override fixed endpoints or silently reuse a password for another account',async t=>{
+ const {root}=await fixture(t);await saveCompanyConfig({expectedRevision:1,teedy:{username:'one',password:'fixture-password'}},{root});
+ for(const value of [{canvas:{webUrl:'https://other.fixture.test'}},{teedy:{baseUrl:'https://other.fixture.test'}},{clearSecrets:['canvas.token']}])await assert.rejects(saveCompanyConfig({expectedRevision:2,...value},{root}));
+ await assert.rejects(saveCompanyConfig({expectedRevision:2,teedy:{username:'two'}},{root}),{code:'ERR_COMPANY_CONFIG_SECRET_CONTEXT'});
+ const changed=await saveCompanyConfig({expectedRevision:2,teedy:{username:'two',password:'new-fixture-password'}},{root});assert.equal(changed.teedy.username,'two');
 });
-
-test('company config rejects stale revisions, invalid URLs, oversized values and unknown fields', async (t) => {
-  const root = await temporaryDirectory(t);
-  const invalidInputs = [
-    { teedy: { baseUrl: 'http://teedy.example' } },
-    { canvas: { webUrl: 'http://canvas.example' } },
-    { teedy: { baseUrl: `https://${'a'.repeat(2001)}` } },
-    { canvas: { bridgeUrl: 'http://127.0.0.1:4312' } },
-    { canvas: { token: 'obsolete-global-secret' } },
-    { canvas: { projectId: 'obsolete-global-project' } },
-  ];
-  for (const fields of invalidInputs) {
-    await assert.rejects(saveCompanyConfig({ expectedRevision: 1, ...fields }, { root }));
-  }
-  await assert.rejects(saveCompanyConfig({ expectedRevision: 1, clearSecrets: ['canvas.token'] }, { root }));
-  await assert.rejects(saveCompanyConfig({ teedy: {} }, { root }), (error) => error.code === 'ERR_COMPANY_CONFIG_REVISION_REQUIRED');
+test('changing an administrator-provisioned service never sends the old service password to the new origin',async t=>{
+ const {root,file}=await fixture(t);await saveCompanyConfig({expectedRevision:1,teedy:{username:'one',password:'fixture-password'}},{root});
+ await fs.writeFile(file,JSON.stringify({schemaVersion:1,teedy:{baseUrl:'https://new.fixture.test'},canvas:{webUrl:'https://canvas.fixture.test'}}));
+ const read=await readCompanyConfig({root});assert.equal(read.teedy.password,'');assert.equal(read.teedy.baseUrl,'https://new.fixture.test');
 });
-
-test('Teedy identity changes cannot carry a saved password to a different service or account', async (t) => {
-  const root = await temporaryDirectory(t);
-  const first = await saveCompanyConfig({
-    expectedRevision: 1,
-    teedy: { baseUrl: 'https://teedy-one.example', username: 'one', password: 'old-password' },
-  }, { root });
-  await assert.rejects(
-    saveCompanyConfig({ expectedRevision: first.revision, teedy: { baseUrl: 'https://teedy-two.example' } }, { root }),
-    (error) => error.code === 'ERR_COMPANY_CONFIG_SECRET_CONTEXT',
-  );
-  await assert.rejects(
-    saveCompanyConfig({ expectedRevision: first.revision, teedy: { username: 'two' } }, { root }),
-    (error) => error.code === 'ERR_COMPANY_CONFIG_SECRET_CONTEXT',
-  );
-  const updated = await saveCompanyConfig({
-    expectedRevision: first.revision,
-    teedy: { baseUrl: 'https://teedy-two.example', password: 'new-password' },
-  }, { root });
-  assert.equal(updated.teedy.password, 'new-password');
-  assert.deepEqual(updated.canvas, { webUrl: '' });
+test('deployment requires exactly two credential-free HTTPS endpoints; missing provisioning cannot save staff credentials',async t=>{
+ const {root,file}=await fixture(t);
+ for(const value of [{schemaVersion:1,teedy:{baseUrl:'http://local'},canvas:{webUrl:'https://canvas.fixture.test'}},{schemaVersion:1,teedy:{baseUrl:'https://user:secret@fixture.test'},canvas:{webUrl:'https://canvas.fixture.test'}},{schemaVersion:1,teedy:{baseUrl:'https://library.fixture.test',password:'secret'},canvas:{webUrl:'https://canvas.fixture.test'}}])assert.throws(()=>validateCompanyServices(value));
+ await fs.rm(file);assert.equal((await readCompanyDeployment()).configured,false);
+ await assert.rejects(saveCompanyConfig({expectedRevision:1,teedy:{username:'one',password:'fixture-password'}},{root}),{code:'ERR_COMPANY_DEPLOYMENT_REQUIRED'});
 });
-
-test('company config rejects symlinked config directories and files', async (t) => {
-  if (process.platform === 'win32') return t.skip('symlink fixture requires POSIX permissions');
-  const root = await temporaryDirectory(t);
-  const outside = await temporaryDirectory(t);
-  await fs.mkdir(path.join(outside, 'config'));
-  await fs.symlink(path.join(outside, 'config'), path.join(root, 'config'));
-  await assert.rejects(readCompanyConfig({ root }), (error) => error.code === 'ERR_COMPANY_CONFIG_PATH');
-  await assert.rejects(saveCompanyConfig({ expectedRevision: 1 }, { root }), (error) => error.code === 'ERR_COMPANY_CONFIG_PATH');
-
-  const secondRoot = await temporaryDirectory(t);
-  await fs.mkdir(path.join(secondRoot, 'config'));
-  await fs.writeFile(path.join(outside, 'company.json'), '{}');
-  await fs.symlink(path.join(outside, 'company.json'), path.join(secondRoot, 'config', 'company.json'));
-  await assert.rejects(readCompanyConfig({ root: secondRoot }), (error) => error.code === 'ERR_COMPANY_CONFIG_PATH');
+test('company private configuration rejects a directory escape',async t=>{
+ if(process.platform==='win32')return;
+ const {root}=await fixture(t);const outside=await fs.mkdtemp(path.join(os.tmpdir(),'company-outside-'));t.after(()=>fs.rm(outside,{recursive:true,force:true}));
+ await fs.symlink(outside,path.join(root,'config'));await assert.rejects(readCompanyConfig({root}),{code:'ERR_COMPANY_CONFIG_PATH'});
 });

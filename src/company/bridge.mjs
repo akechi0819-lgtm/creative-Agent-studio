@@ -7,6 +7,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dataRoot as defaultDataRoot } from '../canvas/client.mjs';
 import { readCompanyConfig } from './config.mjs';
+import { readConfigRecord } from '../web/config.mjs';
+import { createImageProxyHandler, validateImageProxyConfig } from '../web/image-proxy.mjs';
 
 const PROTOCOL_VERSION = 1;
 const RUNNING = new Map();
@@ -259,6 +261,34 @@ async function companyBridgeServer(config, stop) {
   const baseApp = createHttpApp(config);
   const tickets = new Map();
   const reservedClients = new Map();
+  const imageResultUrls = new Map();
+  const imageProxyPrefix = `/__company/image-proxy/${config.projectId}/`;
+  const imageProxy = createImageProxyHandler({
+    prefix: imageProxyPrefix,
+    authorize: (req) => req.headers.origin === config.origin
+      && constantTimeEqual(req.headers['x-canvas-agent-token'], config.token),
+    getSession: async () => {
+      const record = await readConfigRecord({ root: config.root });
+      return {
+        imageConfig: validateImageProxyConfig({ ...record.image, apiFormat: 'openai' }),
+        expiresAt: Number.MAX_SAFE_INTEGER,
+        imageResultUrls,
+      };
+    },
+  });
+  const publicImageConfig = async () => {
+    const record = await readConfigRecord({ root: config.root });
+    const image = validateImageProxyConfig({ ...record.image, apiFormat: 'openai' });
+    return {
+      configRevision: record.revision,
+      imageConfig: {
+        baseUrl: image.baseUrl,
+        model: image.model,
+        apiFormat: image.apiFormat,
+        configured: Boolean(image.baseUrl && image.model && image.apiKey),
+      },
+    };
+  };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', config.url);
     if (!url.pathname.startsWith('/__company/')) return void baseApp(req, res);
@@ -268,8 +298,8 @@ async function companyBridgeServer(config, stop) {
     if (req.method === 'OPTIONS') {
       if (origin !== config.origin) return void reply(res, 403, { ok: false, error: 'origin not allowed' });
       res.setHeader('access-control-allow-origin', config.origin);
-      res.setHeader('access-control-allow-methods', 'POST,OPTIONS');
-      res.setHeader('access-control-allow-headers', 'content-type');
+      res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
+      res.setHeader('access-control-allow-headers', 'content-type,x-canvas-agent-token');
       res.setHeader('access-control-allow-private-network', 'true');
       res.setHeader('access-control-max-age', '600');
       res.setHeader('vary', 'Origin');
@@ -281,6 +311,12 @@ async function companyBridgeServer(config, stop) {
         return void reply(res, 401, { ok: false, error: 'invalid token' });
       }
       return void reply(res, 200, { ok: true, service: 'company-canvas-bridge', protocolVersion: PROTOCOL_VERSION, projectId: config.projectId, instanceId: config.instanceId });
+    }
+    if (origin === config.origin) {
+      res.setHeader('access-control-allow-origin', config.origin);
+      res.setHeader('access-control-allow-credentials', 'false');
+      res.setHeader('vary', 'Origin');
+      res.setHeader('referrer-policy', 'no-referrer');
     }
     if (url.pathname === '/__company/stop' && req.method === 'POST') {
       if (origin || !constantTimeEqual(req.headers['x-canvas-agent-token'], config.token)) {
@@ -335,6 +371,20 @@ async function companyBridgeServer(config, stop) {
         return void reply(res, 400, { ok: false, error: error?.message || 'request invalid' });
       }
     }
+    if (url.pathname.startsWith('/__company/image-proxy/')) {
+      if (!url.pathname.startsWith(imageProxyPrefix)) return void reply(res, 403, { ok: false, error: 'project mismatch' }, origin === config.origin ? config.origin : undefined);
+      if (await imageProxy(req, res)) return;
+    }
+    if (url.pathname === `/__company/config/${config.projectId}` && req.method === 'GET') {
+      if (origin !== config.origin || !constantTimeEqual(req.headers['x-canvas-agent-token'], config.token) || url.search) {
+        return void reply(res, 403, { ok: false, error: 'request not allowed' }, origin === config.origin ? config.origin : undefined);
+      }
+      try {
+        return void reply(res, 200, { ok: true, projectId: config.projectId, ...(await publicImageConfig()) }, config.origin);
+      } catch {
+        return void reply(res, 503, { ok: false, error: 'image config unavailable' }, config.origin);
+      }
+    }
     if (url.pathname === '/__company/bootstrap' && req.method === 'POST') {
       if (origin !== config.origin) return void reply(res, 403, { ok: false, error: 'origin not allowed' });
       try {
@@ -347,11 +397,13 @@ async function companyBridgeServer(config, stop) {
         tickets.delete(ticketKey);
         if (ticket?.clientId && reservedClients.get(ticket.clientId) === ticketKey) reservedClients.delete(ticket.clientId);
         if (!ticket || ticket.expiresAt <= Date.now()) return void reply(res, 410, { ok: false, error: 'ticket expired' }, config.origin);
+        const image = await publicImageConfig();
         return void reply(res, 200, {
           ok: true,
           bridgeUrl: config.url,
           token: config.token,
           projectId: ticket.projectId,
+          ...image,
           ...(ticket.clientId ? { clientId: ticket.clientId } : {}),
         }, config.origin);
       } catch (error) {
@@ -521,6 +573,7 @@ export async function startCompanyBridge({ root = defaultDataRoot(), taskId, web
       port: bridgePort(current.bridgeUrl),
       url: current.bridgeUrl.replace(/\/$/u, ''),
       token: current.token,
+      root: dataRoot,
       projectId: checkedId,
       taskId: checkedId,
       instanceId: lockValue.instanceId,

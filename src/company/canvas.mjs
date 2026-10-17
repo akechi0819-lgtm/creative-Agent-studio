@@ -319,13 +319,22 @@ export function createCompanyCanvasManager({
     }
   }
 
-  async function remoteImageConfig(config) {
-    const result = await canvasTool('workbench_image_get_config', {}, config);
-    const currentModel = typeof result?.current?.model === 'string' ? result.current.model.trim() : '';
-    const models = Array.isArray(result?.models) ? result.models
-      .filter((item) => item && typeof item.value === 'string' && item.value.trim())
-      .map((item) => ({ value: item.value.trim(), label: typeof item.label === 'string' ? item.label.trim().slice(0, 160) : item.value.trim() })) : [];
-    return { currentModel, models };
+  async function savedImageConfig() {
+    let record;
+    try { record = await readConfig({ root: dataRoot }); }
+    catch { throw companyCanvasError('ERR_COMPANY_CANVAS_IMAGE_CONFIG', '无法读取本机已保存的图片模型配置'); }
+    const source = record?.image;
+    const baseUrl = typeof source?.baseUrl === 'string' ? source.baseUrl.trim() : '';
+    const model = typeof source?.model === 'string' ? source.model.trim() : '';
+    const apiKey = typeof source?.apiKey === 'string' ? source.apiKey : '';
+    if (!baseUrl || !model || !apiKey) return null;
+    let parsed;
+    try { parsed = new URL(baseUrl); } catch { throw companyCanvasError('ERR_COMPANY_CANVAS_IMAGE_CONFIG', '本机图片模型配置无效'); }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash
+      || baseUrl.length > 2000 || model.length > 300 || apiKey.length > 5000) {
+      throw companyCanvasError('ERR_COMPANY_CANVAS_IMAGE_CONFIG', '本机图片模型配置无效');
+    }
+    return { baseUrl, model, apiKey };
   }
 
   async function issueTicket(config) {
@@ -454,23 +463,14 @@ export function createCompanyCanvasManager({
       return { openUrl: result.openUrl, projectId: taskId, clientConnected: result.clientConnected };
     },
     async checkImageConfig(taskId) {
-      if (!taskId) return { configured: false, provider: 'remote-canvas', model: null, connectionTested: false, error: 'task-required' };
-      let config;
-      try { config = await readValidatedConfig(taskId); }
-      catch { return { configured: false, provider: 'remote-canvas', model: null, connectionTested: false, error: 'company-canvas-config' }; }
-      if (!config) return { configured: false, provider: 'remote-canvas', model: null, connectionTested: false, error: 'task-bridge-not-started' };
-      try {
-        const current = await bridgeHealth(config);
-        await resolveTarget({ config, current });
-        const remote = await remoteImageConfig(config);
-        return {
-          configured: Boolean(remote.currentModel), provider: 'remote-canvas',
-          model: remote.currentModel || null, models: remote.models,
-          connectionTested: true,
-        };
-      } catch {
-        return { configured: false, provider: 'remote-canvas', model: null, connectionTested: false, error: 'remote-canvas-image-config-unavailable' };
-      }
+      let image;
+      try { image = await savedImageConfig(); }
+      catch { return { configured: false, provider: 'openai-compatible', model: null, connectionTested: false, error: 'local-image-config-unavailable' }; }
+      return {
+        configured: Boolean(image), provider: 'openai-compatible',
+        model: image?.model || null, connectionTested: false,
+        ...(taskId ? { taskId } : {}),
+      };
     },
     async executionOptions(taskId, options) {
       const report = await diagnose({ taskId });
@@ -478,10 +478,8 @@ export function createCompanyCanvasManager({
         throw companyCanvasError('ERR_COMPANY_CANVAS_CAPABILITY_MISSING', report.message || '公司 Canvas 尚未通过新版目标和只读能力核对');
       }
       const execution = await manager.executionOptions(taskId, options);
-      let remote;
-      try { remote = await remoteImageConfig(execution.config); }
-      catch { throw companyCanvasError('ERR_COMPANY_CANVAS_IMAGE_CONFIG', '无法读取远端 Canvas 的生图模型配置；未使用本机模型配置'); }
-      if (!remote.currentModel) throw companyCanvasError('ERR_COMPANY_CANVAS_IMAGE_CONFIG', '远端 Canvas 尚未配置当前生图模型；未使用本机模型配置');
+      const image = await savedImageConfig();
+      if (!image) throw companyCanvasError('ERR_COMPANY_CANVAS_IMAGE_CONFIG', '请先在本机配置已保存的图片模型地址、模型和密钥');
       const operationHealth = await bridgeHealth(execution.config);
       await assertProtocolTarget(execution.config, operationHealth);
       const operationInstanceId = operationHealth.instanceId;
@@ -497,14 +495,14 @@ export function createCompanyCanvasManager({
         await assertProtocolTarget(execution.config, current);
         return current;
       };
-      const allowedModels = new Set([remote.currentModel, ...remote.models.map((item) => item.value)]);
+      const allowedModels = new Set([image.model, `studio-image::${image.model}`]);
       const guardedTool = async (name, input, config, callOptions) => {
         await assertOperationInstance(config, callOptions?.signal);
         if (name === 'canvas_apply_ops' && Array.isArray(input?.ops)) {
           for (const operation of input.ops) {
             const model = operation?.metadata?.model;
             if (typeof model === 'string' && model && !allowedModels.has(model)) {
-              throw companyCanvasError('ERR_COMPANY_CANVAS_IMAGE_CONFIG', '所选生图模型不在远端 Canvas 已配置模型列表中');
+              throw companyCanvasError('ERR_COMPANY_CANVAS_IMAGE_CONFIG', '所选生图模型与本机已保存图片模型不一致');
             }
           }
         }
@@ -514,7 +512,7 @@ export function createCompanyCanvasManager({
         await assertOperationInstance(candidate, callOptions?.signal);
         return execution.getHealth(candidate, callOptions);
       };
-      return { ...execution, model: remote.currentModel, getHealth: guardedHealth, tool: guardedTool };
+      return { ...execution, model: image.model, getHealth: guardedHealth, tool: guardedTool };
     },
     async state(taskId) {
       return manager.state(taskId);

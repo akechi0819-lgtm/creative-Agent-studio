@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createCompanyMaterials } from '../src/company/materials.mjs';
-import { createTask, readTask, setReferences, stageCompanySources, taskDirectory } from '../src/creative/tasks.mjs';
+import { createTask, readTask, setReferences, stageCompanySources, taskDirectory, readTaskSourceFileBytes } from '../src/creative/tasks.mjs';
 
 const companyConfig = {
   revision: 1,
@@ -108,6 +108,8 @@ test('company search stays pending until human retention, then freezes readable 
   });
   const snapshot = retained.sources[0];
   assert.equal(snapshot.decision, 'retained');
+  const workspaceFile = await readTaskSourceFileBytes(initial.id, snapshot.id, 2, { root, sources: retained.sources });
+  assert.equal(workspaceFile.bytes.toString(), fileBytes.get('pdf-1').toString(), 'P5 workspace tools consume the same frozen company originals');
   assert.equal(snapshot.title, '公司图文样例');
   assert.equal(snapshot.body, '隔离夹具提取正文');
   assert.equal(snapshot.summary, '一份隔离素材摘要');

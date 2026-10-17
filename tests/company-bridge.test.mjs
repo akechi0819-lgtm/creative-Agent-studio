@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
+import { saveConfig } from '../src/web/config.mjs';
 import {
   companyBridgeStatus,
   ensureDetachedCompanyBridge,
@@ -191,4 +193,158 @@ test('open-ticket refuses a client already connected to the task bridge', async 
   assert.equal((await ticket.json()).ok, false);
   controller.abort();
   await reader.cancel().catch(() => {});
+});
+
+test('company image proxy keeps the key local, checks exact origin and task, and reads saved config dynamically', async (t) => {
+  const root = await temporaryDirectory(t);
+  const taskId = crypto.randomUUID();
+  const providerRequests = [];
+  const provider = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    providerRequests.push({
+      method: req.method,
+      path: req.url,
+      authorization: req.headers.authorization,
+      body: Buffer.concat(chunks).toString('utf8'),
+    });
+    if (req.method === 'GET' && req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'fixture-image-v1' }] }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/images/generations') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ url: `http://127.0.0.1:${provider.address().port}/generated/fixture.png` }] }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/generated/fixture.png') {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(Buffer.from('fixture-png'));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise((resolve, reject) => {
+    provider.once('error', reject);
+    provider.listen(0, '127.0.0.1', resolve);
+  });
+  const baseUrl = `http://127.0.0.1:${provider.address().port}/v1`;
+  await saveConfig({
+    expectedRevision: 1,
+    image: { baseUrl, model: 'fixture-image-v1', apiKey: 'local-image-secret-v1' },
+  }, { root });
+  const handle = await startCompanyBridge({ root, taskId, webUrl: WEB_URL });
+  const config = await readCompanyCanvasBridgeConfig({ root, taskId });
+  t.after(async () => {
+    await handle.stop();
+    await new Promise((resolve) => provider.close(() => resolve()));
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  const publicConfigUrl = `${config.bridgeUrl}/__company/config/${taskId}`;
+  const configResponse = await fetch(publicConfigUrl, {
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': config.token },
+  });
+  const publicConfig = await configResponse.json();
+  assert.equal(configResponse.status, 200);
+  assert.equal(publicConfig.projectId, taskId);
+  assert.equal(publicConfig.imageConfig.model, 'fixture-image-v1');
+  assert.equal(publicConfig.imageConfig.configured, true);
+  assert.equal(Object.hasOwn(publicConfig.imageConfig, 'apiKey'), false);
+  assert.equal(JSON.stringify(publicConfig).includes('local-image-secret-v1'), false);
+  assert.equal(providerRequests.length, 0, 'bootstrap/config reads do not contact the model service');
+
+  const ticketResponse = await fetch(`${config.bridgeUrl}/__company/open-ticket`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-canvas-agent-token': config.token },
+    body: JSON.stringify({ projectId: taskId }),
+  });
+  const ticket = await ticketResponse.json();
+  assert.equal(ticketResponse.status, 200);
+  const rejectedBootstrapOrigin = await fetch(`${config.bridgeUrl}/__company/bootstrap`, {
+    method: 'POST',
+    headers: { origin: 'https://other.fixture.invalid', 'content-type': 'application/json' },
+    body: JSON.stringify({ ticket: ticket.ticket }),
+  });
+  assert.equal(rejectedBootstrapOrigin.status, 403);
+  const bootstrapResponse = await fetch(`${config.bridgeUrl}/__company/bootstrap`, {
+    method: 'POST',
+    headers: { origin: WEB_URL, 'content-type': 'application/json' },
+    body: JSON.stringify({ ticket: ticket.ticket }),
+  });
+  const bootstrap = await bootstrapResponse.json();
+  assert.equal(bootstrapResponse.status, 200);
+  assert.equal(bootstrap.projectId, taskId);
+  assert.equal(bootstrap.configRevision, publicConfig.configRevision);
+  assert.equal(bootstrap.imageConfig.model, 'fixture-image-v1');
+  assert.equal(Object.hasOwn(bootstrap.imageConfig, 'apiKey'), false);
+  assert.equal(JSON.stringify(bootstrap).includes('local-image-secret-v1'), false);
+  assert.equal(JSON.stringify(bootstrap).includes('local-image-secret-v2'), false);
+  assert.equal(bootstrapResponse.headers.get('access-control-allow-origin'), WEB_URL);
+  assert.equal(providerRequests.length, 0, 'ticket/bootstrap do not call the image provider');
+
+  const proxyUrl = (target, project = taskId) =>
+    `${config.bridgeUrl}/__company/image-proxy/${project}/${encodeURIComponent(target)}`;
+  const listUrl = `${baseUrl}/models`;
+  const rejectedOrigin = await fetch(proxyUrl(listUrl), {
+    headers: { origin: 'https://other.fixture.invalid', 'x-canvas-agent-token': config.token },
+  });
+  assert.equal(rejectedOrigin.status, 403);
+  const rejectedToken = await fetch(proxyUrl(listUrl), {
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': '0'.repeat(64) },
+  });
+  assert.equal(rejectedToken.status, 403);
+  const rejectedTask = await fetch(proxyUrl(listUrl, crypto.randomUUID()), {
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': config.token },
+  });
+  assert.equal(rejectedTask.status, 403);
+  assert.equal(providerRequests.length, 0, 'rejected origins, tokens, and project paths never reach the provider');
+
+  const modelsResponse = await fetch(proxyUrl(listUrl), {
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': config.token },
+  });
+  assert.equal(modelsResponse.status, 200);
+  assert.equal(modelsResponse.headers.get('access-control-allow-origin'), WEB_URL);
+  assert.deepEqual((await modelsResponse.json()).data.map((item) => item.id), ['fixture-image-v1']);
+  assert.equal(providerRequests.at(-1).authorization, 'Bearer local-image-secret-v1');
+
+  const createResponse = await fetch(proxyUrl(`${baseUrl}/images/generations`), {
+    method: 'POST',
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': config.token, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'fixture-image-v1', prompt: 'isolated fixture request' }),
+  });
+  assert.equal(createResponse.status, 200);
+  const resultUrl = (await createResponse.json()).data[0].url;
+  const resultResponse = await fetch(proxyUrl(resultUrl), {
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': config.token },
+  });
+  assert.equal(resultResponse.status, 200, 'the issued image URL is relayed through the task proxy');
+  assert.equal(await resultResponse.text(), 'fixture-png');
+
+  await saveConfig({
+    expectedRevision: 2,
+    image: { model: 'fixture-image-v2', apiKey: 'local-image-secret-v2' },
+  }, { root });
+  const refreshedResponse = await fetch(publicConfigUrl, {
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': config.token },
+  });
+  const refreshed = await refreshedResponse.json();
+  assert.equal(refreshed.configRevision, 3);
+  assert.equal(refreshed.imageConfig.model, 'fixture-image-v2');
+  assert.equal(JSON.stringify(refreshed).includes('local-image-secret-v2'), false);
+  const refreshedModels = await fetch(proxyUrl(listUrl), {
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': config.token },
+  });
+  assert.equal(refreshedModels.status, 200);
+  assert.equal(refreshedModels.headers.get('access-control-allow-origin'), WEB_URL);
+  assert.equal(providerRequests.at(-1).authorization, 'Bearer local-image-secret-v2', 'the proxy reads the saved key for every request');
+
+  const forbiddenTarget = await fetch(proxyUrl(`${baseUrl}/chat/completions`), {
+    method: 'POST',
+    headers: { origin: WEB_URL, 'x-canvas-agent-token': config.token, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'fixture-image-v2' }),
+  });
+  assert.equal(forbiddenTarget.status, 403);
+  assert.equal(providerRequests.some((item) => item.path === '/v1/chat/completions'), false);
 });

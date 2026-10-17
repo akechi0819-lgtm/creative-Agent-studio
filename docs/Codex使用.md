@@ -1,6 +1,6 @@
 # Codex 创作入口
 
-当前公司版差异见 [公司版接入](公司版接入.md)：先配置个人 Teedy 账号及新版远端画布工具连接，不启动通用版本地 Canvas；远端更新由用户负责。公司素材检索用 `node scripts/company.mjs search @payload.json`，本机素材另列。下文原 P0—P4 验收不能代替公司现网验证。
+当前公司版差异见 [公司版接入](公司版接入.md)：公司服务地址已预配，填写个人 Teedy 账号密码与本机基础／生图 API，不启动通用版本地 Canvas；远端前端更新由用户负责。公司素材检索用 `node scripts/company.mjs search @payload.json`，本机素材另列。下文原 P0—P4 验收不能代替公司现网验证。
 
 
 在本地 Codex 中打开下载或克隆的仓库根目录，让当前 Codex 会话通过项目 Skill 和共享 CLI 创作。日常创作不启动 DSH，不调用 `codex exec`；Canvas 按任务独立打开。两个入口的区别见 [README](../README.md)。
@@ -23,7 +23,7 @@
    ```
 
    Mac ZIP 解压后如提示无执行权限，在仓库目录执行一次 `chmod +x Start.command scripts/bootstrap-node.sh`；首次准备需要联网，耗时由网络决定。不要只运行 `node scripts/prepare.mjs` 并假设新设备已经有 Node；该命令适合已有合格 Node 的环境。
-3. 首次在 Web 的“公司连接”中保存个人素材库账号和远端 Canvas 地址；需要显式素材 AI 清洗时在“模型与服务”配置基础 API。生图 API 在任务远端 Canvas 本人的浏览器中填写。配置后在启动菜单选择 `2 停止服务`，再回到 Codex 创作。网页设置是独立入口的配置操作；之后 Codex 的对话推理由宿主承担，日常创作无需保持 Web DSH 运行，也无需给 Codex 更换基础模型。
+3. 首次在 Web 的“公司连接”中保存个人素材库账号和远端 Canvas 地址；需要显式素材 AI 清洗时在“模型与服务”配置基础 API。生图 API 在本机工作台“模型与服务”中填写，远端 Canvas 通过任务桥接使用同一配置。配置后在启动菜单选择 `2 停止服务`，再回到 Codex 创作。网页设置是独立入口的配置操作；之后 Codex 的对话推理由宿主承担，日常创作无需保持 Web DSH 运行，也无需给 Codex 更换基础模型。
 4. 在 Codex 输入自然语言需求，例如：
 
    ```text

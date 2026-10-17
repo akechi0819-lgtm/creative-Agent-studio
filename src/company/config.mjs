@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { dataRoot } from '../canvas/client.mjs';
+import { readCompanyDeployment } from './deployment.mjs';
 
 const SECRET_FIELDS = ['teedy.password'];
 const TEEDY_FIELDS = ['baseUrl', 'username', 'password'];
@@ -139,13 +140,20 @@ async function readRecord(root) {
 
 /** Read the private company integration settings from config/company.json. */
 export async function readCompanyConfig({ root } = {}) {
-  return readRecord(root);
+  const [record, deployment] = await Promise.all([readRecord(root), readCompanyDeployment()]);
+  // The saved origin binds the personal password; a newly provisioned origin must never receive the previous service's password.
+  return { ...record, deploymentConfigured: deployment.configured,
+    teedy: { ...record.teedy, baseUrl: deployment.teedy.baseUrl,
+      password: record.teedy.baseUrl === deployment.teedy.baseUrl ? record.teedy.password : '' },
+    canvas: { webUrl: deployment.canvas.webUrl } };
+
 }
 
 /** Return only non-secret values and whether each secret is configured. */
 export function publicCompanyConfig(record) {
   return {
     revision: record.revision,
+    deploymentConfigured: record.deploymentConfigured === true,
     teedy: {
       baseUrl: record.teedy.baseUrl,
       username: record.teedy.username,
@@ -212,10 +220,10 @@ function validateSaveInput(input) {
   if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) {
     throw configError('ERR_COMPANY_CONFIG_REVISION_REQUIRED', '必须指定正整数 expectedRevision');
   }
-  if (Object.keys(input).some((key) => !['expectedRevision', 'teedy', 'canvas', 'clearSecrets'].includes(key))) {
+  if (Object.keys(input).some((key) => !['expectedRevision', 'teedy', 'clearSecrets'].includes(key))) {
     throw configError('ERR_COMPANY_CONFIG_INVALID', '公司配置输入包含不支持的字段');
   }
-  for (const [section, fields] of [['teedy', TEEDY_FIELDS], ['canvas', CANVAS_FIELDS]]) {
+  for (const [section, fields] of [['teedy', ['username', 'password']]]) {
     if (input[section] == null) continue;
     assertObject(input[section], `${section} 配置`, 'ERR_COMPANY_CONFIG_INVALID');
     if (Object.keys(input[section]).some((key) => !fields.includes(key))) {
@@ -235,7 +243,8 @@ export async function saveCompanyConfig(input, { root } = {}) {
   const lock = await takeLock(root);
   let temporary;
   try {
-    const previous = await readRecord(root);
+    const previous = await readCompanyConfig({ root });
+    if (!previous.deploymentConfigured) throw configError('ERR_COMPANY_DEPLOYMENT_REQUIRED', '运行包尚未预配公司服务，请联系管理员');
     if (previous.revision !== input.expectedRevision) {
       const error = configError('ERR_COMPANY_CONFIG_REVISION_CONFLICT', '公司配置已更新，请重新读取');
       error.expectedRevision = input.expectedRevision;
@@ -247,7 +256,7 @@ export async function saveCompanyConfig(input, { root } = {}) {
       teedy: { ...previous.teedy },
       canvas: { ...previous.canvas },
     };
-    for (const [section, fields] of [['teedy', TEEDY_FIELDS], ['canvas', CANVAS_FIELDS]]) {
+    for (const [section, fields] of [['teedy', ['username', 'password']]]) {
       const source = input[section];
       if (!source) continue;
       for (const field of fields) {
@@ -259,12 +268,7 @@ export async function saveCompanyConfig(input, { root } = {}) {
           if (checked.trim()) next[section][field] = checked;
           continue;
         }
-        if (field === 'baseUrl' || field === 'webUrl') {
-          next[section][field] = checkedUrl(value, `${section} ${field}`, { protocol: 'https:' });
-          continue;
-        }
-        const maxLength = field === 'username' ? 300 : 300;
-        next[section][field] = checkedText(value, `${section} ${field}`, maxLength);
+        next[section][field] = checkedText(value, `${section} ${field}`, 300);
       }
     }
     const teedyIdentityChanged = next.teedy.baseUrl !== previous.teedy.baseUrl || next.teedy.username !== previous.teedy.username;
@@ -283,7 +287,7 @@ export async function saveCompanyConfig(input, { root } = {}) {
     await fs.chmod(temporary, 0o600);
     await fs.rename(temporary, destination);
     temporary = null;
-    return record;
+    return { ...record, deploymentConfigured: true };
   } finally {
     if (temporary) await fs.rm(temporary, { force: true }).catch(() => {});
     await releaseLock(lock);

@@ -41,6 +41,7 @@ export const api = {
     expectedRevision,
     requestId,
     ...(typeof options.model === 'string' && options.model.trim() ? { model: options.model.trim() } : {}),
+    ...(options.displayed ? { displayed: options.displayed } : {}),
     ...(options.answers ? { answers: options.answers } : {}),
     ...(Array.isArray(options.attachmentSourceIds) && options.attachmentSourceIds.length ? { attachmentSourceIds: options.attachmentSourceIds } : {}),
   })),

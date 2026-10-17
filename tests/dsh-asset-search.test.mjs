@@ -73,8 +73,11 @@ test('pending library candidates omit OCR and file data from the task prompt pro
     { id: 'upload-1', title: '保留附件', type: 'current_attachment', decision: 'retained', extractions: [{ name: 'scan.pdf', kind: 'pdf', text: 'RETAINED-PDF-SENTINEL-' + 'x'.repeat(5000) }], files: [{ relativePath: '/private/upload.pdf', sha256: 'SECRET-HASH' }], history: [{ text: 'SECRET' }] },
     { id: 'upload-2', title: '待选附件', type: 'current_attachment', decision: 'pending', extractions: [{ name: 'notes.pdf', kind: 'pdf', text: 'PENDING-PDF-SENTINEL-' + 'y'.repeat(5000) }], files: [{ relativePath: '/private/notes.pdf' }], history: [{ text: 'SECRET-PENDING-HISTORY' }] },
     { id: 'upload-3', title: '排除附件', type: 'current_attachment', decision: 'excluded', extractions: [{ name: 'excluded.pdf', kind: 'pdf', text: 'EXCLUDED-PDF-SENTINEL' }], files: [] },
+    { id: 'asset-3', title: '另一份候选', decision: 'pending', asset: { id: 'asset-3', revision: 1 }, files: [] },
   ]);
 
+  assert.deepEqual(sources.filter(source => source.asset).map(source => source.referenceNumber), [1, 2, 3]);
+  assert.equal(sources[3].referenceNumber, undefined, '上传附件不占用右侧检索候选的编号');
   assert.equal('body' in sources[0], false);
   assert.equal('extractions' in sources[0], false);
   assert.equal('files' in sources[0], false);

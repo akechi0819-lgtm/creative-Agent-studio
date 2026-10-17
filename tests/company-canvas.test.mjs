@@ -53,6 +53,9 @@ async function companyBootstrap(openUrl) {
   assert.equal(result.projectId, url.searchParams.get('projectId'));
   assert.equal(result.bridgeUrl, bridgeUrl);
   assert.ok(typeof result.token === 'string' && result.token.length >= 32);
+  assert.ok(Number.isSafeInteger(result.configRevision) && result.configRevision >= 1);
+  assert.ok(result.imageConfig && typeof result.imageConfig.baseUrl === 'string');
+  assert.equal(Object.hasOwn(result.imageConfig, 'apiKey'), false, 'bootstrap exposes model address only, never the saved image key');
   assert.equal(Object.hasOwn(result, 'clientId'), false, 'each browser tab receives a new clientId from SSE hello');
 
   const replay = await fetch(`${bridgeUrl}/__company/bootstrap`, {
@@ -84,11 +87,6 @@ async function connectCanvas({ bridgeUrl, token, projectId, origin }) {
     let result = {};
     if (payload.name === 'canvas_read_image') {
       result = { nodeId: payload.input?.nodeId, dataUrl: IMAGE_DATA_URL, width: 1, height: 1 };
-    } else if (payload.name === 'workbench_image_get_config') {
-      result = {
-        current: { model: 'remote-image-model' },
-        models: [{ value: 'remote-image-model', label: 'Remote image model' }],
-      };
     }
     const resultUrl = new URL('/canvas/result', bridgeUrl);
     resultUrl.searchParams.set('projectId', projectId);
@@ -256,14 +254,14 @@ test('company Canvas isolates task bridges, uses project-only tickets, diagnoses
 
   const imageConfig = await manager.checkImageConfig(taskA.id);
   assert.equal(imageConfig.configured, true);
-  assert.equal(imageConfig.provider, 'remote-canvas');
-  assert.equal(imageConfig.model, 'remote-image-model');
-  assert.notEqual(imageConfig.model, 'local-only-model');
+  assert.equal(imageConfig.provider, 'openai-compatible');
+  assert.equal(imageConfig.model, 'local-only-model');
+  assert.equal(imageConfig.connectionTested, false, 'ordinary config inspection does not call a provider');
   assert.ok(!JSON.stringify(imageConfig).includes('local-fixture-key'));
-  assert.ok(pageA.toolCalls.includes('workbench_image_get_config'));
+  assert.ok(!pageA.toolCalls.includes('workbench_image_get_config'), 'company execution does not read or mutate remote image settings');
 
   const execution = await manager.executionOptions(taskA.id, {});
-  assert.equal(execution.model, 'remote-image-model');
+  assert.equal(execution.model, 'local-only-model');
   const beforeDriftToolRequests = toolRequests;
   driftInstance = true;
   await assert.rejects(

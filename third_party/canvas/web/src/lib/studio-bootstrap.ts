@@ -1,4 +1,4 @@
-import { useConfigStore } from "@/stores/use-config-store";
+import { setCompanyManagedConfigPersistence, useConfigStore } from "@/stores/use-config-store";
 import { useCanvasToolStore } from "@/stores/use-canvas-tool-store";
 
 type StudioSession = {
@@ -11,10 +11,14 @@ type StudioSession = {
     imageConfig?: { baseUrl?: string; model?: string; apiKey?: string; apiFormat?: "openai" | "gemini" } | null;
 };
 
+type CompanyImageConfig = { baseUrl: string; model: string; apiFormat: "openai"; configured: boolean };
+type CompanyCanvasSession = { bridgeUrl: string; token: string; projectId: string };
 const isRemoteCanvasDeployment = __STUDIO_CANVAS_DEPLOYMENT__ === "remote";
 
 let studioProjectId: string | null = null;
 let appliedConfigRevision = 0;
+let companyCanvasSession: CompanyCanvasSession | null = null;
+let companyConfigRevision = 0;
 let refreshListenersInstalled = false;
 
 function taskProjectId() {
@@ -79,6 +83,35 @@ function imageChannelConfig(image: StudioSession["imageConfig"]) {
     };
 }
 
+function companyManagedImageConfig(image: CompanyImageConfig | null, bridgeUrl: string, projectId: string) {
+    const model = image?.configured ? image.model.trim() : "";
+    const baseUrl = image?.configured ? image.baseUrl.trim() : "";
+    const selected = model ? `studio-image::${model}` : "";
+    const channels = model && baseUrl ? [{
+        id: "studio-image",
+        name: "Studio 图片模型",
+        baseUrl,
+        apiKey: "",
+        apiFormat: "openai" as const,
+        models: [{ name: model, capability: "image" as const }],
+    }] : [];
+    const current = useConfigStore.getState().config;
+    return {
+        ...current,
+        channelMode: "local" as const,
+        baseUrl,
+        apiKey: "",
+        apiFormat: "openai" as const,
+        channels,
+        model: selected,
+        imageModel: selected,
+        models: selected ? [selected] : [],
+        proxyEnabled: true,
+        proxyUrl: `${bridgeUrl}/__company/image-proxy/${encodeURIComponent(projectId)}`,
+        canvasImageCount: "1",
+    };
+}
+
 function applyStudioSession(session: StudioSession) {
     const projectId = taskProjectId();
     if (!session.ok || !session.projectId || !session.bridgeUrl || !session.bridgeToken
@@ -107,9 +140,77 @@ function applyStudioSession(session: StudioSession) {
     return true;
 }
 
+function normalizeCompanyImageConfig(value: unknown): CompanyImageConfig | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const source = value as Record<string, unknown>;
+    const baseUrl = typeof source.baseUrl === "string" ? source.baseUrl.trim() : "";
+    const model = typeof source.model === "string" ? source.model.trim() : "";
+    if (baseUrl.length > 2000 || model.length > 300 || source.apiFormat !== "openai") return null;
+    if (baseUrl) {
+        let parsed: URL;
+        try { parsed = new URL(baseUrl); } catch { return null; }
+        if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    }
+    const configured = source.configured === true && Boolean(baseUrl && model);
+    return { baseUrl, model, apiFormat: "openai", configured };
+}
+
+/** Header used only by company managed image requests; the bearer stays in memory. */
+export function companyCanvasImageProxyHeaders(): Record<string, string> | null {
+    if (!companyCanvasSession) return null;
+    const state = useCanvasToolStore.getState();
+    if (state.url !== companyCanvasSession.bridgeUrl || state.token !== companyCanvasSession.token) {
+        throw new Error("公司 Canvas 图片代理授权已失效，请重新打开当前任务画布。");
+    }
+    return { "x-canvas-agent-token": companyCanvasSession.token };
+}
+
+async function refreshCompanyCanvasConfig() {
+    const session = companyCanvasSession;
+    if (!session || !window.location.pathname.startsWith("/canvas")) return false;
+    const state = useCanvasToolStore.getState();
+    if (state.url !== session.bridgeUrl || state.token !== session.token
+        || taskProjectId() !== session.projectId) {
+        throw new Error("公司 Canvas 任务连接不匹配，本次生图已停止；请重新打开当前任务画布。");
+    }
+    let response: Response;
+    try {
+        response = await fetch(new URL(`/__company/config/${encodeURIComponent(session.projectId)}`, session.bridgeUrl).toString(), {
+            headers: { "x-canvas-agent-token": session.token },
+            cache: "no-store",
+            credentials: "omit",
+            mode: "cors",
+            redirect: "error",
+            referrerPolicy: "no-referrer",
+            signal: AbortSignal.timeout(4_000),
+        });
+    } catch {
+        throw new Error("公司 Canvas 图片配置读取失败，本次生图已停止；请检查本机工作台连接。");
+    }
+    if (!response.ok) throw new Error("无法确认公司 Canvas 图片配置，本次生图已停止；请重新打开当前任务画布。");
+    let payload: unknown;
+    try { payload = await response.json(); } catch {
+        throw new Error("公司 Canvas 图片配置响应无效，本次生图已停止；请重新打开当前任务画布。");
+    }
+    if (!payload || typeof payload !== "object") throw new Error("公司 Canvas 图片配置响应无效，本次生图已停止。");
+    const value = payload as Record<string, unknown>;
+    const revision = value.configRevision;
+    const imageConfig = normalizeCompanyImageConfig(value.imageConfig);
+    if (value.ok !== true || value.projectId !== session.projectId || !Number.isSafeInteger(revision)
+        || (revision as number) < 1 || !imageConfig) {
+        throw new Error("公司 Canvas 图片配置与当前任务不匹配，本次生图已停止。");
+    }
+    if ((revision as number) > companyConfigRevision) {
+        setCompanyManagedConfigPersistence(true);
+        useConfigStore.setState(() => ({ config: companyManagedImageConfig(imageConfig, session.bridgeUrl, session.projectId) }));
+        companyConfigRevision = revision as number;
+    }
+    return true;
+}
+
 /** Read the same-origin private session and apply only a newer image-config revision. */
 export async function refreshStudioCanvasConfig() {
-    if (isRemoteCanvasDeployment) return false;
+    if (isRemoteCanvasDeployment) return refreshCompanyCanvasConfig();
     if (!window.location.pathname.startsWith("/canvas")) return false;
     let response: Response;
     try {
@@ -145,6 +246,9 @@ function parseLoopbackBridgeUrl(value: string): URL | null {
 }
 
 function reportCompanyBootstrapFailure(bridgeUrl = "") {
+    companyCanvasSession = null;
+    companyConfigRevision = 0;
+    setCompanyManagedConfigPersistence(false);
     useCanvasToolStore.setState({
         url: bridgeUrl,
         token: "",
@@ -209,15 +313,29 @@ async function bootstrapCompanyCanvasBridge() {
     const session = payload as Record<string, unknown>;
     const returnedBridge = typeof session.bridgeUrl === "string" ? parseLoopbackBridgeUrl(session.bridgeUrl) : null;
     const requestedProjectId = taskProjectId();
+    const configRevision = session.configRevision;
+    const imageConfig = normalizeCompanyImageConfig(session.imageConfig);
     if (session.ok !== true || !returnedBridge || returnedBridge.origin !== bridge.origin
         || typeof session.token !== "string" || !session.token.trim()
         || typeof session.projectId !== "string" || !session.projectId.trim()
         || !requestedProjectId || requestedProjectId !== session.projectId
+        || !Number.isSafeInteger(configRevision) || (configRevision as number) < 1
+        || !imageConfig || Object.hasOwn(session.imageConfig as object, "apiKey")
         || (session.clientId !== undefined && (typeof session.clientId !== "string" || !session.clientId.trim()))) {
         reportCompanyBootstrapFailure(bridge.origin);
         return false;
     }
 
+    companyCanvasSession = {
+        bridgeUrl: returnedBridge.origin,
+        token: session.token,
+        projectId: session.projectId,
+    };
+    companyConfigRevision = configRevision as number;
+    setCompanyManagedConfigPersistence(true);
+    useConfigStore.setState(() => ({
+        config: companyManagedImageConfig(imageConfig, returnedBridge.origin, session.projectId as string),
+    }));
     useCanvasToolStore.setState({
         url: returnedBridge.origin,
         token: session.token,
@@ -247,7 +365,7 @@ function installRefreshListeners() {
 /** Consume the one-use local ticket before React renders or the Canvas navigation runs. */
 export async function bootstrapStudioCanvas() {
     if (isRemoteCanvasDeployment) {
-        await bootstrapCompanyCanvasBridge();
+        if (await bootstrapCompanyCanvasBridge()) installRefreshListeners();
         return;
     }
     if (!window.location.pathname.startsWith("/canvas")) return;

@@ -1,3 +1,4 @@
+import { classifyDialogueIntent } from '../../src/web/dialogue.mjs';
 import { WhaleCharacter } from './WhaleCharacter.jsx';
 import { WhaleAvatar } from './WhaleAvatar.jsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -5,7 +6,8 @@ import { api, jobFromResponse } from './api.js';
 import { Workbench, ChatComposer } from './Workbench.jsx';
 import { Library } from './Library.jsx';
 import { DnaSettings, ModelSettings } from './Settings.jsx';
-import { CompanySettings, CompanySearch, CompanyCopyCheck } from './Company.jsx';
+import { hasUsableConfig, ONBOARDING_DISMISSED_KEY, Onboarding } from './Onboarding.jsx';
+import { CompanyCopyCheck, CompanySearch, CompanySettings } from './Company.jsx';
 
 const NAV = [
   { id: 'workbench', label: '创作工作台', mark: '✳' },
@@ -73,18 +75,22 @@ function mergePendingChats(conversation = [], pending = []) {
 export function App() {
   const [section, setSection] = useState('workbench');
   const [bootstrap, setBootstrap] = useState(null);
+  const [companyConfig, setCompanyConfig] = useState(null);
+  const [companyConfigLoaded, setCompanyConfigLoaded] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const onboardingDecisionMade = useRef(false);
   const [task, setTask] = useState(null);
   const [selectedTaskId, setSelectedTaskId] = useState(() => window.localStorage.getItem('studio.activeTask') || '');
   const selectedTaskRef = useRef(selectedTaskId);
   selectedTaskRef.current = selectedTaskId;
   const [job, setJob] = useState(null);
+  const requestedChatDownloads = useRef(new Set());
   const [pendingChatsByTask, setPendingChatsByTask] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [noticeTone, setNoticeTone] = useState('success');
   const [createOpen, setCreateOpen] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [jobBusy, setJobBusy] = useState(false);
@@ -168,6 +174,26 @@ export function App() {
   }, [selectedTaskId]);
 
   useEffect(() => { refreshBootstrap().catch(() => {}); }, [refreshBootstrap]);
+
+  useEffect(() => {
+    let active = true;
+    api.companyConfig().then(({ config }) => {
+      if (active) setCompanyConfig(config);
+    }).catch((cause) => {
+      if (active) setError(cause.message || '无法读取公司服务配置。');
+    }).finally(() => {
+      if (active) setCompanyConfigLoaded(true);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!bootstrap || !companyConfigLoaded || onboardingDecisionMade.current) return;
+    onboardingDecisionMade.current = true;
+    if (!window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) && !hasUsableConfig(bootstrap.config, { companyMode: true, companyConfig })) {
+      setOnboardingOpen(true);
+    }
+  }, [bootstrap, companyConfig, companyConfigLoaded]);
 
   useEffect(() => {
     if (!bootstrap || !selectedTaskId) return;
@@ -274,6 +300,14 @@ export function App() {
   }, [job?.id, job?.status, jobBusy, refreshBootstrap, refreshTask, selectedTaskId]);
 
   useEffect(() => {
+    if (job?.status !== 'succeeded' || !job.result?.downloadUrl || !requestedChatDownloads.current.delete(job.id)) return;
+    const download = document.createElement('a');
+    download.href = job.result.downloadUrl;
+    download.download = '';
+    download.click();
+  }, [job]);
+
+  useEffect(() => {
     if (!job?.id || ['succeeded', 'failed', 'cancelled'].includes(job.status)) return undefined;
     let active = true;
     const poll = async () => {
@@ -301,13 +335,14 @@ export function App() {
     return () => { active = false; window.clearInterval(timer); };
   }, [job?.id, job?.status, refreshBootstrap, refreshTask]);
 
-  const run = useCallback(async (operation, { refresh = true, success = '' } = {}) => {
+  const run = useCallback(async (operation, { refresh = true, success = '', downloadResult = false } = {}) => {
     setError('');
     setNotice(''); setNoticeTone('success');
     try {
       const result = await operation();
       const pendingJob = jobFromResponse(result);
       if (pendingJob) {
+        if (downloadResult) requestedChatDownloads.current.add(pendingJob.id);
         setJob(pendingJob);
         setJobBusy(false);
         if (pendingJob.taskId && pendingJob.taskId === selectedTaskId) {
@@ -338,13 +373,13 @@ export function App() {
     }
   }, [refreshBootstrap, refreshTask, selectedTaskId]);
 
-  const startJob = useCallback(async (operation, { success = '' } = {}) => {
+  const startJob = useCallback(async (operation, { success = '', downloadResult = false } = {}) => {
     setJobBusy(true);
-    try { return await run(operation, { refresh: false, success }); }
+    try { return await run(operation, { refresh: false, success, downloadResult }); }
     finally { setJobBusy(false); }
   }, [run]);
 
-  const sendChat = useCallback(async ({ taskId, text, expectedRevision, model = '', answers, attachments = [], uploadCompleted = false, uploadRevision = null, sourceId = '', requestId = crypto.randomUUID() }) => {
+  const sendChat = useCallback(async ({ taskId, text, expectedRevision, model = '', displayed, answers, attachments = [], uploadCompleted = false, uploadRevision = null, sourceId = '', requestId = crypto.randomUUID() }) => {
     const instructionText = String(text || '').trim();
     const files = [...attachments];
     const attachmentNames = files.map((file) => file.name || '剪贴板图片');
@@ -359,6 +394,7 @@ export function App() {
       text: chatText,
       ...(instructionText ? { instructions: instructionText } : {}),
       ...(displayAttachments.length ? { attachments: displayAttachments, attachmentFiles: files } : {}),
+      ...(displayed ? { displayed } : {}),
       ...(answers ? { answers } : {}),
       expectedRevision,
       uploadBaseRevision: expectedRevision,
@@ -413,9 +449,22 @@ export function App() {
         }
         chatRevision = completedUploadRevision;
       }
+      const normalizedApprovalText = instructionText.replace(/\s+/gu, '').replace(/[。！!]+$/gu, '');
+      const approvalVersion = normalizedApprovalText.match(/v(\d+)/iu)?.[1];
+      const explicitlyApprovesDisplayedSheet = Boolean(
+        displayed
+        && displayed.revision === expectedRevision
+        && Number.isInteger(displayed.sheetVersion)
+        && displayed.sheetVersion > 0
+        && (!approvalVersion || Number(approvalVersion) === displayed.sheetVersion)
+        && !answers
+        && !files.length
+        && classifyDialogueIntent(instructionText) === 'sheet',
+      );
+      if (explicitlyApprovesDisplayedSheet) await ensureCanvasConnected(taskId);
       const result = await startJob(
-        () => api.chat(taskId, chatText, chatRevision, requestId, { model, answers, ...(completedSourceId ? { attachmentSourceIds: [completedSourceId] } : {}) }),
-        { refresh: false },
+        () => api.chat(taskId, chatText, chatRevision, requestId, { model, displayed, answers, ...(completedSourceId ? { attachmentSourceIds: [completedSourceId] } : {}) }),
+        { downloadResult: classifyDialogueIntent(instructionText) === 'delivery' },
       );
       setPendingChatsByTask((all) => ({
         ...all,
@@ -453,6 +502,7 @@ export function App() {
     text: message.instructions ?? message.text,
     expectedRevision: message.expectedRevision,
     model: message.model || '',
+    ...(message.displayed ? { displayed: message.displayed } : {}),
     attachments: message.attachmentFiles || [],
     uploadCompleted: message.uploadCompleted === true,
     ...(message.uploadRevision != null ? { uploadRevision: message.uploadRevision } : {}),
@@ -463,7 +513,6 @@ export function App() {
 
   async function openTask(id) {
     setSection('workbench');
-    setSidebarOpen(false);
     setError('');
     selectedTaskRef.current = id;
     setSelectedTaskId(id);
@@ -558,7 +607,9 @@ export function App() {
       child.opener = null;
       child.location.replace(opened.openUrl);
       navigated = true;
-      const deadline = Date.now() + 8000;
+      // A cold Canvas tab loads its editor and local database before connecting.
+      notify('正在打开并连接当前任务的 Canvas，请稍候…');
+      const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => window.setTimeout(resolve, 400));
         const current = await api.task(id);
@@ -591,17 +642,34 @@ export function App() {
     return <main className="boot-screen"><span className="brand-mark"><WhaleAvatar decorative /></span><h1>工作区暂时无法打开</h1><p role="alert">{error}</p><button className="button primary" onClick={() => { setLoading(true); refreshBootstrap().catch(() => {}); }}>重新连接</button></main>;
   }
 
+  if (onboardingOpen) return <Onboarding
+    initialConfig={bootstrap.config || { revision: 1, base: {}, image: {} }}
+    initialCompanyConfig={companyConfig}
+    companyMode
+    onSkip={() => {
+      window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1');
+      setOnboardingOpen(false);
+      setSection('workbench');
+    }}
+    onConfigured={(next) => setBootstrap((current) => current ? { ...current, config: next } : current)}
+    onCompanyConfigured={setCompanyConfig}
+    onCreateSample={async ({ brief }) => {
+      await createTask({ brief });
+      window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1');
+      setOnboardingOpen(false);
+    }}
+  />;
+
   return (
     <div className={`studio-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${section === 'workbench' ? 'workbench-mode' : ''}`}>
-      <button className={`sidebar-scrim ${sidebarOpen ? 'shown' : ''}`} aria-label="关闭导航" onClick={() => setSidebarOpen(false)} />
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-top-row">
           <div className="brand-lockup"><span className="brand-mark"><WhaleAvatar decorative /></span><div><strong>Creative Studio</strong><small>大肥鱼绘图助手 · 公司版</small></div></div>
           <button type="button" className="sidebar-collapse-toggle" aria-label={sidebarCollapsed ? '展开导航栏' : '收起导航栏'} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? '展开导航栏' : '收起导航栏'} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>{sidebarCollapsed ? '›' : '‹'}</button>
         </div>
-        <button className="button primary create-button" aria-label="新建创作" title="新建创作" onClick={() => { setCreateOpen(true); setSidebarOpen(false); }}><span aria-hidden="true">＋</span><span className="create-button-label">新建创作</span></button>
+        <button className="button primary create-button" aria-label="新建创作" title="新建创作" onClick={() => setCreateOpen(true)}><span aria-hidden="true">＋</span><span className="create-button-label">新建创作</span></button>
         <nav className="main-nav" aria-label="主导航">
-          {NAV.map((item) => <button key={item.id} className={`nav-item ${section === item.id ? 'active' : ''}`} aria-label={item.label} title={item.label} onClick={() => { setSection(item.id); setSidebarOpen(false); }}><span className="nav-mark" aria-hidden="true">{item.mark}</span><span className="nav-label">{item.label}</span></button>)}
+          {NAV.map((item) => <button key={item.id} className={`nav-item ${section === item.id ? 'active' : ''}`} aria-label={item.label} title={item.label} onClick={() => setSection(item.id)}><span className="nav-mark" aria-hidden="true">{item.mark}</span><span className="nav-label">{item.label}</span></button>)}
         </nav>
         <div className="sidebar-rule" />
         <div className="sidebar-heading"><span>最近任务</span><span className="count-label">{bootstrap.tasks?.length || 0}</span></div>
@@ -621,15 +689,12 @@ export function App() {
       </aside>
 
       <main className={`main-area ${section === 'workbench' ? 'workbench-main' : ''}`}>
-        <header className="mobile-topbar"><button className="icon-button" aria-label="打开导航" onClick={() => setSidebarOpen(true)}>☰</button><span>Creative Studio</span><button className="button small primary" onClick={() => setCreateOpen(true)}>＋ 新建</button></header>
         {(error || notice) && <div className={`global-message ${error ? 'error' : noticeTone}`} role={error ? 'alert' : 'status'}><span>{error || notice}</span><button className="icon-button" aria-label="关闭提示" onClick={() => { setError(''); setNotice(''); setNoticeTone('success'); }}>×</button></div>}
         {detachedTerminalJob && <div className={`job-status-summary ${detachedTerminalJob.status}`} role={detachedTerminalJob.status === 'failed' ? 'alert' : 'status'}>
           <span><strong>{detachedTerminalJob.status === 'succeeded' ? '操作已完成' : detachedTerminalJob.status === 'cancelled' ? '操作已停止' : '操作失败'} · {jobLabel(detachedTerminalJob.kind)}</strong>{detachedTerminalJob.error?.message || detachedTerminalJob.result?.message || ''}</span>
           <button className="icon-button" onClick={() => setJob(null)} aria-label="收起操作结果">×</button>
         </div>}
         {section === 'workbench' && <Workbench
-          companySearch={<CompanySearch task={task} onRun={run} />}
-          companyCopyCheck={<CompanyCopyCheck task={task} />}
           task={workbenchTask}
           canvasNeedsSync={canvasNeedsSyncTaskId === task?.id}
           summary={activeTaskSummary}
@@ -646,7 +711,7 @@ export function App() {
           onLoadModels={loadBaseModels}
           onAction={async (action, payload) => {
             const result = await run(async () => {
-              if (action === 'execute' || action === 'resume') await ensureCanvasConnected(task.id);
+              if (action === 'execute' || action === 'resume' || action === 'confirm-and-execute') await ensureCanvasConnected(task.id);
               const request = action === 'review' && selectedBaseModel ? { ...payload, model: selectedBaseModel } : payload;
               return api.taskAction(task.id, action, request);
             }, { refresh: true });
@@ -655,7 +720,7 @@ export function App() {
           }}
           onConfirmReferencesAndContinue={confirmReferencesAndContinue}
           onSetReferences={(payload) => run(() => api.setReferences(task.id, payload), { refresh: true })}
-          onChat={(message, answers, attachments) => sendChat({ taskId: task.id, text: message, expectedRevision: task.revision, model: selectedBaseModel, ...(answers ? { answers } : {}), ...(attachments?.length ? { attachments } : {}) })}
+          onChat={(message, answers, attachments, displayed) => sendChat({ taskId: task.id, text: message, expectedRevision: task.revision, model: selectedBaseModel, displayed, ...(answers ? { answers } : {}), ...(attachments?.length ? { attachments } : {}) })}
           onDraftSheet={() => startJob(() => api.chat(task.id, '请根据已确认的需求、保留的参考素材与本次 DNA 快照，整理一份完整制作单。请提供连续页码、准确页面文案、画面要求、尺寸，以及实际引用的来源 ID；不要替我确认。', task.revision, undefined, { model: selectedBaseModel }))}
           onCanvasSync={async (payload) => {
             return run(() => api.taskAction(task.id, 'canvas-sync', payload), { refresh: true });
@@ -667,8 +732,6 @@ export function App() {
           onRetryChat={retryChat}
         />}
         <div hidden={section !== 'library'}>
-          <CompanySearch task={task} onRun={run} />
-          <details><summary>本机素材管理</summary>
           <Library
           tags={bootstrap.tags || { revision: 1, tags: [] }}
           refreshKey={refreshKey}
@@ -676,9 +739,12 @@ export function App() {
           onStartJob={startJob}
           job={job}
           />
-          </details>
         </div>
-        {section === 'company' && <CompanySettings onRun={run} task={task} />}
+        {section === 'company' && <>
+          <CompanySettings onRun={run} task={task} initial={companyConfig} onConfigured={setCompanyConfig} />
+          <details className="settings-section company-auxiliary"><summary>手动检索公司素材</summary><CompanySearch task={task} onRun={run} /></details>
+          <details className="settings-section company-auxiliary"><summary>公司词库辅助检查</summary><CompanyCopyCheck task={task} /></details>
+        </>}
         {section === 'dna' && <DnaSettings
           initial={bootstrap.dna || { revision: 1, enabled: false, content: '' }}
           task={task}
@@ -687,11 +753,14 @@ export function App() {
           onRun={run}
           onApplyToTask={(payload) => run(() => api.taskAction(task.id, 'apply-dna', payload), { refresh: true, success: '已将该 DNA 版本应用到当前任务，下游确认需要重新检查。' })}
         />}
-        {section === 'config' && <ModelSettings
-          initial={bootstrap.config || { revision: 1, base: {}, image: {} }}
-          refreshKey={refreshKey}
-          onRun={run}
-        />}
+        {section === 'config' && <>
+          <div className="onboarding-reopen-entry"><span>分步设置服务商、模型和检查步骤。</span><button type="button" className="button outline small" onClick={() => setOnboardingOpen(true)}>重新打开首次引导</button></div>
+          <ModelSettings
+            initial={bootstrap.config || { revision: 1, base: {}, image: {} }}
+            refreshKey={refreshKey}
+            onRun={run}
+          />
+        </>}
       </main>
 
       {createOpen && <CreateTaskDialog onClose={() => setCreateOpen(false)} onCreate={createTask} />}

@@ -127,7 +127,8 @@ test('DSH search falls back from a phrase, stages five pending assets once, and 
   assert.ok(visible.some(event=>event.type==='tool'&&/命中 7 项，展示 5 项，新增待选择 0 项/.test(event.text)));
   assert.ok(visible.some(event=>event.type==='tool'&&/原需求\/参考确认失效/.test(event.text)));
 
-  const modelRequest=JSON.stringify(f.requests.find(request=>request.messages.some(message=>message.role==='tool')));
+  const modelRequest=JSON.stringify(f.requests.find(request=>request.messages.some(message=>message.role==='tool')).messages);
+  // Workspace schemas legitimately name relativePaths; assert that private library data never enters message content.
   for(const forbidden of ['SECRET-OCR-SENTINEL','confirmedSnapshot','extractions','history','relativePath','ket-source-0.png']){
     assert.equal(modelRequest.includes(forbidden),false,`model request must not include ${forbidden}`);
   }

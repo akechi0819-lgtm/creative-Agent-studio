@@ -208,9 +208,18 @@ export async function saveConfig(input, { root } = {}) {
     if (input[name] != null && (!input[name] || typeof input[name] !== 'object' || Array.isArray(input[name]))) {
       throw configError('ERR_CONFIG_INVALID', `${name} 配置必须是对象`);
     }
-    if (input[name] && Object.keys(input[name]).some((key) => !(name === 'base' ? ['source', 'baseUrl', 'model', 'apiKey'] : ['baseUrl', 'model', 'apiKey']).includes(key))) {
+    if (input[name] && Object.keys(input[name]).some((key) => !(name === 'base'
+      ? ['source', 'baseUrl', 'model', 'apiKey']
+      : ['baseUrl', 'model', 'apiKey', 'useBaseCredentials']).includes(key))) {
       throw configError('ERR_CONFIG_INVALID', `${name} 配置包含不支持的字段`);
     }
+    if (name === 'image' && input.image && Object.hasOwn(input.image, 'useBaseCredentials')
+      && typeof input.image.useBaseCredentials !== 'boolean') {
+      throw configError('ERR_CONFIG_INVALID', '图片通道共享基础模型凭据标记必须是布尔值');
+    }
+  }
+  if (input.image?.useBaseCredentials === true && clearKeys.includes('image')) {
+    throw configError('ERR_CONFIG_INVALID', '共享基础模型凭据时不能同时清除图片密钥');
   }
 
   const lock = await takeLock(root);
@@ -239,6 +248,16 @@ export async function saveConfig(input, { root } = {}) {
       if (clearKeys.includes(name)) channel.apiKey = '';
       if (!source && !clearKeys.includes(name)) continue;
       next[name] = normalizeChannel(channel, name === 'base' ? '基础模型' : '图片模型');
+    }
+    if (input.image?.useBaseCredentials === true) {
+      if (next.base.source !== 'custom' || !next.base.baseUrl || !next.base.apiKey) {
+        throw configError('ERR_CONFIG_INVALID', '只有地址和密钥均已配置的自用 API 基础模型可以共享凭据');
+      }
+      next.image = normalizeChannel({
+        ...next.image,
+        baseUrl: next.base.baseUrl,
+        apiKey: next.base.apiKey,
+      }, '图片模型');
     }
     const destination = configPath(root);
     temporary = path.join(path.dirname(destination), `.studio-${crypto.randomUUID()}.tmp`);

@@ -9,7 +9,9 @@ import { chromium } from 'playwright';
 const execute = promisify(execFile);
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-company-service-'));
 const launcher = path.resolve('scripts/launcher.mjs');
-const env = { ...process.env, STUDIO_DATA_DIR: root };
+const servicesFile = path.join(root, 'fixture-company-services.json');
+await fs.writeFile(servicesFile, JSON.stringify({schemaVersion:1,teedy:{baseUrl:'https://library.fixture.test'},canvas:{webUrl:'https://canvas.fixture.test'}}));
+const env = { ...process.env, STUDIO_DATA_DIR: root, STUDIO_COMPANY_SERVICES_FILE: servicesFile };
 const output = path.resolve('docs/evidence/company-service');
 await fs.mkdir(output, { recursive: true });
 async function command(...args) {
@@ -27,11 +29,15 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(first.url);
+  const skip = page.getByRole('button', { name: '先跳过', exact: true });
+  await skip.waitFor({ state: 'visible' });
+  await skip.click();
   await page.getByRole('button', { name: '公司连接', exact: true }).click();
   await page.getByRole('heading', { name: '公司连接', exact: true }).waitFor();
   const configuration = await page.evaluate(() => fetch('/api/company/config').then(response => response.json()));
   assert.equal(configuration.config.teedy.passwordConfigured, false);
-  assert.deepEqual(configuration.config.canvas, { webUrl: '' });
+  assert.deepEqual(configuration.config.canvas, { webUrl: 'https://canvas.fixture.test' });
+  assert.equal(configuration.config.deploymentConfigured, true);
   const entries = await fs.readdir(root);
   assert.ok(!entries.includes('canvas-instance.json'));
   assert.deepEqual(errors, []);

@@ -25,3 +25,6 @@ docs/evidence/p0/*
 
 # P4 项目私有运行时与准备缓存
 .studio-runtime/
+
+# Company deployment endpoints are injected into internal runtime bundles.
+/company-services.json
