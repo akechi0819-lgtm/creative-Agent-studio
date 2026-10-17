@@ -33,6 +33,12 @@ const imageDataUrl = `data:image/png;base64,${imageBase64}`;
 const imageSha256 = createHash('sha256').update(imageBytes).digest('hex');
 const modelConfigStorageKey = 'infinite-canvas:ai_config_store';
 const modelConfigApiKeys = { root: 'synthetic-root-image-key', channel: 'synthetic-channel-image-key' };
+const companyImageConfig = {
+    baseUrl: 'https://image-model.fixture.invalid/v1',
+    model: 'company-image-model',
+    apiFormat: 'openai',
+    configured: true,
+};
 const modelConfigSeed = {
     baseUrl: 'https://root-model.example.invalid/v1',
     apiKey: modelConfigApiKeys.root,
@@ -86,6 +92,7 @@ if (certResult.error || certResult.status !== 0) {
 
 let expectedOrigin = '';
 const bootstrapCalls = [];
+const configReads = [];
 const eventConnections = [];
 const canvasStates = [];
 const toolResults = [];
@@ -109,7 +116,7 @@ const bridgeServer = createHttpServer(async (req, res) => {
     const origin = req.headers.origin || '';
     if (url.pathname === '/__test-state' && req.method === 'GET' && !origin) {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ bootstrapCalls, eventConnections, canvasStates, toolResults }));
+        res.end(JSON.stringify({ bootstrapCalls, configReads, eventConnections, canvasStates, toolResults }));
         return;
     }
     if (origin !== expectedOrigin) {
@@ -120,7 +127,7 @@ const bridgeServer = createHttpServer(async (req, res) => {
     res.setHeader('access-control-allow-origin', expectedOrigin);
     res.setHeader('vary', 'Origin');
     res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
-    res.setHeader('access-control-allow-headers', 'content-type');
+    res.setHeader('access-control-allow-headers', 'content-type,x-canvas-agent-token');
     res.setHeader('access-control-allow-private-network', 'true');
     if (req.method === 'OPTIONS') {
         res.writeHead(204);
@@ -144,7 +151,21 @@ const bridgeServer = createHttpServer(async (req, res) => {
             bridgeUrl: `http://127.0.0.1:${bridgeServer.address().port}`,
             token: 'fixture-only-in-memory-token',
             projectId: testProject.id,
+            configRevision: 7,
+            imageConfig: companyImageConfig,
         }));
+        return;
+    }
+    if (url.pathname === `/__company/config/${testProject.id}` && req.method === 'GET') {
+        const tokenValid = req.headers['x-canvas-agent-token'] === 'fixture-only-in-memory-token';
+        configReads.push({ origin, tokenValid, projectId: testProject.id });
+        if (!tokenValid) {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false }));
+            return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, projectId: testProject.id, configRevision: 7, imageConfig: companyImageConfig }));
         return;
     }
     if (url.pathname === '/events' && req.method === 'GET') {
@@ -272,6 +293,10 @@ async function hasPersistedRemoteModelKeys(page) {
                 && config?.channels?.some((channel) => channel.id === 'fixture-image' && channel.apiKey === channelKey);
         } catch { return false; }
     }, { storageKey: modelConfigStorageKey, rootKey: modelConfigApiKeys.root, channelKey: modelConfigApiKeys.channel });
+}
+
+async function readPersistedModelConfig(page) {
+    return page.evaluate((storageKey) => localStorage.getItem(storageKey), modelConfigStorageKey);
 }
 
 async function readIndexedCanvasAndImage(page, storageKey) {
@@ -405,6 +430,8 @@ try {
 
     await page.goto(`${expectedOrigin}/__test_seed`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => document.body.dataset.seeded === 'yes');
+    const originalModelConfig = await readPersistedModelConfig(page);
+    assert.equal(originalModelConfig, persistedModelConfig, 'fixture should seed the complete original BYOK configuration');
 
     const firstUrl = new URL(`/canvas?mode=recent&projectId=${encodeURIComponent(testProject.id)}`, expectedOrigin);
     firstUrl.hash = new URLSearchParams({ companyBridge: bridgeUrl, companyTicket: 'fixture-ticket-1' }).toString();
@@ -431,25 +458,22 @@ try {
     assert.equal(bootstrapCalls[0].request.ticket, 'fixture-ticket-1');
     assert.equal(bootstrapCalls[0].hasAgentToken, false, 'browser bootstrap must not send the long-lived bridge token');
     assert.equal(await hasPersistedBootstrapSecret(page), false, 'token and ticket must remain in memory and the transient request only');
-
-    await page.getByRole('button', { name: '配置', exact: true }).click();
-    await page.getByRole('tab', { name: '偏好设置' }).click();
-    await page.locator('.ant-form-item').filter({ hasText: '画布默认生图张数' }).locator('input[type="number"]').fill('4');
-    await page.waitForFunction(({ storageKey, rootKey, channelKey }) => {
-        try {
-            const value = JSON.parse(localStorage.getItem(storageKey) || 'null');
-            const config = value?.state?.config;
-            return config?.canvasImageCount === '4' && config?.apiKey === rootKey
-                && config?.channels?.some((channel) => channel.id === 'fixture-image' && channel.apiKey === channelKey);
-        } catch { return false; }
-    }, { storageKey: modelConfigStorageKey, rootKey: modelConfigApiKeys.root, channelKey: modelConfigApiKeys.channel });
-    await page.keyboard.press('Escape');
-    await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    assert.equal(await hasPersistedRemoteModelKeys(page), true, 'remote profile should persist the user’s own root and channel API keys after a config-store write');
+    assert.equal(await readPersistedModelConfig(page), originalModelConfig,
+        'company bootstrap must not persist its transient model/proxy override over the existing BYOK config');
 
     await waitForBridgeReport((report) => report.eventConnections.some((entry) => entry.projectId === testProject.id)
         && report.canvasStates.some((item) => item.projectId === testProject.id && item.title === testProject.title),
     'the initial Canvas project snapshot');
+    await page.getByRole('button', { name: '图片', exact: true }).click();
+    const modelPickerText = page.locator('.canvas-composer-model-picker .canvas-model-picker-text');
+    await modelPickerText.waitFor({ state: 'visible' });
+    const inMemoryCompanyModel = await modelPickerText.innerText();
+    assert.match(inMemoryCompanyModel, /company-image-model/u,
+        'the task-local company model should be visible in the current Canvas session');
+    assert.doesNotMatch(inMemoryCompanyModel, /fixture-image-model/u,
+        'the active company Canvas should use its task-local model override instead of the saved BYOK model');
+    assert.equal(await readPersistedModelConfig(page), originalModelConfig,
+        'reading the in-memory company model must leave the original BYOK storage byte-for-byte unchanged');
     const firstClientId = eventConnections.find((entry) => entry.projectId === testProject.id)?.clientId;
     assert.match(firstClientId || '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
         'project-only bootstrap should let the page generate its clientId');
@@ -491,7 +515,30 @@ try {
         && project.nodeIds.includes(importedNodeId)), `ordinary reload must retain the imported canvas node: ${JSON.stringify(ordinaryReloadState)}`);
     assert.deepEqual(ordinaryReloadState.imageBlob, { type: 'image/png', size: imageBytes.length },
         'ordinary reload must retain the original image blob in IndexedDB');
+    assert.equal(await hasPersistedRemoteModelKeys(page), true,
+        'ordinary remote Canvas reload must retain the user’s saved BYOK root and channel API keys');
 
+    await page.getByRole('button', { name: '配置', exact: true }).click();
+    await page.getByRole('tab', { name: '偏好设置' }).click();
+    await page.locator('.ant-form-item').filter({ hasText: '画布默认生图张数' }).locator('input[type="number"]').fill('4');
+    await page.waitForFunction(({ storageKey, rootKey, channelKey }) => {
+        try {
+            const value = JSON.parse(localStorage.getItem(storageKey) || 'null');
+            const config = value?.state?.config;
+            return config?.canvasImageCount === '4' && config?.apiKey === rootKey
+                && config?.channels?.some((channel) => channel.id === 'fixture-image' && channel.apiKey === channelKey);
+        } catch { return false; }
+    }, { storageKey: modelConfigStorageKey, rootKey: modelConfigApiKeys.root, channelKey: modelConfigApiKeys.channel });
+    await page.getByRole('tab', { name: '渠道' }).click();
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    const channelApiKeyInput = page.locator('input[placeholder="sk-..."]');
+    await channelApiKeyInput.waitFor({ state: 'visible' });
+    assert.equal(await channelApiKeyInput.evaluate((input, expected) => input.value === expected, modelConfigApiKeys.channel), true,
+        'the ordinary BYOK settings editor should still hydrate the saved channel key');
+    await page.keyboard.press('Escape');
+    await page.locator('.ant-drawer-section').waitFor({ state: 'hidden' });
+
+    const byokConfigBeforeCompanyReopen = await readPersistedModelConfig(page);
     const reopenUrl = new URL(`/canvas?mode=recent&projectId=${encodeURIComponent(testProject.id)}`, expectedOrigin);
     reopenUrl.hash = new URLSearchParams({ companyBridge: bridgeUrl, companyTicket: 'fixture-ticket-2' }).toString();
     // Match the manager URL so CanvasPage hydrates the existing task before entering it.
@@ -515,16 +562,9 @@ try {
     }
     await page.waitForFunction(() => !location.hash.includes('companyTicket'));
 
-    assert.equal(await hasPersistedRemoteModelKeys(page), true, 'remote user model configuration should still be present after reload');
-    await page.getByRole('button', { name: '配置', exact: true }).click();
-    await page.getByRole('tab', { name: '渠道' }).waitFor().catch(() => {});
-    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
-    const channelApiKeyInput = page.locator('input[placeholder="sk-..."]');
-    await channelApiKeyInput.waitFor({ state: 'visible' });
-    assert.equal(await channelApiKeyInput.evaluate((input, expected) => input.value === expected, modelConfigApiKeys.channel), true,
-        'the remote settings editor should hydrate the user’s saved channel key after reload');
-    await page.keyboard.press('Escape');
-    await page.locator('.ant-drawer-section').waitFor({ state: 'hidden' });
+    assert.equal(await hasPersistedRemoteModelKeys(page), true, 'reopening a company task must preserve remote user model configuration');
+    assert.equal(await readPersistedModelConfig(page), byokConfigBeforeCompanyReopen,
+        'reopening a company task must not write transient model credentials or proxy settings into remote storage');
 
     let bridgeReport;
     try {
@@ -594,6 +634,10 @@ try {
     assert.equal(afterReloadRead.error, undefined, `post-reload image read should succeed: ${afterReloadRead.error || ''}`);
     assertOriginalImageDataUrl(afterReloadRead.result?.dataUrl, 'Canvas read after fresh-ticket reload');
     assert.equal(await hasPersistedBootstrapSecret(page), false, 'fresh bootstrap must not persist its token or ticket');
+    bridgeReport = await waitForBridgeReport((report) => report.configReads.length > 0,
+        'the authenticated company image-config refresh');
+    assert.ok(bridgeReport.configReads.every((entry) => entry.projectId === testProject.id && entry.tokenValid
+        && entry.origin === expectedOrigin), 'company image config refreshes must be authenticated and task scoped');
     assert.deepEqual(forbiddenStudioRequests, [], 'remote profile must not call any P4 __studio endpoint');
 
     const evidenceDirectory = join(root, 'docs/evidence/company-canvas');
@@ -602,10 +646,12 @@ try {
         fixtureOnly: true, deployment: 'remote', https: true, indexedDb: true,
         ordinaryReloadPreserved: true, freshTicketReopenPreserved: true,
         imageSha256, originalStorageKeyPreserved: true, remoteModelConfigPreserved: true,
+        companyModelOverrideInMemory: true, companyOverrideNotPersisted: true,
+        ordinaryByokChannelKeyHydrated: true, companyConfigRefreshAuthenticated: true,
         bootstrapSecretsPersisted: false, studioEndpointRequests: 0,
     }, null, 2));
 
-    console.log('Remote Canvas HTTPS fixture passed: imported image bytes were read back with the same SHA-256 before and after reload, with the original IndexedDB storageKey, a fresh ticket, and no __studio requests.');
+    console.log('Remote Canvas HTTPS fixture passed: company model override stayed in memory, existing BYOK keys remained readable after ordinary reload, the imported image survived reopen, bootstrap credentials were not persisted, and no __studio requests were made.');
 } finally {
     await browser?.close();
     await Promise.all([bridgeServer, webServer].filter((server) => server.listening)
