@@ -200,3 +200,10 @@ test('release launcher prepares Python outside the bundle and passes both privat
   assert.match(prepare, /acquirePrepareLock\(runtimeRoot/);
   assert.match(prepare, /preparePython\(\{ root: bundleRoot, runtimeRoot/);
 });
+
+test('archive Office smoke keeps shared conversion and surfaces native error diagnostics on failure', async () => {
+  const source = await readFile(new URL('../scripts/package-release.mjs', import.meta.url), 'utf8');
+  assert.match(source, /convertWorkspaceDocument\(\{ workspaceRoot/);
+  assert.match(source, /Native LibreOfficeKit diagnostic:/);
+  assert.match(source, /diagnosticConverter\.convert\(\{ inputPath, outputPath: diagnosticOutputPath \}\)/);
+});
