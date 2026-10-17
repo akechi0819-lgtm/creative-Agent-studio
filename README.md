@@ -4,6 +4,15 @@
 
 公司版预配公司 Teedy 和新版远端 Canvas 地址。每位同事首次使用填写自己的素材库账号密码，以及基础／生图两类 API；模型配置保存本机，不需要到远端 Canvas 再填写一次。素材访问继续受 Teedy 账号及 ACL 控制，包内没有共享账号、密码或模型钥匙。
 
+## 当前成品下载
+
+| 设备 | 应下载版本 | 下载 |
+| --- | --- | --- |
+| Apple 芯片 Mac | `company-p5.1.1`，已修复隔离启动 | [Mac 修正版](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39014651727/artifacts/12093934546) |
+| Windows 64 位 | `company-p5.1`，本次不更换 | [Windows 公司包](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39005461897/artifacts/12090991454) |
+
+Actions 下载可能要求 GitHub 登录；外层 ZIP 内还有产品 ZIP，请完整解压产品包。文件保留至 2026-10-31。旧 `company-p5.1` Mac 包暂停分发。
+
 ## 普通同事使用
 
 获取公司版对应平台的成品 ZIP，完整解压到可写目录：
