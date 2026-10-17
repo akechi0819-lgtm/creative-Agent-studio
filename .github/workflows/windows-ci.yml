@@ -74,6 +74,9 @@ jobs:
       - name: Verify remote Canvas HTTPS, IndexedDB and one-use browser bootstrap
         run: node scripts/verify-company-canvas-remote.mjs
 
+      - name: Verify personal-model settings reuse and Kilo save with independent image credentials
+        run: node scripts/verify-company-hosted-settings.mjs
+
       - name: Verify the company browser integration with isolated fixtures
         run: node scripts/verify-company-browser.mjs
 

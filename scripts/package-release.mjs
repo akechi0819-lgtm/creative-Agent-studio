@@ -579,7 +579,7 @@ async function buildCompany(options) {
 Apple 芯片 Mac：双击 Creative Agent Studio Company.app。
 Windows 64 位：双击 Start-Company.vbs。
 
-公司素材库与画布地址已预配。首次引导填写本人的素材库账号密码，以及基础／生图两类 API；无需到远端画布重复配置模型。
+公司素材库与画布地址已预配。素材检索使用本人的 Teedy 账号密码。对话可选 Kilo 等托管来源，无需个人 API 密钥；选择自用 API 时填写对话服务配置。生图服务与对话独立配置，图片密钥只供生图；无需到远端画布重复配置模型。
 Node、程序依赖和界面已经随包准备好。首次启动可能联网准备 Python、OCR／Office 依赖及模型，健康环境直接复用。
 任务和个人配置保存在本机 Creative Agent Studio Company 数据目录。
 包内没有共享账号、密码或模型钥匙。
