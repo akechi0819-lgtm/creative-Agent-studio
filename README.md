@@ -8,10 +8,10 @@
 
 | 设备 | 应下载版本 | 下载 |
 | --- | --- | --- |
-| Apple 芯片 Mac | `company-p5.1.1`，已修复隔离启动 | [Mac 修正版](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39014651727/artifacts/12093934546) |
-| Windows 64 位 | `company-p5.1`，本次不更换 | [Windows 公司包](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39005461897/artifacts/12090991454) |
+| Apple 芯片 Mac | `company-p5.1.2`，模型配置修正版 | [Mac 修正版](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39028548455/artifacts/12099502867) |
+| Windows 64 位 | `company-p5.1.2`，模型配置修正版 | [Windows 公司包](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39028548455/artifacts/12099841796) |
 
-Actions 下载可能要求 GitHub 登录；外层 ZIP 内还有产品 ZIP，请完整解压产品包。文件保留至 2026-10-31。旧 `company-p5.1` Mac 包暂停分发。
+Actions 下载可能要求 GitHub 登录；外层 ZIP 内还有产品 ZIP，请完整解压产品包。本轮文件保留至 2026-10-31。两平台均使用本轮修正版，旧包保留作历史记录。
 
 ## 普通同事使用
 
