@@ -3,6 +3,8 @@ import { access, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs
 import path from 'node:path';
 
 export const MAC_APP_NAME = 'Creative Agent Studio.app';
+const MAC_APP_BUNDLE_IDENTIFIER = 'com.creativeagentstudio.personal';
+const PLIST_BUDDY = '/usr/libexec/PlistBuddy';
 
 function platformOf(target) {
   if (typeof target === 'string') return target.startsWith('darwin-') ? 'darwin' : target.split('-')[0];
@@ -33,11 +35,29 @@ function assertCompiledLauncher(source, target) {
   }
 }
 
+function ensureMacAppBundleIdentifier(bundle) {
+  const infoPlist = path.join(bundle, 'Contents/Info.plist');
+  let present = true;
+  try {
+    execFileSync(PLIST_BUDDY, ['-c', 'Print :CFBundleIdentifier', infoPlist], { stdio: 'pipe' });
+  } catch {
+    present = false;
+  }
+  const command = present
+    ? `Set :CFBundleIdentifier ${MAC_APP_BUNDLE_IDENTIFIER}`
+    : `Add :CFBundleIdentifier string ${MAC_APP_BUNDLE_IDENTIFIER}`;
+  execFileSync(PLIST_BUDDY, ['-c', command, infoPlist], { stdio: 'pipe' });
+}
+
 export async function verifyMacAppBundle(bundle, target) {
   const infoPlist = path.join(bundle, 'Contents/Info.plist');
   const compiledScript = path.join(bundle, 'Contents/Resources/Scripts/main.scpt');
   await access(infoPlist);
   await access(compiledScript);
+  const bundleIdentifier = execFileSync(PLIST_BUDDY, ['-c', 'Print :CFBundleIdentifier', infoPlist], { encoding: 'utf8' }).trim();
+  if (bundleIdentifier !== MAC_APP_BUNDLE_IDENTIFIER) {
+    throw new Error(`macOS app 的 CFBundleIdentifier 不正确：${bundleIdentifier || '(空)'}`);
+  }
   const source = execFileSync('osadecompile', [compiledScript], { encoding: 'utf8' });
   assertCompiledLauncher(source, target);
   return source;
@@ -87,6 +107,7 @@ export async function assembleMacApp(stage, target) {
   await writeFile(compiledSource, source.replaceAll(marker, nodeDirectoryName(target)));
   try {
     execFileSync('osacompile', ['-o', bundle, compiledSource], { stdio: 'pipe' });
+    ensureMacAppBundleIdentifier(bundle);
     await verifyMacAppBundle(bundle, target);
   } catch (error) {
     throw new Error(`编译或检查 macOS 图形启动器失败：${error.message}`, { cause: error });

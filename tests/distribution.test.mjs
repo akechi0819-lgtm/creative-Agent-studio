@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile, lstat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -223,6 +224,10 @@ test('compiled macOS launcher points to the native bundled Node path without ope
   const compiledSource = await verifyMacAppBundle(appPath, {
     platform: 'darwin', nodeRelative,
   });
+  const bundleIdentifier = execFileSync('/usr/libexec/PlistBuddy', [
+    '-c', 'Print :CFBundleIdentifier', path.join(appPath, 'Contents/Info.plist'),
+  ], { encoding: 'utf8' }).trim();
+  assert.equal(bundleIdentifier, 'com.creativeagentstudio.personal');
   sealMacAppBundle(appPath);
   verifyMacAppSeal(appPath);
   assert.ok(compiledSource.includes(nodeDirectory));
