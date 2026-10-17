@@ -19,10 +19,6 @@ test('backup restores verified original bytes, retains prior data and omits runt
   const {base,root}=await fixture(t);
   await fs.mkdir(path.join(root,'web'));
   await fs.writeFile(path.join(root,'web','runtime.json'),JSON.stringify({pid:2147483647,url:'http://127.0.0.1:1',controlUrl:'http://127.0.0.1:1',token:'ephemeral'}));
-  const bridgeDirectory=path.join(root,'canvas','fixture-task');
-  await fs.mkdir(bridgeDirectory,{recursive:true});
-  await fs.writeFile(path.join(bridgeDirectory,'company-canvas-bridge.json'),JSON.stringify({token:'ephemeral-company-bridge-token'}));
-  await fs.writeFile(path.join(bridgeDirectory,'company-canvas-bridge-instance.json'),JSON.stringify({pid:2147483647}));
   await fs.writeFile(path.join(root,'user.log'),'user attachment kept');
   const assetBytes=Buffer.from([0,1,2,255,137,80,78,71]);
   const storageKey='image-file-fixture';
@@ -34,11 +30,9 @@ test('backup restores verified original bytes, retains prior data and omits runt
   const dest=path.join(base,'备份');
   const result=await backupData(root,dest);
   assert.equal(result.files,3);
-  assert.equal(result.taskArtifactsIncluded,true);
-  assert.equal(result.remoteCanvasBrowserIncluded,false);
+  assert.equal(result.canvasStorageIncluded,true);
   assert.equal(result.browserProfileIncluded,false);
   await assert.rejects(fs.access(path.join(dest,'data','web','runtime.json')));
-  await assert.rejects(fs.access(path.join(dest,'data','canvas','fixture-task','company-canvas-bridge.json')));
   await fs.writeFile(path.join(root,'config','studio.json'),'newer data');
   await fs.writeFile(storagePath,JSON.stringify({...storageRecord,base64:Buffer.from('newer image').toString('base64')}));
   const restored=await restoreData(root,dest);
@@ -102,49 +96,6 @@ async function writePluginFixture(root,baseUrl,{instanceId='fixture-plugin',pid=
   await fs.writeFile(path.join(directory,'instance.json'),JSON.stringify({baseUrl,apiKey:'fixture-token',instanceId,pid}));
   await fs.writeFile(path.join(directory,'service.lock'),JSON.stringify({pid:lockPid,instanceId}));
 }
-async function writeCompanyBridgeFixture(t,{healthStatus=200,healthInstanceId='fixture-company-bridge'}={}){
-  const {root}=await fixture(t);
-  const taskId='11111111-1111-4111-8111-111111111111';
-  const token='a'.repeat(64);
-  const instanceId='fixture-company-bridge';
-  const directory=path.join(root,'canvas',taskId);
-  await fs.mkdir(directory,{recursive:true});
-  let stopRequests=0;
-  let stopAuthorized=false;
-  const {server,baseUrl}=await serviceServer(t,async(req,res)=>{
-    if(req.url==='/__company/health'&&req.method==='GET'){
-      if(req.headers['x-canvas-agent-token']!==token){res.writeHead(401).end('{}');return;}
-      res.writeHead(healthStatus,{'content-type':'application/json'}).end(JSON.stringify({
-        ok:healthStatus===200,service:'company-canvas-bridge',protocolVersion:1,projectId:taskId,instanceId:healthInstanceId,
-      }));
-      return;
-    }
-    if(req.url==='/__company/stop'&&req.method==='POST'){
-      stopRequests++;
-      let body='';for await(const chunk of req)body+=chunk;
-      let request;try{request=JSON.parse(body||'{}');}catch{}
-      stopAuthorized=req.headers['x-canvas-agent-token']===token&&!req.headers.origin&&request?.instanceId===instanceId;
-      if(!stopAuthorized){res.writeHead(403).end('{}');return;}
-      res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:true,stopping:true,instanceId}));
-      setTimeout(async()=>{
-        await Promise.all([
-          fs.rm(path.join(directory,'company-canvas-bridge-instance.json'),{force:true}),
-          fs.rm(path.join(directory,'company-canvas-bridge.lock'),{force:true}),
-        ]);
-        server.closeAllConnections?.();
-        if(server.listening)server.close(()=>{});
-      },10);
-      return;
-    }
-    res.writeHead(404).end('{}');
-  });
-  const port=Number(new URL(baseUrl).port);
-  const config={schemaVersion:1,taskId,projectId:taskId,webUrl:'https://canvas.example.invalid',bridgeUrl:baseUrl,token,clientId:'fixture-client'};
-  await fs.writeFile(path.join(directory,'company-canvas-bridge.json'),JSON.stringify(config),{mode:0o600});
-  await fs.writeFile(path.join(directory,'company-canvas-bridge-instance.json'),JSON.stringify({pid:process.pid,port,instanceId,taskId,dataDir:path.join(directory,'company-canvas-agent-data')}),{mode:0o600});
-  await fs.writeFile(path.join(directory,'company-canvas-bridge.lock'),JSON.stringify({pid:process.pid,instanceId,taskId}),{mode:0o600});
-  return {root,taskId,token,baseUrl,get stopRequests(){return stopRequests;},get stopAuthorized(){return stopAuthorized;}};
-}
 test('healthy residual plugin is diagnosed without secrets and stops through its authenticated endpoint',async t=>{
   const {root}=await fixture(t);let stopped=false;
   const {server,baseUrl}=await serviceServer(t,(req,res)=>{
@@ -164,11 +115,11 @@ test('healthy residual plugin is diagnosed without secrets and stops through its
   await writePluginFixture(root,baseUrl);
   const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
   const status=await auxiliaryStatus(root);
-  assert.deepEqual(status,{modelPluginRunning:true,modelPluginUnverified:false,instances:[{kind:'plugin',scope:'model-plugin',state:'healthy',live:true}]});
+  assert.deepEqual(status,{modelPluginRunning:true,modelPluginUnverified:false,canvasInstances:0,canvasUnverifiedInstances:0,instances:[{kind:'plugin',scope:'model-plugin',state:'healthy',live:true}]});
   assert.ok(!JSON.stringify(status).includes('fixture-token'));
   assert.deepEqual(await stopAuxiliary(root),{auxiliaryStopped:1});
   assert.equal(stopped,true);
-  assert.deepEqual(await auxiliaryStatus(root),{modelPluginRunning:false,modelPluginUnverified:false,instances:[]});
+  assert.deepEqual(await auxiliaryStatus(root),{modelPluginRunning:false,modelPluginUnverified:false,canvasInstances:0,canvasUnverifiedInstances:0,instances:[]});
 });
 
 test('live plugin with a 503 health endpoint is reported as unverified and is not sent stop',async t=>{
@@ -230,49 +181,59 @@ test('stale plugin records are distinguished from live services and do not block
   assert.deepEqual(await stopAuxiliary(root),{auxiliaryStopped:0});
 });
 
-test('company launcher ignores legacy Canvas records and never sends a legacy stop request',async t=>{
-  const {root}=await fixture(t);const directory=path.join(root,'canvas','22222222-2222-4222-8222-222222222222');let stopRequests=0;
+test('Canvas uses its supervisor lock to report a live unverified instance with a missing descriptor',async t=>{
+  const {root}=await fixture(t);const directory=path.join(root,'canvas','fixture-project');
   await fs.mkdir(directory,{recursive:true});
-  const {baseUrl}=await serviceServer(t,(req,res)=>{
-    if(req.url==='/__studio/stop')stopRequests++;
-    res.setHeader('content-type','application/json');
-    res.end(JSON.stringify({instanceId:'fixture-canvas',projectId:'fixture-project'}));
-  });
-  await fs.writeFile(path.join(directory,'canvas-instance.json'),JSON.stringify({webUrl:baseUrl,token:'fixture-canvas-token',projectId:'22222222-2222-4222-8222-222222222222',instanceId:'fixture-canvas',pid:process.pid}));
   await fs.writeFile(path.join(directory,'supervisor.lock'),JSON.stringify({pid:process.pid,instanceId:'fixture-canvas'}));
   const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
-  assert.deepEqual(await auxiliaryStatus(root),{modelPluginRunning:false,modelPluginUnverified:false,instances:[]});
-  assert.deepEqual(await stopAuxiliary(root),{auxiliaryStopped:0});
+  const status=await auxiliaryStatus(root);
+  assert.equal(status.canvasInstances,1);
+  assert.equal(status.canvasUnverifiedInstances,1);
+  assert.deepEqual(status.instances,[{kind:'canvas',scope:'canvas/fixture-project',state:'unverified',live:true,reason:'record-missing'}]);
+  await assert.rejects(stopAuxiliary(root),/仍有存活或所有者无法确认/);
+});
+
+test('Canvas identity mismatch stays visible and its stop endpoint is not called',async t=>{
+  const {root}=await fixture(t);const directory=path.join(root,'canvas','fixture-project');let stopRequests=0;
+  await fs.mkdir(directory,{recursive:true});
+  const {baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/__studio/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({instanceId:'other-canvas',projectId:'fixture-project'}));return;}
+    if(req.url==='/__studio/stop')stopRequests++;
+    res.writeHead(404).end();
+  });
+  await fs.writeFile(path.join(directory,'canvas-instance.json'),JSON.stringify({webUrl:baseUrl,token:'fixture-canvas-token',projectId:'fixture-project',instanceId:'fixture-canvas',pid:process.pid}));
+  await fs.writeFile(path.join(directory,'supervisor.lock'),JSON.stringify({pid:process.pid,instanceId:'fixture-canvas'}));
+  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
+  const status=await auxiliaryStatus(root);
+  assert.equal(status.canvasInstances,1);
+  assert.deepEqual(status.instances,[{kind:'canvas',scope:'canvas/fixture-project',state:'unverified',live:true,reason:'identity-mismatch'}]);
+  assert.ok(!JSON.stringify(status).includes('fixture-canvas-token'));
+  await assert.rejects(stopAuxiliary(root),/仍有存活或所有者无法确认/);
   assert.equal(stopRequests,0);
 });
 
-test('healthy company taskbridge is visible without credentials and stops through its authenticated task endpoint',async t=>{
-  const fixtureBridge=await writeCompanyBridgeFixture(t);
+test('healthy Canvas instance stops through its authenticated supervisor endpoint',async t=>{
+  const {root}=await fixture(t);const directory=path.join(root,'canvas','fixture-project');let stopped=false;
+  await fs.mkdir(directory,{recursive:true});
+  const {server,baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/__studio/health'&&req.headers['x-studio-token']==='fixture-canvas-token'){
+      res.setHeader('content-type','application/json');res.end(JSON.stringify({instanceId:'fixture-canvas',projectId:'fixture-project'}));return;
+    }
+    if(req.url==='/__studio/stop'&&req.headers['x-studio-token']==='fixture-canvas-token'){
+      res.end('stopping');setImmediate(async()=>{
+        stopped=true;
+        await fs.rm(path.join(directory,'canvas-instance.json'),{force:true});
+        await fs.rm(path.join(directory,'supervisor.lock'),{force:true});
+        await new Promise(resolve=>server.close(resolve));
+      });return;
+    }
+    res.writeHead(403).end();
+  });
+  await fs.writeFile(path.join(directory,'canvas-instance.json'),JSON.stringify({webUrl:baseUrl,token:'fixture-canvas-token',projectId:'fixture-project',instanceId:'fixture-canvas',pid:process.pid}));
+  await fs.writeFile(path.join(directory,'supervisor.lock'),JSON.stringify({pid:process.pid,instanceId:'fixture-canvas'}));
   const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
-  const status=await auxiliaryStatus(fixtureBridge.root);
-  assert.deepEqual(status,{modelPluginRunning:false,modelPluginUnverified:false,instances:[{
-    kind:'company-canvas-bridge',scope:'canvas-task',taskId:fixtureBridge.taskId,state:'healthy',live:true,
-  }]});
-  const publicJson=JSON.stringify(status);
-  assert.ok(!publicJson.includes(fixtureBridge.token));
-  assert.ok(!publicJson.includes(fixtureBridge.baseUrl));
-  assert.deepEqual(await stopAuxiliary(fixtureBridge.root),{auxiliaryStopped:1});
-  assert.equal(fixtureBridge.stopRequests,1);
-  assert.equal(fixtureBridge.stopAuthorized,true);
-  const stopped=await auxiliaryStatus(fixtureBridge.root);
-  assert.deepEqual(stopped.instances,[{
-    kind:'company-canvas-bridge',scope:'canvas-task',taskId:fixtureBridge.taskId,state:'stale',live:false,reason:'process-exited',
-  }]);
-});
-
-test('live unverified company taskbridge is reported incomplete and never receives stop',async t=>{
-  const fixtureBridge=await writeCompanyBridgeFixture(t,{healthStatus:503});
-  const {auxiliaryStatus,stopAuxiliary}=await import('../src/launcher/services.mjs');
-  const status=await auxiliaryStatus(fixtureBridge.root);
-  assert.deepEqual(status.instances,[{
-    kind:'company-canvas-bridge',scope:'canvas-task',taskId:fixtureBridge.taskId,state:'unverified',live:true,reason:'bridge-unverified',
-  }]);
-  await assert.rejects(stopAuxiliary(fixtureBridge.root),/仍有存活或所有者无法确认/);
-  assert.equal(fixtureBridge.stopRequests,0);
-  assert.equal(fixtureBridge.stopAuthorized,false);
+  assert.equal((await auxiliaryStatus(root)).canvasInstances,1);
+  assert.deepEqual(await stopAuxiliary(root),{auxiliaryStopped:1});
+  assert.equal(stopped,true);
+  assert.equal((await auxiliaryStatus(root)).canvasInstances,0);
 });

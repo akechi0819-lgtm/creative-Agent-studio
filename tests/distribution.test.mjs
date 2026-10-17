@@ -49,7 +49,7 @@ test('source allowlist includes runtime helpers and excludes user/company/develo
   assert.equal(isReleasePathAllowed('src/company/connector.mjs'), false);
   assert.equal(isReleasePathAllowed('src/company/config.mjs', { profile: 'company' }), true);
   assert.equal(isReleasePathAllowed('src/company/evidence/secret.json', { profile: 'company' }), false);
-  assert.equal(isReleasePathAllowed('scripts/company-bridge.mjs', { profile: 'company' }), true);
+  assert.equal(isReleasePathAllowed('scripts/company-bridge.mjs', { profile: 'company' }), false);
   assert.equal(isReleasePathAllowed('licenses/xhs-ad-workbench-MIT.txt', { profile: 'company' }), true);
   assert.equal(isReleasePathAllowed('web/dist/assets/app.js', { profile: 'company' }), true);
   assert.equal(isReleasePathAllowed('company-services.json', { profile: 'company' }), false);

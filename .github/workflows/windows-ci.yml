@@ -68,11 +68,8 @@ jobs:
       - name: Run image-region fixtures
         run: node scripts/verify-p4-images.mjs
 
-      - name: Build the company remote Canvas artifact
-        run: node scripts/build-company-canvas.mjs
-
-      - name: Verify remote Canvas HTTPS, IndexedDB and one-use browser bootstrap
-        run: node scripts/verify-company-canvas-remote.mjs
+      - name: Verify the company workbench with its local Canvas
+        run: node scripts/verify-company-local-canvas.mjs
 
       - name: Verify personal-model settings reuse and Kilo save with independent image credentials
         run: node scripts/verify-company-hosted-settings.mjs

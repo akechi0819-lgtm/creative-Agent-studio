@@ -56,6 +56,7 @@ async function makeWebFixture(t) {
     module('src/web/model-plugin.mjs', `export async function ensureModelPlugin() {}\nexport async function stopModelPlugin() {}`),
     module('src/company/config.mjs', `export async function readCompanyConfig() { return {}; }`),
     module('src/web/config.mjs', `export async function readConfig() { return {}; }`),
+    module('src/web/canvas.mjs', `export function createCanvasManager() { return { stop: async () => {} }; }`),
     module('src/web/server.mjs', `
       import { appendFile } from 'node:fs/promises';
       export async function listenStudioServer() {
@@ -64,7 +65,6 @@ async function makeWebFixture(t) {
         return { address: { port: 4310 }, close: async () => {} };
       }
     `),
-    module('src/company/canvas.mjs', `export function createCompanyCanvasManager() { return { stop: async () => {} }; }`),
     module('adapters/dsh/runtime.mjs', `export function createStudioAgent() { return {}; }`),
   ]);
 

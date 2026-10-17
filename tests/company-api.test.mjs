@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { listenStudioServer } from '../src/web/server.mjs';
 import { createTask, readTask } from '../src/creative/tasks.mjs';
-import { saveCompanyConfig } from '../src/company/config.mjs';
 import { configureCompanyServices } from './helpers/company-services.mjs';
 
 async function fixture(t, options = {}) {
@@ -18,18 +17,18 @@ async function fixture(t, options = {}) {
   return { root, call };
 }
 
-test('company config endpoints never return passwords or bridge tokens and reject cross-origin writes', async t => {
+test('company config endpoints never return passwords and reject cross-origin writes', async t => {
   const { call } = await fixture(t);
   const payload = { expectedRevision: 1, teedy: { username: 'reader', password: 'private-fixture-password' } };
   assert.equal((await call('/api/company/config', payload, { origin: 'https://outside.fixture.test' })).status, 403);
   const response = await call('/api/company/config', payload);
   assert.equal(response.status, 200);
   const text = await response.text();
-  assert.ok(!text.includes('private-fixture-password')); assert.ok(!text.includes('private-fixture-bridge-token'));
+  assert.ok(!text.includes('private-fixture-password'));
   assert.equal((await call('/api/company/config', payload)).status, 409);
   const saved = await (await call('/api/company/config')).json();
   assert.equal(saved.config.teedy.passwordConfigured, true);
-  assert.deepEqual(saved.config.canvas, { webUrl: 'https://canvas.fixture.test' });
+  assert.equal(Object.hasOwn(saved.config, 'canvas'), false);
 });
 
 test('company candidates require an explicit retained decision before the API freezes originals', async t => {
@@ -53,18 +52,28 @@ test('company candidates require an explicit retained decision before the API fr
   assert.equal((await call('/api/company/search', { taskId: task.id, expectedRevision: task.revision - 1, query: '样例' })).status, 409);
 });
 
-test('remote Canvas open links are confined to the configured HTTPS origin and project with no raw token', async t => {
-  let openUrl = 'https://canvas.fixture.test/canvas?mode=recent&projectId=remote-project#companyBridge=http%3A%2F%2F127.0.0.1%3A18420&companyTicket=fixture-ticket';
-  const { root, call } = await fixture(t, { canvas: { ensure: async () => ({ openUrl, projectId: 'remote-project', clientConnected: true }), connect: async () => ({ openUrl }) } });
-  await saveCompanyConfig({ expectedRevision: 1 }, { root });
-  const task = await createTask({ title: '远端连接', brief: '测试' }, root);
+test('canvas open API accepts only a local task Canvas address', async t => {
+  let openUrl;
+  const { root, call } = await fixture(t, { canvas: { ensure: async () => ({ openUrl, projectId: 'fixture-project', clientConnected: false }) } });
+  const task = await createTask({ title: '本机画布连接', brief: '测试' }, root);
   const route = `/api/tasks/${task.id}/canvas/open`;
-  openUrl = openUrl.replace('remote-project', task.id);
-  assert.equal((await call(route, {})).status, 200);
+  const ticket = 'a'.repeat(64);
+  openUrl = `http://127.0.0.1:18420/canvas?mode=recent&projectId=${task.id}#studioBootstrap=${ticket}`;
+  const response = await call(route, {});
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  const parsed = new URL(result.openUrl);
+  assert.equal(parsed.origin, 'http://127.0.0.1:18420');
+  assert.equal(parsed.pathname, '/canvas');
+  assert.equal(parsed.searchParams.get('projectId'), task.id);
+  assert.equal(parsed.hash, `#studioBootstrap=${ticket}`);
+  assert.equal(result.projectId, 'fixture-project');
   for (const invalid of [
-    'https://outside.fixture.test/canvas?projectId=remote-project',
-    'https://canvas.fixture.test/other?projectId=remote-project',
-    'https://canvas.fixture.test/canvas?projectId=other-project',
-    `https://canvas.fixture.test/canvas?projectId=${task.id}#agentToken=raw-private-token`,
-  ]) { openUrl = invalid; assert.equal((await call(route, {})).status, 503); }
+    `https://canvas.fixture.test/canvas?mode=recent&projectId=${task.id}`,
+    `http://outside.fixture.test/canvas?mode=recent&projectId=${task.id}`,
+    `http://127.0.0.1:18420/canvas?projectId=${task.id}#agentToken=raw-private-token`,
+  ]) {
+    openUrl = invalid;
+    assert.equal((await call(route, {})).status, 503);
+  }
 });

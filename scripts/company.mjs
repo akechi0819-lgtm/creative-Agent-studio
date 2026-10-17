@@ -6,18 +6,15 @@ import {
   saveCompanyConfig,
 } from '../src/company/config.mjs';
 import { createCompanyMaterials } from '../src/company/materials.mjs';
-import { createCompanyCanvasManager } from '../src/company/canvas.mjs';
 import { checkCompanyCopy } from '../src/company/risk.mjs';
 import { stageCompanySources } from '../src/creative/tasks.mjs';
 import { dataRoot } from '../src/canvas/client.mjs';
-import { readConfigRecord } from '../src/web/config.mjs';
 
 const USAGE = `用法：
   node scripts/company.mjs config-show
   node scripts/company.mjs config-save @payload.json
   node scripts/company.mjs search @payload.json
-  node scripts/company.mjs check-copy @payload.json
-  node scripts/company.mjs canvas-check [TASK_ID]`;
+  node scripts/company.mjs check-copy @payload.json`;
 
 function cliError(code, message) {
   const error = new Error(message);
@@ -77,11 +74,6 @@ function publicCandidate(item) {
 
 const root = dataRoot();
 const materials = createCompanyMaterials({ root });
-const canvas = createCompanyCanvasManager({
-  root,
-  readConfig: ({ root: configRoot }) => readConfigRecord({ root: configRoot }),
-  readCompanyConfig,
-});
 
 async function run(args) {
   const [command, ...rest] = args;
@@ -128,10 +120,6 @@ async function run(args) {
     hasOnlyKeys(input, ['text']);
     return checkCompanyCopy(input.text);
   }
-  if (command === 'canvas-check' && rest.length <= 1) {
-    if (typeof canvas.diagnose !== 'function') throw cliError('ERR_COMPANY_CANVAS_UNAVAILABLE', '公司画布连接检查未就绪。');
-    return canvas.diagnose({ taskId: rest[0] });
-  }
   throw usageError();
 }
 
@@ -140,6 +128,4 @@ try {
 } catch (error) {
   console.error(safeError(error));
   process.exitCode = 1;
-} finally {
-  await Promise.resolve(canvas.stop?.()).catch(() => {});
 }

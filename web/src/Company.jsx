@@ -8,7 +8,6 @@ export function CompanySettings({ onRun, task, initial = null, onConfigured = ()
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
-  const [canvasReport, setCanvasReport] = useState(null);
   useEffect(() => {
     let active = true;
     if (initial) {
@@ -34,18 +33,12 @@ export function CompanySettings({ onRun, task, initial = null, onConfigured = ()
     } catch (cause) { setError(cause.message); }
     finally { setBusy(false); }
   }
-  async function check() {
-    setBusy(true); setError(''); setNotice('');
-    try { const report = await api.companyCanvasCheck(task?.id); setCanvasReport(report); setNotice(report.message || '画布连接检查完成。'); }
-    catch (cause) { setError(cause.message); }
-    finally { setBusy(false); }
-  }
   async function connect() {
     if (!task) return;
     const child = window.open('', '_blank');
     if (!child) { setError('请允许打开画布窗口后重试。'); return; }
     child.opener = null; setBusy(true); setError('');
-    try { const result = await api.canvasOpen(task.id); child.location.replace(result.openUrl); setNotice('已打开当前任务的独立画布。基础和图片模型使用本机个人配置，成品仍返回本任务审核。'); }
+    try { const result = await api.canvasOpen(task.id); child.location.replace(result.openUrl); setNotice('已打开当前任务的本机 Canvas。基础和图片模型使用本机个人配置，成品仍返回本任务审核。'); }
     catch (cause) { child.close(); setError(cause.message); }
     finally { setBusy(false); }
   }
@@ -63,13 +56,11 @@ export function CompanySettings({ onRun, task, initial = null, onConfigured = ()
           <p className="field-help">只检索、预览并在人工保留后下载原件。素材、标签及员工权限继续由原素材库管理。账号与密码仅保存在当前电脑。</p>
           <div className="settings-actions"><button className="button primary" disabled={busy || !config.deploymentConfigured || (!draft.username.trim() && !clearPassword) || (!draft.password && !config.teedy.passwordConfigured && !clearPassword) || (draft.username.trim() !== (config.teedy.username || '') && !draft.password && !clearPassword)}>{busy ? '处理中…' : '保存个人账号'}</button></div>
         </form>
-      </section><section className="settings-section"><h2>公司 Canvas</h2>
-        <label className="field-label">固定画布地址<output className="readonly-service-address">{config.canvas?.webUrl || '管理员尚未配置'}</output></label>
-        <p className="field-help">Canvas 负责任务画布连接与成品回传。基础和图片模型使用本机个人配置，无需在远端重复填写。</p>
+      </section><section className="settings-section"><h2>本机 Canvas</h2>
+        <p className="field-help">Canvas 负责当前任务的画布和成品回传；图片模型使用本机“模型与服务”中的个人配置。</p>
         <p>{task ? `当前任务：${task.title}` : '先创建或选择一个任务，再打开 Canvas。'}</p>
       </section></div>
-      <div className="settings-actions"><button type="button" className="button outline" onClick={connect} disabled={busy || !task || !config.canvas?.webUrl}>打开当前任务画布</button><button type="button" className="button outline" onClick={check} disabled={busy || !config.deploymentConfigured}>检查画布连接</button></div>
-      {canvasReport && <div className="settings-section"><h2>画布连接检查</h2>{(canvasReport.missing || []).length > 0 && <p>待补齐：{canvasReport.missing.join('、')}</p>}{(canvasReport.targets || []).map(target => <p key={`${target.projectId}-${target.clientId}`}>{target.title || '当前任务画布'} · {target.hasCanvas ? '已连接' : '等待页面加载'}</p>)}</div>}
+      <div className="settings-actions"><button type="button" className="button outline" onClick={connect} disabled={busy || !task}>打开本机 Canvas</button></div>
     </>}
   </section>;
 }

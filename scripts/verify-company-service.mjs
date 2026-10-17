@@ -10,7 +10,7 @@ const execute = promisify(execFile);
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-company-service-'));
 const launcher = path.resolve('scripts/launcher.mjs');
 const servicesFile = path.join(root, 'fixture-company-services.json');
-await fs.writeFile(servicesFile, JSON.stringify({schemaVersion:1,teedy:{baseUrl:'https://library.fixture.test'},canvas:{webUrl:'https://canvas.fixture.test'}}));
+await fs.writeFile(servicesFile, JSON.stringify({schemaVersion:1,teedy:{baseUrl:'https://library.fixture.test'}}));
 const env = { ...process.env, STUDIO_DATA_DIR: root, STUDIO_COMPANY_SERVICES_FILE: servicesFile };
 const output = path.resolve('docs/evidence/company-service');
 await fs.mkdir(output, { recursive: true });
@@ -36,14 +36,12 @@ try {
   await page.getByRole('heading', { name: '公司连接', exact: true }).waitFor();
   const configuration = await page.evaluate(() => fetch('/api/company/config').then(response => response.json()));
   assert.equal(configuration.config.teedy.passwordConfigured, false);
-  assert.deepEqual(configuration.config.canvas, { webUrl: 'https://canvas.fixture.test' });
   assert.equal(configuration.config.deploymentConfigured, true);
-  const entries = await fs.readdir(root);
-  assert.ok(!entries.includes('canvas-instance.json'));
+  assert.equal(Object.hasOwn(configuration.config, 'canvas'), false);
   assert.deepEqual(errors, []);
   await command('stop');
   assert.equal((await command('status')).running, false);
-  await fs.writeFile(path.join(output, 'verification.json'), JSON.stringify({ isolated: true, duplicateLaunchReused: true, actualCompanyWeb: true, noLocalCanvasStarted: true, stopped: true, pageErrors: errors }, null, 2));
+  await fs.writeFile(path.join(output, 'verification.json'), JSON.stringify({ isolated: true, duplicateLaunchReused: true, actualCompanyWeb: true, stopped: true, pageErrors: errors }, null, 2));
   console.log('公司版正式启动入口、重复启动复用、真实浏览器与正常停机通过；未连接公司现网或付费模型。');
 } finally {
   await browser?.close();

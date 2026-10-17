@@ -1,5 +1,3 @@
-import localforage from "localforage";
-
 const stores = new Set([
     "app_state",
     "image_files",
@@ -28,26 +26,6 @@ export type StudioStorage = {
 /** A localForage-shaped store backed by the task's same-origin private storage API. */
 export function createStudioStorage(storeName: string): StudioStorage {
     if (!stores.has(storeName)) throw new Error(`Unsupported Studio storage store: ${storeName}`);
-
-    if (__STUDIO_CANVAS_DEPLOYMENT__ === "remote") {
-        // The remote static build has no Studio server. Keep the upstream database and
-        // store names so an existing infinite-canvas browser database remains readable.
-        // INDEXEDDB is the sole configured driver; storage failures are explicit.
-        const database = localforage.createInstance({
-            name: "infinite-canvas",
-            storeName,
-            driver: localforage.INDEXEDDB,
-        });
-        return {
-            getItem: <T>(key: string) => database.getItem<T>(key),
-            setItem: <T>(key: string, value: T) => database.setItem(key, value),
-            removeItem: (key: string) => database.removeItem(key),
-            keys: () => database.keys(),
-            clear: () => database.clear(),
-            iterate: <T, R = void>(iteratorCallback: IteratorCallback<T, R>) =>
-                database.iterate((value, key, iterationNumber) => iteratorCallback(value, key, iterationNumber)),
-        };
-    }
 
     const storeUrl = `/__studio/storage/${storeName}`;
     const keyUrl = (key: string) => `${storeUrl}/${encodeURIComponent(key)}`;

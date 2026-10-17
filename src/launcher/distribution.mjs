@@ -57,7 +57,7 @@ const ALLOWED_PREFIXES = Object.freeze([
   'third_party/our-free-model/src/', 'third_party/our-free-model/workbuddy/',
 ]);
 const COMPANY_ALLOWED_FILES = new Set([
-  'scripts/company.mjs', 'scripts/company-bridge.mjs', 'docs/公司版接入.md',
+  'scripts/company.mjs', 'docs/公司版接入.md',
   'licenses/xhs-ad-workbench-MIT.txt', 'licenses/xhs-ad-workbench-risk-source.md',
 ]);
 const COMPANY_ALLOWED_PREFIXES = Object.freeze([

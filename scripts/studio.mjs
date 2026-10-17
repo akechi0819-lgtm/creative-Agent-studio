@@ -26,9 +26,8 @@ import {
 import { taskEntryStatus, clearTaskEntry } from '../src/creative/entry.mjs';
 import { executeTask, selectImage } from '../src/creative/executor.mjs';
 import { editTaskPages, restorePageEdit } from '../src/creative/page-edits.mjs';
-import { createCompanyCanvasManager } from '../src/company/canvas.mjs';
+import { createCanvasManager } from '../src/web/canvas.mjs';
 import { readConfigRecord } from '../src/web/config.mjs';
-import { readCompanyConfig } from '../src/company/config.mjs';
 
 const USAGE = `用法：
   node scripts/studio.mjs create @payload.json
@@ -65,11 +64,10 @@ const SECRET_KEY = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|p
 const SECRET_TEXT = /\bBearer\s+[A-Za-z0-9._~+\/-]{12,}|\bsk-[A-Za-z0-9_-]{16,}/gi;
 const SECRET_QUERY = /([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)=)[^&#\s]+/gi;
 const TASK_ROOT = dataRoot();
-const canvasManager = createCompanyCanvasManager({
-  detachedBridge: true,
+const canvasManager = createCanvasManager({
+  detachedSupervisor: true,
   root: TASK_ROOT,
   readConfig: ({ root }) => readConfigRecord({ root }),
-  readCompanyConfig,
 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CANVAS_OPERATION_FIELDS = Object.freeze({

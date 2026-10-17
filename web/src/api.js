@@ -28,7 +28,6 @@ export const api = {
   companyConfig: () => request('/api/company/config'),
   saveCompanyConfig: (payload) => request('/api/company/config', json('POST', payload)),
   companySearch: (payload) => request('/api/company/search', json('POST', payload)),
-  companyCanvasCheck: (taskId) => request('/api/company/canvas-check', json('POST', taskId ? { taskId } : {})),
   companyCheckCopy: (text) => request('/api/company/check-copy', json('POST', { text })),
   bootstrap: () => request('/api/bootstrap'),
   task: (id) => request(`/api/tasks/${idPath(id)}`),

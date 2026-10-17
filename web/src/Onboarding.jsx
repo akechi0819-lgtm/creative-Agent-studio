@@ -35,7 +35,6 @@ export function hasUsableConfig(config, { companyMode = false, companyConfig = n
   return Boolean(imageConfigured
     && companyConfig?.deploymentConfigured === true
     && companyConfig?.teedy?.baseUrl
-    && companyConfig?.canvas?.webUrl
     && companyConfig?.teedy?.username?.trim()
     && companyConfig?.teedy?.passwordConfigured);
 }
@@ -89,8 +88,8 @@ function StatusMark({ result }) {
 }
 
 /**
- * First-run setup stores personal model channels and, in company mode,
- * personal Teedy credentials against administrator-provisioned service URLs.
+ * First-run setup stores local model channels and, in company mode,
+ * personal Teedy credentials against the administrator-provisioned service URL.
  */
 export function Onboarding({
   initialConfig,
@@ -196,7 +195,7 @@ export function Onboarding({
     ? Boolean(imageCredentialSupplied.trim() || savedCredentialMatches(savedBase, imageUrl))
     : Boolean(imageCredentialSupplied.trim() || savedCredentialMatches(savedImage, imageUrl));
   const imageReady = Boolean(image.model.trim() && imageUrl && imageKeyReady);
-  const companyDeploymentReady = !companyMode || Boolean(companyConfig?.deploymentConfigured === true && companyConfig?.teedy?.baseUrl && companyConfig?.canvas?.webUrl);
+  const companyDeploymentReady = !companyMode || Boolean(companyConfig?.deploymentConfigured === true && companyConfig?.teedy?.baseUrl);
   const companyCredentialsReady = !companyMode || Boolean(companyDeploymentReady
     && companyDraft.username.trim()
     && (companyDraft.password.trim() || (companyConfig?.teedy?.passwordConfigured && companyDraft.username.trim() === (companyConfig?.teedy?.username || ''))));
@@ -369,17 +368,8 @@ export function Onboarding({
   async function runCheck(kind) {
     setChecking(kind); setError(''); setNotice('');
     try {
-      let result;
-      if (kind === 'canvas') {
-        const report = await api.companyCanvasCheck();
-        result = {
-          status: report.status === 'connected' || (Array.isArray(report.targets) && report.targets.length > 0) ? 'connected' : 'checked',
-          message: report.message || (report.targets?.length ? `${report.targets.length} 个 Canvas 目标已返回连接诊断。` : '已完成远端 Canvas 诊断。'),
-        };
-      } else {
-        const response = await api.checkConfig({ kind });
-        result = response.checks?.[kind] || { status: 'error', message: '服务没有返回检查结果。' };
-      }
+      const response = await api.checkConfig({ kind });
+      const result = response.checks?.[kind] || { status: 'error', message: '服务没有返回检查结果。' };
       setChecks((current) => ({ ...current, [kind]: result }));
     } catch (cause) {
       setChecks((current) => ({ ...current, [kind]: { status: 'error', message: cause.message || '检查失败。' } }));
@@ -451,7 +441,7 @@ export function Onboarding({
         <div className="onboarding-panel-heading"><span className="onboarding-index">02</span><div><h2 id="onboarding-access-title">{base.source === 'custom' ? '填写服务地址和 API 密钥' : `${provider.name} 的连接方式`}</h2><p>密钥只保存在当前电脑的 Studio 私有配置中，不会显示在普通配置回执里。</p></div></div>
         {companyMode && <section className="onboarding-company-access" aria-label="公司服务与个人素材库账号">
           <h3>公司服务地址（管理员预配置）</h3>
-          <dl><div><dt>公司素材库</dt><dd>{companyConfig?.teedy?.baseUrl || '尚未配置'}</dd></div><div><dt>公司画布</dt><dd>{companyConfig?.canvas?.webUrl || '尚未配置'}</dd></div></dl>
+          <dl><div><dt>公司素材库</dt><dd>{companyConfig?.teedy?.baseUrl || '尚未配置'}</dd></div></dl>
           {!companyDeploymentReady && <p className="onboarding-callout warning">公司服务地址尚未由管理员配置，请联系管理员完成部署后再保存个人连接。</p>}
           <div className="onboarding-fields">
             <label className="field-label">个人 Teedy 账号<input value={companyDraft.username} onChange={(event) => { setCompanyDraft((current) => ({ ...current, username: event.target.value })); setCompanyConfigError(''); }} autoComplete="username" /></label>
@@ -481,7 +471,7 @@ export function Onboarding({
         <div className="onboarding-shared-provider">
           <label><input type="checkbox" checked={sharedCustomProvider} disabled={base.source !== 'custom'} onChange={(event) => { setReuseBaseCredentials(event.target.checked); invalidateModels('image'); setError(''); }} /> 图片模型与对话模型共用服务地址和 API 密钥</label>
           <small>{base.source !== 'custom' ? '托管来源的基础模型凭据不提供给图片通道；请为图片 API 单独填写地址和密钥。' : '开启后只输入一次地址和密钥，保存时用于本机的基础模型与图片模型通道。'}</small>
-        </div>}
+        </div>
         {!sharedCustomProvider && <div className="onboarding-fields image-access-fields">
           <h3>图片模型 API</h3>
           <label className="field-label">图片服务地址<input type="url" value={image.baseUrl} onChange={(event) => updateImage('baseUrl', event.target.value)} placeholder="https://api.example.com/v1" autoComplete="url" /></label>
@@ -516,13 +506,12 @@ export function Onboarding({
       </section>}
 
       {step === 3 && <section className="onboarding-panel" aria-labelledby="onboarding-checks-title">
-        <div className="onboarding-panel-heading"><span className="onboarding-index">04</span><div><h2 id="onboarding-checks-title">分级检查</h2><p>先确认本机配置，再检查基础模型、图片模型目录与公司 Canvas 连接；不会自动生成图片。</p></div></div>
-        <div className="onboarding-save-status"><div><strong>{configurationSaved ? '当前配置已保存' : configReady ? '配置条件已满足' : '配置尚未完整'}</strong><p>{configReady ? `基础模型 ${base.model.trim()}${companyMode ? '' : ` · 图片模型 ${image.model.trim()}`}` : '回到前一步补齐模型 ID、服务地址或密钥。'}</p></div><button type="button" className="button outline small" onClick={saveConfiguration} disabled={saving || !configReady || configurationSaved}>{saving ? '保存中…' : configurationSaved ? '配置已保存' : '保存本机配置'}</button></div>
+        <div className="onboarding-panel-heading"><span className="onboarding-index">04</span><div><h2 id="onboarding-checks-title">分级检查</h2><p>先确认本机配置，再检查基础模型和图片模型目录；不会自动生成图片。</p></div></div>
+        <div className="onboarding-save-status"><div><strong>{configurationSaved ? '当前配置已保存' : configReady ? '配置条件已满足' : '配置尚未完整'}</strong><p>{configReady ? `基础模型 ${base.model.trim()} · 图片模型 ${image.model.trim()}` : '回到前一步补齐模型 ID、服务地址或密钥。'}</p></div><button type="button" className="button outline small" onClick={saveConfiguration} disabled={saving || !configReady || configurationSaved}>{saving ? '保存中…' : configurationSaved ? '配置已保存' : '保存本机配置'}</button></div>
         <div className="onboarding-check-list">
           <article className="onboarding-check-card"><div><span className="onboarding-check-number">1</span><div><h3>本机配置</h3><p>{configurationSaved ? '模型 ID、服务地址和密钥状态已保存。' : '先保存当前输入；密钥只在本机私有目录保存。'}</p></div></div><StatusMark result={configurationSaved ? { status: 'connected' } : null} /></article>
           <article className="onboarding-check-card"><div><span className="onboarding-check-number">2</span><div><h3>基础模型对话与工具</h3><p>会向已保存的基础模型发出真实检查请求，可能消耗平台额度；不会生成图片。</p>{checks.base && <small>{checks.base.message}</small>}</div></div><div className="onboarding-check-action"><StatusMark result={checks.base} /><button type="button" className="button outline small" onClick={() => runCheck('base')} disabled={!configurationSaved || checking !== ''}>{checking === 'base' ? '检查中…' : '检查基础模型'}</button></div></article>
           <article className="onboarding-check-card"><div><span className="onboarding-check-number">3</span><div><h3>图片模型目录</h3><p>只读服务端模型列表并核对所选 ID，不发起图片生成请求。</p>{checks.image && <small>{checks.image.message}{checks.image.capabilities?.connectionTested ? (checks.image.capabilities.modelListed ? ' 模型 ID 已列入列表。' : ' 当前模型 ID 未列入列表。') : ' 没有完成服务连接验证。'}</small>}</div></div><div className="onboarding-check-action"><StatusMark result={checks.image} /><button type="button" className="button outline small" onClick={() => runCheck('image')} disabled={!configurationSaved || checking !== ''}>{checking === 'image' ? '检查中…' : '检查图片通道'}</button></div></article>
-          {companyMode && <article className="onboarding-check-card"><div><span className="onboarding-check-number">4</span><div><h3>公司 Canvas 连接</h3><p>仅检查当前任务 Canvas 连接诊断，不发起图片生成请求。</p>{checks.canvas && <small>{checks.canvas.message}</small>}</div></div><div className="onboarding-check-action"><StatusMark result={checks.canvas} /><button type="button" className="button outline small" onClick={() => runCheck('canvas')} disabled={checking !== ''}>{checking === 'canvas' ? '检查中…' : '检查 Canvas'}</button></div></article>}
         </div>
         <div className="onboarding-callout warning"><strong>图片能力还没有被实际生图验证</strong><p>模型列表和连接检查都不等于成功生成。真正绘图仍在任务中经你确认制作单后执行。</p></div>
         <div className="onboarding-actions"><button type="button" className="button outline" onClick={() => { setError(''); setStep(2); }}>上一步</button><button type="button" className="button primary" onClick={() => { setError(''); setStep(4); }}>写示例首任务<span aria-hidden="true"> →</span></button></div>

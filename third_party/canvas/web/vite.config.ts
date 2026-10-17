@@ -40,8 +40,6 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
-    // The remote package takes only the sanitized environment supplied by its build script.
-    envDir: process.env.VITE_STUDIO_CANVAS_DEPLOYMENT === "remote" ? false : undefined,
     plugins: [react(), localPluginsManifest()],
     resolve: {
         alias: {
@@ -51,8 +49,5 @@ export default defineConfig({
     define: {
         __APP_VERSION__: JSON.stringify(localVersion),
         __APP_RELEASES__: JSON.stringify(parseChangelog(localChangelog)),
-        __STUDIO_CANVAS_DEPLOYMENT__: JSON.stringify(
-            process.env.VITE_STUDIO_CANVAS_DEPLOYMENT === "remote" ? "remote" : "local",
-        ),
     },
 });

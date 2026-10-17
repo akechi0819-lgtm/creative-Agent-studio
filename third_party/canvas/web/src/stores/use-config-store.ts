@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
+import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
@@ -77,23 +77,6 @@ const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
-let companyManagedConfigPersistence = false;
-let companyManagedImageRequests = false;
-function companyBootstrapIsPending() {
-    if (__STUDIO_CANVAS_DEPLOYMENT__ !== "remote" || typeof window === "undefined") return false;
-    const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    return params.has("companyBridge") || params.has("companyTicket");
-}
-// The store module is imported before bootstrapStudioCanvas runs. Suppress the
-// persist middleware's hydration write as soon as a company ticket is visible,
-// so its normalizing merge cannot rewrite a coworker's existing BYOK settings.
-companyManagedConfigPersistence = companyBootstrapIsPending();
-
-/** Keep a company task's transient proxy/model override out of the user's remote Canvas settings. */
-export function setCompanyManagedConfigPersistence(enabled: boolean) {
-    if (enabled) companyManagedConfigPersistence = true;
-    companyManagedImageRequests = enabled;
-}
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -225,8 +208,7 @@ export function resolveModelScript(config: AiConfig, value: string) {
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const match = findChannelModel(config, model);
-    return Boolean(match && match.channel.baseUrl.trim()
-        && (match.channel.apiKey.trim() || (companyManagedImageRequests && config.proxyEnabled && config.proxyUrl.trim())));
+    return Boolean(match && match.channel.baseUrl.trim() && match.channel.apiKey.trim());
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -264,23 +246,11 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
-            storage: createJSONStorage(() => ({
-                getItem: (name) => localStorage.getItem(name),
-                setItem: (name, value) => {
-                    if (!companyManagedConfigPersistence) localStorage.setItem(name, value);
-                },
-                removeItem: (name) => {
-                    if (!companyManagedConfigPersistence) localStorage.removeItem(name);
-                },
-            })),
             partialize: (state) => ({
                 config: {
                     ...state.config,
-                    apiKey: __STUDIO_CANVAS_DEPLOYMENT__ === "remote" ? state.config.apiKey : "",
-                    channels: state.config.channels.map((channel) => ({
-                        ...channel,
-                        apiKey: __STUDIO_CANVAS_DEPLOYMENT__ === "remote" ? channel.apiKey : "",
-                    })),
+                    apiKey: "",
+                    channels: state.config.channels.map((channel) => ({ ...channel, apiKey: "" })),
                 },
                 webdav: { ...state.webdav, password: "" },
             }),

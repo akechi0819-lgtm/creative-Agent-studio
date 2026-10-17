@@ -14,7 +14,6 @@ const servicesFile = path.join(root, 'fixture-company-services.json');
 await fs.writeFile(servicesFile, JSON.stringify({
   schemaVersion: 1,
   teedy: { baseUrl: 'https://library.fixture.test' },
-  canvas: { webUrl: 'https://canvas.fixture.test' },
 }));
 process.env.STUDIO_COMPANY_SERVICES_FILE = servicesFile;
 
@@ -30,10 +29,7 @@ const materials = {
   preview: async () => { previews++; return { bytes: image, mimeType: 'image/png' }; },
 };
 const task = await createTask({ title: '公司浏览器隔离测试', brief: '制作一张使用公司参考的海报' }, root);
-const server = await listenStudioServer({ root, port: 0, companyMaterials: materials, canvas: {
-  state: async () => ({ clientConnected: false }),
-  diagnose: async () => ({ ok: false, message: '隔离画布诊断：未连接远端，也未发送写操作。' }),
-} });
+const server = await listenStudioServer({ root, port: 0, companyMaterials: materials });
 const url = `http://127.0.0.1:${server.address.port}`;
 const browser = await chromium.launch({ headless: true });
 try {
@@ -48,7 +44,6 @@ try {
   await page.getByRole('button', { name: /继续/ }).click();
   await page.getByText('公司服务地址（管理员预配置）').waitFor();
   assert.equal(await page.locator('.onboarding-company-access').getByText('https://library.fixture.test').count(), 1);
-  assert.equal(await page.locator('.onboarding-company-access').getByText('https://canvas.fixture.test').count(), 1);
   await page.getByLabel('个人 Teedy 账号').fill('fixture-reader');
   await page.getByLabel('个人 Teedy 密码').fill('fixture-password-private');
   await page.getByRole('button', { name: '保存个人账号' }).click();
@@ -73,17 +68,14 @@ try {
 
   await page.getByRole('button', { name: '公司连接', exact: true }).click();
   await page.getByRole('heading', { name: '公司连接', exact: true }).waitFor();
-  assert.equal(await page.locator('.readonly-service-address').count(), 2);
+  assert.equal(await page.locator('.readonly-service-address').count(), 1);
   assert.equal(await page.getByLabel('Teedy HTTPS 地址').count(), 0, 'employee settings must not expose a service URL editor');
   assert.equal(await page.locator('body').innerText().then(text => text.includes('fixture-password-private')), false);
   const publicCompanyConfig = await page.evaluate(() => fetch('/api/company/config').then(response => response.json()));
   assert.equal(publicCompanyConfig.config.deploymentConfigured, true);
   assert.equal(publicCompanyConfig.config.teedy.baseUrl, 'https://library.fixture.test');
-  assert.equal(publicCompanyConfig.config.canvas.webUrl, 'https://canvas.fixture.test');
+  assert.equal(Object.hasOwn(publicCompanyConfig.config, 'canvas'), false);
   assert.equal(JSON.stringify(publicCompanyConfig).includes('fixture-password-private'), false);
-
-  await page.getByRole('button', { name: '检查画布连接' }).click();
-  await page.getByText('隔离画布诊断：未连接远端，也未发送写操作。').waitFor();
   await page.screenshot({ path: path.join(output, 'company-settings.png'), fullPage: true });
 
   await page.getByRole('button', { name: '模型与服务', exact: true }).click();
@@ -128,7 +120,6 @@ try {
     credentialRedaction: true,
     candidatePreviewViaLocalProxy: true,
     searchDoesNotDownloadOriginals: downloads === 0,
-    canvasDiagnosticOnly: true,
     pageErrors: errors,
   }, null, 2));
   console.log('公司版浏览器隔离回归通过：首次引导、固定服务地址、个人 Teedy 与双模型配置、脱敏、候选只读预览及窄屏渲染。未连接真实公司服务或付费模型。');

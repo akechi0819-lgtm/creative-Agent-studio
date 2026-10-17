@@ -13,7 +13,7 @@ type ToolCall = { requestId: string; name: string; input?: Record<string, unknow
 export function CanvasToolPanel() {
     const { hash } = useLocation();
     const navigate = useNavigate();
-    const { panelOpen, url, token, clientId: configuredClientId, enabled, connected, activity, studioManaged, setAgentState } = useCanvasToolStore();
+    const { panelOpen, url, token, enabled, connected, activity, studioManaged, setAgentState } = useCanvasToolStore();
     const theme = canvasThemes[useThemeStore(s => s.theme)];
     const [confirm, setConfirm] = useState(false);
     const confirmRef = useRef(confirm); confirmRef.current = confirm;
@@ -25,7 +25,7 @@ export function CanvasToolPanel() {
         const params = new URLSearchParams(hash.slice(1));
         const endpoint = params.get("agentUrl"), credential = params.get("agentToken");
         if (endpoint && credential) {
-            setAgentState({url: endpoint, token: credential, clientId: "", enabled: true, fragmentBootstrap: true});
+            setAgentState({url: endpoint, token: credential, enabled: true, fragmentBootstrap: true});
             params.delete("agentUrl"); params.delete("agentToken");
             history.replaceState(null, "", location.pathname + location.search + (params.size ? "#" + params.toString() : ""));
         }
@@ -33,7 +33,7 @@ export function CanvasToolPanel() {
     useEffect(() => {
         if (!enabled || !url || !token) return;
         const endpoint = url.replace(/\/$/, "");
-        const clientId = configuredClientId || crypto.randomUUID();
+        const clientId = crypto.randomUUID();
         let closed = false;
         const query = () => new URLSearchParams({token, clientId, projectId: useCanvasToolStore.getState().canvasContext?.snapshot.projectId || new URLSearchParams(location.search).get("projectId") || ""});
         const post = async (route: string, body: unknown) => {
@@ -90,13 +90,13 @@ export function CanvasToolPanel() {
             clearTimeout(timer); timer=setTimeout(() => void publish().catch(e => setError(String(e))), 100);
         });
         return () => {closed=true; source.close(); unsubscribe(); clearTimeout(timer); setAgentState({connected:false});};
-    }, [enabled, url, token, configuredClientId, navigate, setAgentState]);
+    }, [enabled, url, token, navigate, setAgentState]);
     if (!panelOpen && !pending) return null;
     return <aside data-canvas-shortcuts-ignore className="w-80 shrink-0 border-l p-4 overflow-auto" style={{background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke}}>
         <p>Canvas 绘图工具</p><p>{connected ? "已连接" : "未连接"} · {activity}</p>
         {studioManaged ? <p>当前任务连接由 Studio 管理。关闭后请从工作台重新打开任务画布。</p> : <>
-            <Input aria-label="绘图服务地址" placeholder="本地绘图服务地址" value={url} onChange={e=>setAgentState({url:e.target.value,clientId:"",enabled:false})}/>
-            <Input.Password aria-label="连接令牌" placeholder="连接令牌" value={token} onChange={e=>setAgentState({token:e.target.value,clientId:"",enabled:false})}/>
+            <Input aria-label="绘图服务地址" placeholder="本地绘图服务地址" value={url} onChange={e=>setAgentState({url:e.target.value,enabled:false})}/>
+            <Input.Password aria-label="连接令牌" placeholder="连接令牌" value={token} onChange={e=>setAgentState({token:e.target.value,enabled:false})}/>
             <Button onClick={()=>setAgentState({enabled:!enabled})}>{enabled ? "断开" : "连接"}</Button>
         </>}
         <Checkbox checked={confirm} onChange={e=>setConfirm(e.target.checked)}>逐次确认绘图操作</Checkbox>

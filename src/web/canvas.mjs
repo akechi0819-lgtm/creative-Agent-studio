@@ -214,17 +214,11 @@ function instanceIdentity(instance, taskId) {
 }
 
 /** Canvas supervisors, browser tickets, and image credentials are scoped to one task. */
-export function createCanvasManager({ root, readConfig, canvasTool = callCanvasTool, bridgeHealth = health, regionDetector = detectImageRegions, detachedSupervisor = false, connectionAdapter = null } = {}) {
+export function createCanvasManager({ root, readConfig, canvasTool = callCanvasTool, bridgeHealth = health, regionDetector = detectImageRegions, detachedSupervisor = false } = {}) {
   if (typeof root !== 'string' || !root.trim()) throw new Error('Canvas manager 需要数据根目录');
   if (typeof readConfig !== 'function') throw new Error('Canvas manager 需要 readConfig');
   if (typeof canvasTool !== 'function' || typeof bridgeHealth !== 'function') throw new Error('Canvas manager 需要有效的 Canvas bridge');
   if (typeof regionDetector !== 'function') throw new Error('Canvas manager 需要有效的本机图像区域检测器');
-  if (connectionAdapter && (typeof connectionAdapter.identity !== 'string'
-    || typeof connectionAdapter.load !== 'function' || typeof connectionAdapter.ensure !== 'function'
-    || typeof connectionAdapter.resolveTarget !== 'function' || typeof connectionAdapter.assertSnapshot !== 'function'
-    || typeof connectionAdapter.openUrl !== 'function')) {
-    throw new Error('Canvas 外部连接 adapter 合同无效');
-  }
   const dataRoot = path.resolve(root);
   const instances = new Map();
   const starting = new Map();
@@ -273,9 +267,6 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
   }
 
   async function syncImageConfig(record) {
-    if (connectionAdapter) {
-      return { status: 'unsupported', updated: 0, active: instances.size, message: '公司远端 Canvas 配置由用户自行管理，工作台不会覆盖远端模型配置。' };
-    }
     const configRevision = record?.revision;
     if (!Number.isInteger(configRevision) || configRevision < 1) {
       return { status: 'unsynced', updated: 0, active: 0, message: '图片配置版本无效，当前 Canvas 未同步。' };
@@ -304,16 +295,6 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
   }
 
   async function loadInstance(taskId) {
-    if (connectionAdapter) {
-      const config = await connectionAdapter.load({ taskId, root: dataRoot });
-      if (!config) {
-        instances.delete(taskId);
-        return null;
-      }
-      const item = { config: { ...config, connectionKind: connectionAdapter.identity }, child: null, external: true };
-      instances.set(taskId, item);
-      return item;
-    }
     const known = instances.get(taskId);
     if (known && (!known.child || known.child.exitCode == null)) return known;
     if (known) instances.delete(taskId);
@@ -335,26 +316,8 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     if (starting.has(taskId)) return starting.get(taskId);
     const operation = (async () => {
       const current = await loadInstance(taskId);
-      if (current) {
-        if (connectionAdapter) {
-          let config;
-          try { config = await connectionAdapter.ensure({ taskId, root: dataRoot }); }
-          catch (error) { throw error?.code ? error : canvasError('ERR_CANVAS_CONNECT_FAILED', '公司 Canvas 连接配置无效或无法读取'); }
-          current.config = { ...config, connectionKind: connectionAdapter.identity };
-          instances.set(taskId, current);
-        }
-        return current;
-      }
+      if (current) return current;
       if (stopped) throw canvasError('ERR_CANVAS_STOPPED', 'Canvas manager 已停止');
-      if (connectionAdapter) {
-        let config;
-        try { config = await connectionAdapter.ensure({ taskId, root: dataRoot }); }
-        catch (error) { throw error?.code ? error : canvasError('ERR_CANVAS_CONNECT_FAILED', '公司 Canvas 连接配置无效或无法读取'); }
-        if (!config || typeof config !== 'object') throw canvasError('ERR_CANVAS_CONNECT_FAILED', '公司 Canvas 连接配置无效或无法读取');
-        const item = { config: { ...config, connectionKind: connectionAdapter.identity }, child: null, external: true };
-        instances.set(taskId, item);
-        return item;
-      }
       const taskDir = taskCanvasDirectory(dataRoot, taskId);
       await fs.mkdir(taskDir, { recursive: true, mode: 0o700 });
       await fs.chmod(taskDir, 0o700);
@@ -435,31 +398,10 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     catch (error) { throw canvasError('ERR_CANVAS_TASK_NOT_FOUND', '任务不存在或无法读取', error); }
   }
 
-  function assertSnapshotIdentity(taskId, instance, snapshot, config = instance.config) {
-    if (connectionAdapter) return connectionAdapter.assertSnapshot({ taskId, config, snapshot });
-    if (snapshot?.projectId !== taskId || (snapshot.clientId && snapshot.clientId !== config.clientId)) {
-      throw canvasError('ERR_CANVAS_PROJECT_MISMATCH', '当前 Canvas 项目或客户端与任务不匹配');
-    }
-  }
-
   async function resolveTarget(taskId, instance, preferredClientId = null) {
     let current;
-    try { current = await bridgeHealth(instance.config); }
+    try { current = await health(instance.config); }
     catch (error) { throw canvasError('ERR_CANVAS_DISCONNECTED', 'Canvas 绘图连接已断开，请重新打开该任务画布', error); }
-    if (connectionAdapter) {
-      try {
-        const target = await connectionAdapter.resolveTarget({ taskId, config: instance.config, current, canvasTool });
-        if (!target || target.projectId !== instance.config.projectId || typeof target.clientId !== 'string' || !target.clientId
-          || (preferredClientId && preferredClientId !== target.clientId)) {
-          throw canvasError('ERR_CANVAS_TARGET_CHANGED', '公司 Canvas 项目或客户端与当前任务绑定不一致');
-        }
-        instance.config.clientId = target.clientId;
-        return { ...instance.config, clientId: target.clientId };
-      } catch (error) {
-        if (error?.code) throw error;
-        throw canvasError('ERR_CANVAS_DISCONNECTED', '公司 Canvas 当前连接未能确认任务绑定');
-      }
-    }
     const targets = (current.targets || []).filter((target) => target.hasCanvas && target.projectId === taskId);
     if (targets.length === 0) throw canvasError('ERR_CANVAS_DISCONNECTED', 'Canvas 绘图页尚未连接，请打开该任务画布');
     const bound = typeof preferredClientId === 'string' && targets.find((target) => target.clientId === preferredClientId);
@@ -470,12 +412,12 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
 
   async function liveSnapshot(taskId, instance) {
     const config = await resolveTarget(taskId, instance);
-    const snapshot = await canvasTool('canvas_get_state', {}, config);
-    assertSnapshotIdentity(taskId, instance, snapshot, config);
+    const snapshot = await callCanvasTool('canvas_get_state', {}, config);
+    if (snapshot.projectId !== taskId) throw canvasError('ERR_CANVAS_PROJECT_MISMATCH', '当前 Canvas 项目与任务不匹配');
     return { config, snapshot };
   }
 
-  async function readImageBytes(nodeId, config, tool = canvasTool) {
+  async function readImageBytes(nodeId, config, tool = callCanvasTool) {
     let result;
     try { result = await tool('canvas_read_image', { nodeId }, config); }
     catch (error) { throw canvasError('ERR_CANVAS_IMAGE_UNAVAILABLE', '无法读取当前 Canvas 图片', error); }
@@ -532,19 +474,6 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
   async function ensure(taskId) {
     const task = await requireTask(taskId);
     const instance = await startSupervisor(taskId);
-    if (connectionAdapter) {
-      let clientConnected = false;
-      try { await resolveTarget(taskId, instance); clientConnected = true; } catch {}
-      const openUrl = await connectionAdapter.openUrl({ taskId, config: instance.config, projectTitle: task.title });
-      return {
-        projectId: taskId,
-        webUrl: instance.config.webUrl,
-        targetProjectId: instance.config.projectId,
-        clientId: instance.config.clientId,
-        openUrl,
-        clientConnected,
-      };
-    }
     const openUrl = await issueOpenUrl(taskId, instance, task.title);
     let clientConnected = false;
     try { await resolveTarget(taskId, instance); clientConnected = true; } catch {}
@@ -565,12 +494,9 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     base.state = 'disconnected'; base.webUrl = instance.config.webUrl;
     try {
       const target = await resolveTarget(taskId, instance);
-      const snapshot = await canvasTool('canvas_get_state', {}, target);
-      assertSnapshotIdentity(taskId, instance, snapshot, target);
+      const snapshot = await callCanvasTool('canvas_get_state', {}, target);
+      if (snapshot.projectId !== taskId) throw canvasError('ERR_CANVAS_PROJECT_MISMATCH', '当前 Canvas 项目与任务不匹配');
       base.state = 'ready'; base.clientConnected = true;
-      if (connectionAdapter?.diagnose) {
-        base.capabilities = await connectionAdapter.diagnose({ taskId, config: target, health: await bridgeHealth(target), snapshot, canvasTool });
-      }
       if (task.sheetVersion > 0 && task.execution?.version === task.sheetVersion) {
         const candidates = await snapshotCandidates(task, snapshot, target, task.sheetVersion);
         const currentHashes = new Map(candidates.map((image) => [image.nodeId, image.sha256]));
@@ -578,7 +504,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
         base.task.pages = base.task.pages.map((page) => ({ ...page, currentSha256: page.imageNodeId ? currentHashes.get(page.imageNodeId) ?? null : null }));
       }
     } catch (error) {
-      if (!['ERR_CANVAS_DISCONNECTED', 'ERR_CANVAS_AMBIGUOUS', 'ERR_CANVAS_TARGET_CHANGED', 'ERR_CANVAS_PROJECT_MISMATCH'].includes(error?.code)) throw error;
+      if (!['ERR_CANVAS_DISCONNECTED', 'ERR_CANVAS_AMBIGUOUS'].includes(error?.code)) throw error;
       base.connectionError = error.code;
     }
     return base;
@@ -608,23 +534,6 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
   }
 
   async function pinMechanicalTarget(taskId, instance, signal) {
-    if (connectionAdapter) {
-      const config = await resolveTarget(taskId, instance, instance.config.clientId);
-      const clientId = config.clientId;
-      const callPinned = async (name, input = {}, options = {}) => {
-        const callOptions = options && typeof options === 'object' && Object.hasOwn(options, 'signal') ? options : {};
-        let latest;
-        try {
-          latest = await bridgeHealth(config, { signal: callOptions.signal || signal });
-          await connectionAdapter.resolveTarget({ taskId, config, current: latest, canvasTool });
-        } catch (error) {
-          throw canvasError('ERR_CANVAS_OPERATION_UNKNOWN', '公司 Canvas 执行目标已变化；请读取当前画布状态，不要自动重提。', error);
-        }
-        connectionAdapter.assertToolAllowed?.(name);
-        return canvasTool(name, input, config, { ...callOptions, signal: callOptions.signal || signal });
-      };
-      return { config, clientId, call: callPinned };
-    }
     let current;
     try { current = await bridgeHealth(instance.config, { signal }); }
     catch (error) { throw canvasError('ERR_CANVAS_DISCONNECTED', 'Canvas 绘图连接已断开，请重新打开该任务画布', error); }
@@ -860,7 +769,9 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     if (!instance) throw canvasError('ERR_CANVAS_DISCONNECTED', 'Canvas 尚未启动，请先打开该任务画布');
     const target = await pinMechanicalTarget(taskId, instance, signal);
     const snapshot = await target.call('canvas_get_state', {}, { signal });
-    assertSnapshotIdentity(taskId, instance, snapshot, target.config);
+    if (snapshot?.projectId !== taskId || (snapshot.clientId && snapshot.clientId !== target.clientId)) {
+      throw canvasError('ERR_CANVAS_PROJECT_MISMATCH', 'Canvas 项目或客户端与当前任务不匹配');
+    }
     const latest = await readTask(taskId, dataRoot);
     if (latest.revision !== expectedRevision) {
       const error = canvasError('ERR_TASK_REVISION_CONFLICT', '任务状态已变化，请读取最新任务状态后重试');
@@ -889,12 +800,15 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     if (!instance) throw canvasError('ERR_CANVAS_DISCONNECTED', 'Canvas 尚未启动，请先打开该任务画布');
     const target = await pinMechanicalTarget(taskId, instance, signal);
     const before = await target.call('canvas_get_state', {}, { signal });
-    assertSnapshotIdentity(taskId, instance, before, target.config);
+    if (before?.projectId !== taskId || (before.clientId && before.clientId !== target.clientId)) {
+      throw canvasError('ERR_CANVAS_PROJECT_MISMATCH', 'Canvas 项目或客户端与当前任务不匹配');
+    }
     await locateSource(before, nodeId, ['image']);
     const image = await readImageBytes(nodeId, target.config, target.call);
     const after = await target.call('canvas_get_state', {}, { signal });
-    try { assertSnapshotIdentity(taskId, instance, after, target.config); }
-    catch { throw canvasError('ERR_CANVAS_TARGET_CHANGED', 'Canvas 执行目标已变化，请重新读取图片'); }
+    if (after?.projectId !== taskId || (after.clientId && after.clientId !== target.clientId)) {
+      throw canvasError('ERR_CANVAS_TARGET_CHANGED', 'Canvas 执行目标已变化，请重新读取图片');
+    }
     const sourceAfter = (after.nodes || []).filter((node) => node.id === nodeId && node.type === 'image');
     if (sourceAfter.length !== 1) throw canvasError('ERR_CANVAS_IMAGE_NOT_FOUND', 'Canvas 图片已不存在或不属于当前任务');
     const confirmed = await readImageBytes(nodeId, target.config, target.call);
@@ -984,7 +898,9 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
         if (!instance) throw canvasError('ERR_CANVAS_DISCONNECTED', 'Canvas 尚未启动，请先打开该任务画布');
         const target = await pinMechanicalTarget(taskId, instance, payload.signal);
         const before = await target.call('canvas_get_state', {}, { signal: payload.signal });
-        assertSnapshotIdentity(taskId, instance, before, target.config);
+        if (before?.projectId !== taskId || (before.clientId && before.clientId !== target.clientId)) {
+          throw canvasError('ERR_CANVAS_PROJECT_MISMATCH', 'Canvas 项目或客户端与当前任务不匹配');
+        }
         const uncertain = (message, cause) => {
           const failure = canvasError('ERR_CANVAS_OPERATION_UNKNOWN', message, cause);
           failure.canvasOutcomeUnknown = true;
@@ -1013,8 +929,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
           }
         };
         const checkCanvasState = async (snapshot, unknown = false) => {
-          try { assertSnapshotIdentity(taskId, instance, snapshot, target.config); }
-          catch {
+          if (snapshot?.projectId !== taskId || (snapshot.clientId && snapshot.clientId !== target.clientId)) {
             throw unknown
               ? uncertain('Canvas 执行目标已变化；请读取当前画布状态，不要自动重提')
               : canvasError('ERR_CANVAS_PROJECT_MISMATCH', 'Canvas 项目或客户端与当前任务不匹配');
@@ -1300,7 +1215,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
       revision = updated.revision;
     }
     const latest = await readTask(taskId, dataRoot);
-    const refreshed = await canvasTool('canvas_get_state', {}, config);
+    const refreshed = await callCanvasTool('canvas_get_state', {}, config);
     let existing;
     try { existing = await readJson(selectionEvidencePath(dataRoot, taskId)); } catch {}
     const evidence = existing?.projectId === taskId && existing?.version === version && existing?.pages && typeof existing.pages === 'object'
@@ -1397,12 +1312,8 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     const instance = await startSupervisor(taskId);
     const config = await resolveTarget(taskId, instance, target?.clientId || task.execution?.target?.clientId);
     const pinned = { ...config };
-    const targetProjectId = connectionAdapter ? instance.config.projectId : taskId;
     const assertPinned = (candidate) => {
-      if (candidate?.projectId !== targetProjectId || candidate?.clientId !== pinned.clientId
-        || (connectionAdapter
-          ? candidate?.connectionKind !== connectionAdapter.identity
-          : candidate?.instanceId !== instance.config.instanceId)) {
+      if (candidate?.projectId !== taskId || candidate?.instanceId !== instance.config.instanceId || candidate?.clientId !== pinned.clientId) {
         throw canvasError('ERR_CANVAS_TARGET_CHANGED', 'Canvas 执行目标已变化；请读取任务状态后显式恢复');
       }
     };
@@ -1410,31 +1321,19 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
       config: pinned,
       getHealth: async (candidate, options) => {
         assertPinned(candidate);
-        if (connectionAdapter) await resolveTarget(taskId, instance, pinned.clientId);
-        return bridgeHealth(pinned, options);
+        return health(pinned, options);
       },
       tool: async (name, input, candidate, options) => {
         assertPinned(candidate);
-        if (connectionAdapter) {
-          await resolveTarget(taskId, instance, pinned.clientId);
-          connectionAdapter.assertToolAllowed?.(name);
-        }
-        const callConfig = connectionAdapter && typeof candidate?.__companyBridgeInstanceId === 'string'
-          ? { ...pinned, __companyBridgeInstanceId: candidate.__companyBridgeInstanceId }
-          : pinned;
-        return canvasTool(name, input, callConfig, options);
+        return callCanvasTool(name, input, pinned, options);
       },
       recover: async (nodeId, destination, candidate, options) => {
         assertPinned(candidate);
         const task = await requireTask(taskId);
-        const snapshot = await canvasTool('canvas_get_state', {}, pinned, options);
+        const snapshot = await callCanvasTool('canvas_get_state', {}, pinned, options);
         const allowed = candidateOutputs(task, snapshot, task.execution.version).some((image) => image.nodeId === nodeId);
         if (!allowed) throw canvasError('ERR_CANVAS_IMAGE_NOT_FOUND', '回收目标不是当前任务生成节点的图片结果');
-        if (!connectionAdapter) return recoverImage(nodeId, destination, pinned, options);
-        const image = await readImageBytes(nodeId, pinned, canvasTool);
-        await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
-        await fs.writeFile(destination, image.buffer, { mode: 0o600, signal: options?.signal });
-        return { nodeId, path: destination, bytes: image.buffer.length, width: image.width, height: image.height };
+        return recoverImage(nodeId, destination, pinned, options);
       },
     };
   }
@@ -1445,11 +1344,6 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
   }
 
   async function stopOne(taskId, item) {
-    if (item.external) {
-      try { await connectionAdapter?.stop?.({ taskId, config: item.config, root: dataRoot }); } catch {}
-      instances.delete(taskId);
-      return;
-    }
     try {
       await fetch(`${item.config.webUrl}/__studio/stop`, { method: 'POST', headers: { 'x-studio-token': item.config.token }, signal: AbortSignal.timeout(1500) });
     } catch {}
@@ -1466,10 +1360,6 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
   async function stop() {
     stopped = true;
     await Promise.allSettled([...starting.values()]);
-    if (connectionAdapter) {
-      await Promise.all([...instances.entries()].map(([taskId, item]) => stopOne(taskId, item)));
-      return;
-    }
     const active = await activeInstances();
     await Promise.all(active.map((item) => stopOne(item.config.projectId, item)));
   }

@@ -788,23 +788,13 @@ function validateMimeFromCandidate(value) {
   return value;
 }
 
-function validateCanvasOpenUrl(value, companyWebUrl = null, companyProjectId = '') {
+function validateCanvasOpenUrl(value) {
   if (typeof value !== 'string' || value.length > 4000) throw error('ERR_CANVAS_OPEN_URL', 'Canvas 没有返回可用的打开链接', 503);
   let parsed;
   try { parsed = new URL(value); } catch { throw error('ERR_CANVAS_OPEN_URL', 'Canvas 打开链接无效', 503); }
-  let companyTarget = false;
-  if (companyWebUrl) {
-    const configured = new URL(companyWebUrl);
-    const route = /^\/canvas(?:\/([^/]+))?\/?$/.exec(parsed.pathname);
-    const targetId = route?.[1] ? decodeURIComponent(route[1]) : parsed.searchParams.get('projectId');
-    companyTarget = configured.protocol === 'https:' && parsed.protocol === 'https:'
-      && parsed.origin === configured.origin && Boolean(route)
-      && (!companyProjectId || targetId === companyProjectId)
-      && [...parsed.searchParams.keys()].every(key => ['projectId', 'mode'].includes(key));
-  }
-  if (!['http:', 'https:'].includes(parsed.protocol) || !(companyWebUrl ? companyTarget : isLoopback(parsed.hostname))
+  if (!['http:', 'https:'].includes(parsed.protocol) || !isLoopback(parsed.hostname)
     || parsed.username || parsed.password || /(?:token|api[_-]?key|bridgeUrl|authorization|secret)=/i.test(`${parsed.search}${parsed.hash}`)) {
-    throw error('ERR_CANVAS_OPEN_URL', 'Canvas 打开链接与已配置目标不一致', 503);
+    throw error('ERR_CANVAS_OPEN_URL', 'Canvas 打开链接不是本机安全地址', 503);
   }
   return value;
 }
@@ -1171,12 +1161,6 @@ export function createStudioServer({
         const saved = await jobs.withMutation('company-config', () => saveCompanyConfig(body, { root: data }));
         return json(response, 200, { config: publicCompanyConfig(saved) });
       }
-    }
-    if (segments[1] === 'company' && segments[2] === 'canvas-check' && segments.length === 3 && method === 'POST') {
-      if (typeof canvas?.diagnose !== 'function') throw error('ERR_COMPANY_CANVAS_UNAVAILABLE', '公司画布连接未就绪', 503);
-      const body = await readJson(request, { optional: true });
-      if (body.taskId) await requireTask(assertUuid(body.taskId));
-      return json(response, 200, await canvas.diagnose({ taskId: body.taskId }));
     }
     if (segments[1] === 'company' && segments[2] === 'search' && segments.length === 3 && method === 'POST') {
       const body = await readJson(request);
@@ -1589,8 +1573,7 @@ export function createStudioServer({
       await requireTask(taskId);
       if (!canvas || typeof canvas.ensure !== 'function') throw error('ERR_CANVAS_UNAVAILABLE', 'Canvas 当前不可用', 503);
       const result = await canvas.ensure(taskId);
-      const company = await readCompanyConfig({ root: data });
-      const openUrl = validateCanvasOpenUrl(result?.openUrl, company.canvas.webUrl || null, company.canvas.webUrl ? taskId : '');
+      const openUrl = validateCanvasOpenUrl(result?.openUrl);
       return json(response, 200, { openUrl, projectId: result.projectId, clientConnected: Boolean(result.clientConnected) });
     }
 

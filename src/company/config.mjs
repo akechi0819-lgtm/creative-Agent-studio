@@ -6,7 +6,6 @@ import { readCompanyDeployment } from './deployment.mjs';
 
 const SECRET_FIELDS = ['teedy.password'];
 const TEEDY_FIELDS = ['baseUrl', 'username', 'password'];
-const CANVAS_FIELDS = ['webUrl'];
 
 function configError(code, message) {
   const error = new Error(message);
@@ -33,7 +32,6 @@ function emptyRecord() {
   return {
     revision: 1,
     teedy: { baseUrl: '', username: '', password: '' },
-    canvas: { webUrl: '' },
   };
 }
 
@@ -84,23 +82,14 @@ function normalizeTeedy(value, code = 'ERR_COMPANY_CONFIG_CORRUPT') {
   return { baseUrl, username, password };
 }
 
-function normalizeCanvas(value, code = 'ERR_COMPANY_CONFIG_CORRUPT') {
-  assertObject(value, 'Canvas 配置', code);
-  if (Object.keys(value).some((key) => !CANVAS_FIELDS.includes(key))) throw configError(code, 'Canvas 配置包含不支持的字段');
-  const webUrl = checkedUrl(value.webUrl ?? '', 'Canvas Web', { protocol: 'https:' });
-  return { webUrl };
-}
-
 function normalizeRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || !Number.isInteger(value.revision) || value.revision < 1
-    || Object.keys(value).some((key) => !['revision', 'teedy', 'canvas'].includes(key))) {
+    || !Number.isInteger(value.revision) || value.revision < 1) {
     throw configError('ERR_COMPANY_CONFIG_CORRUPT', '公司配置文件无效');
   }
   return {
     revision: value.revision,
     teedy: normalizeTeedy(value.teedy),
-    canvas: normalizeCanvas(value.canvas),
   };
 }
 
@@ -144,8 +133,7 @@ export async function readCompanyConfig({ root } = {}) {
   // The saved origin binds the personal password; a newly provisioned origin must never receive the previous service's password.
   return { ...record, deploymentConfigured: deployment.configured,
     teedy: { ...record.teedy, baseUrl: deployment.teedy.baseUrl,
-      password: record.teedy.baseUrl === deployment.teedy.baseUrl ? record.teedy.password : '' },
-    canvas: { webUrl: deployment.canvas.webUrl } };
+      password: record.teedy.baseUrl === deployment.teedy.baseUrl ? record.teedy.password : '' } };
 
 }
 
@@ -158,9 +146,6 @@ export function publicCompanyConfig(record) {
       baseUrl: record.teedy.baseUrl,
       username: record.teedy.username,
       passwordConfigured: Boolean(record.teedy.password),
-    },
-    canvas: {
-      webUrl: record.canvas.webUrl,
     },
   };
 }
@@ -254,7 +239,6 @@ export async function saveCompanyConfig(input, { root } = {}) {
     const next = {
       revision: previous.revision + 1,
       teedy: { ...previous.teedy },
-      canvas: { ...previous.canvas },
     };
     for (const [section, fields] of [['teedy', ['username', 'password']]]) {
       const source = input[section];

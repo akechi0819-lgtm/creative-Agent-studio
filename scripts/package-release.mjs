@@ -467,7 +467,7 @@ async function companyUiFiles(source) {
   const outputs = [];
   for (const relative of ['web/dist', 'third_party/canvas/web/dist', 'third_party/canvas/canvas-agent/dist', 'adapters/dsh/lib']) {
     const files = await collectRegularFiles(source, relative).catch(error => {
-      if (error.code === 'ENOENT') throw new Error(`缺少 Company 前端构建产物：${relative}。请先按 remote profile 构建 UI。`);
+      if (error.code === 'ENOENT') throw new Error(`缺少 Company 前端构建产物：${relative}。请先构建本地 Canvas 与工作台 UI。`);
       throw error;
     });
     outputs.push(...files);
@@ -501,7 +501,6 @@ async function writeCompanyServicesFile(source, stage, servicesPath) {
   const normalized = {
     schemaVersion: deployment.schemaVersion,
     teedy: { baseUrl: deployment.teedy.baseUrl },
-    canvas: { webUrl: deployment.canvas.webUrl },
   };
   const destination = path.join(stage, 'company-services.json');
   await access(destination).then(() => { throw new Error('P5 基础包意外包含公司服务预配文件。'); }, error => { if (error.code !== 'ENOENT') throw error; });
@@ -579,7 +578,7 @@ async function buildCompany(options) {
 Apple 芯片 Mac：双击 Creative Agent Studio Company.app。
 Windows 64 位：双击 Start-Company.vbs。
 
-公司素材库与画布地址已预配。素材检索使用本人的 Teedy 账号密码。对话可选 Kilo 等托管来源，无需个人 API 密钥；选择自用 API 时填写对话服务配置。生图服务与对话独立配置，图片密钥只供生图；无需到远端画布重复配置模型。
+公司素材库地址已预配，画布使用随包提供的本机版本。素材检索使用本人的 Teedy 账号密码。对话可选 Kilo 等托管来源，无需个人 API 密钥；选择自用 API 时填写对话服务配置。生图服务与对话独立配置，图片密钥只供生图。
 Node、程序依赖和界面已经随包准备好。首次启动可能联网准备 Python、OCR／Office 依赖及模型，健康环境直接复用。
 任务和个人配置保存在本机 Creative Agent Studio Company 数据目录。
 包内没有共享账号、密码或模型钥匙。
