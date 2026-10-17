@@ -1512,3 +1512,27 @@ test('changed Canvas invalidates combined delivery approval before a package can
  const result=await f.request(`/api/tasks/${task.id}/approve-and-export`,{method:'POST',json:{expectedRevision:task.revision,version:task.sheetVersion,images:task.execution.pages.map(page=>({page:page.page,sha256:page.image.sha256}))}});
  assert.equal(result.response.status,409);const current=await readTask(task.id,f.root);assert.equal(current.finalApproval,null);assert.equal(current.exports.length,0);
 });
+
+test('natural delivery confirms displayed hashes, exports once, and bypasses agent approval', async t => {
+  let agentCalls = 0;
+  const f = await fixture(t, {canvas:{assertFresh:async()=>{}},agent:{chat:async()=>{agentCalls++;throw new Error('Human delivery must not ask the model to approve');}}});
+  const {task} = await prepareTask(f.root);
+  const payload = {text:'确认交付并下载',requestId:crypto.randomUUID(),expectedRevision:task.revision,displayed:{revision:task.revision,sheetVersion:task.sheetVersion,images:task.execution.pages.map(page=>({page:page.page,sha256:page.image.sha256}))}};
+  const wrongImage = await f.request(`/api/tasks/${task.id}/chat`,{method:'POST',json:{...payload,requestId:crypto.randomUUID(),displayed:{...payload.displayed,images:[{page:1,sha256:'f'.repeat(64)}]}}});
+  assert.equal(wrongImage.response.status,409);
+  assert.equal((await readTask(task.id,f.root)).finalApproval,null);
+  const accepted = await f.request(`/api/tasks/${task.id}/chat`,{method:'POST',json:payload});
+  assert.equal(accepted.response.status,202,JSON.stringify(accepted.data));
+  const job = await waitFor(async()=>{const current=await readJob(f,accepted.data.job.id);return ['succeeded','failed'].includes(current.status)&&current;},'delivery job finishes');
+  assert.equal(job.status,'succeeded',JSON.stringify(job.error));
+  const current = await readTask(task.id,f.root);
+  assert.equal(current.finalApproval.by,'本机用户');
+  assert.equal(current.exports.length,1);
+  assert.equal(agentCalls,0);
+  const downloaded = await f.request(job.result.downloadUrl);
+  assert.equal(downloaded.response.status,200);
+  assert.equal(crypto.createHash('sha256').update(Buffer.from(downloaded.data)).digest('hex'),current.exports[0].archiveSha256);
+  const replay = await f.request(`/api/tasks/${task.id}/chat`,{method:'POST',json:payload});
+  assert.equal(replay.data.job.id,job.id);
+  assert.equal((await readTask(task.id,f.root)).exports.length,1);
+});

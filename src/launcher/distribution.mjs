@@ -58,8 +58,13 @@ const ALLOWED_PREFIXES = Object.freeze([
 ]);
 
 const FORBIDDEN_SOURCE_PATH = /(?:^|\/)(?:\.git|\.p0-state|\.studio-runtime|\.venv-ocr|node_modules|company|browser-profile|evidence)(?:\/|$)/i;
-const FORBIDDEN_BUNDLE_PATH = /(?:^|\/)(?:\.git|\.p0-state|company|browser-profile|evidence|user-data|sessions|\.venv-ocr|rapidocr-models|python-venv-stage|python-venv-backups|python-runtime-state\.json)(?:\/|$)/i;
+const FORBIDDEN_BUNDLE_PATH = /(?:^|\/)(?:\.git|\.p0-state|company|browser-profile|evidence|user-data|\.venv-ocr|rapidocr-models|python-venv-stage|python-venv-backups|python-runtime-state\.json)(?:\/|$)/i;
 const FORBIDDEN_BUNDLE_ROOTS = new Set(['config', 'tasks', 'materials', 'exports', 'history', 'logs']);
+const SESSION_PATH = /(?:^|\/)sessions(?:\/|$)/i;
+const LOCKED_DEPENDENCY_ROOTS = Object.freeze([
+  'node_modules/', 'adapters/dsh/node_modules/',
+  'third_party/canvas/web/node_modules/', 'third_party/canvas/canvas-agent/node_modules/',
+]);
 const NODE_VERSION = '22.23.3';
 const PYTHON_VERSION = '3.12.15';
 
@@ -151,7 +156,12 @@ export async function hashFile(file) {
 function forbiddenBundlePath(relative) {
   const normalized = relative.split(path.sep).join('/');
   const firstStartRuntime = /^(?:\.venv-ocr(?:\/|$)|\.studio-runtime\/(?:python|rapidocr-models)(?:\/|$))/i.test(normalized);
-  return firstStartRuntime || FORBIDDEN_BUNDLE_PATH.test(normalized) || FORBIDDEN_BUNDLE_ROOTS.has(normalized.split('/')[0]);
+  // Locked npm dependency trees contain program paths such as @anthropic-ai/sdk/lib/sessions.
+  // Keep blocking session data everywhere outside those four package-lock-backed install roots.
+  const lockedDependency = LOCKED_DEPENDENCY_ROOTS.some(root => normalized.startsWith(root));
+  const userSessionData = SESSION_PATH.test(normalized) && !lockedDependency;
+  return firstStartRuntime || FORBIDDEN_BUNDLE_PATH.test(normalized) || userSessionData
+    || FORBIDDEN_BUNDLE_ROOTS.has(normalized.split('/')[0]);
 }
 
 async function walkFiles(root, relative = '', files = []) {

@@ -456,8 +456,8 @@ export function Onboarding({
       {step === 4 && <section className="onboarding-panel" aria-labelledby="onboarding-sample-title">
         <div className="onboarding-panel-heading"><span className="onboarding-index">05</span><div><h2 id="onboarding-sample-title">创建示例首任务</h2><p>这会把下面的需求发给已选基础模型，可能消耗其额度；不会自动调用生图。</p></div></div>
         <label className="field-label">示例需求<textarea rows={5} maxLength={5000} value={sampleBrief} onChange={(event) => setSampleBrief(event.target.value)} /></label>
-        <div className="onboarding-sample-flow"><span>模型先澄清需求</span><i>→</i><span>你确认制作单</span><i>→</i><span>你在 Canvas 选择图片模型并执行绘图</span></div>
-        <div className="onboarding-callout"><strong>{companyMode ? '公司版图片模型设置' : '图片生成需要额外确认'}</strong><p>{companyMode ? '创建任务后，在远端 Canvas 里选择图片服务和模型。当前引导不会把本机密钥复制到公司画布。' : 'Canvas 图片模型已在本机配置；实际生成仍须在任务工作流中由你确认制作单后启动。'}</p></div>
+        <div className="onboarding-sample-flow"><span>模型先澄清需求</span>{companyMode ? <><i>→</i><span>你确认制作单</span><i>→</i><span>在远端 Canvas 选择图片模型并执行绘图</span></> : <><i>→</i><span>本机图片 API 已配置；左侧确认方案即可执行绘图</span></>}</div>
+        <div className="onboarding-callout"><strong>{companyMode ? '公司版图片模型设置' : '确认方案后开始绘图'}</strong><p>{companyMode ? '创建任务后，在远端 Canvas 里选择图片服务和模型。当前引导不会把本机密钥复制到公司画布。' : '使用已保存的本机图片 API，左侧确认制作方案即可执行，无需再次到 Canvas 配置模型。'}</p></div>
         <div className="onboarding-actions"><button type="button" className="button outline" onClick={() => { setError(''); setStep(3); }} disabled={creatingSample}>上一步</button><button type="button" className="button primary" onClick={createSample} disabled={creatingSample || !sampleBrief.trim()}>{creatingSample ? '正在创建…' : '创建并提交示例需求'}</button></div>
         <button type="button" className="onboarding-finish-link" onClick={skip} disabled={creatingSample}>完成引导，稍后再创建任务</button>
       </section>}

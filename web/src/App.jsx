@@ -1,3 +1,4 @@
+import { classifyDialogueIntent } from '../../src/web/dialogue.mjs';
 import { WhaleCharacter } from './WhaleCharacter.jsx';
 import { WhaleAvatar } from './WhaleAvatar.jsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -79,6 +80,7 @@ export function App() {
   const selectedTaskRef = useRef(selectedTaskId);
   selectedTaskRef.current = selectedTaskId;
   const [job, setJob] = useState(null);
+  const requestedChatDownloads = useRef(new Set());
   const [pendingChatsByTask, setPendingChatsByTask] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -282,6 +284,14 @@ export function App() {
   }, [job?.id, job?.status, jobBusy, refreshBootstrap, refreshTask, selectedTaskId]);
 
   useEffect(() => {
+    if (job?.status !== 'succeeded' || !job.result?.downloadUrl || !requestedChatDownloads.current.delete(job.id)) return;
+    const download = document.createElement('a');
+    download.href = job.result.downloadUrl;
+    download.download = '';
+    download.click();
+  }, [job]);
+
+  useEffect(() => {
     if (!job?.id || ['succeeded', 'failed', 'cancelled'].includes(job.status)) return undefined;
     let active = true;
     const poll = async () => {
@@ -309,13 +319,14 @@ export function App() {
     return () => { active = false; window.clearInterval(timer); };
   }, [job?.id, job?.status, refreshBootstrap, refreshTask]);
 
-  const run = useCallback(async (operation, { refresh = true, success = '' } = {}) => {
+  const run = useCallback(async (operation, { refresh = true, success = '', downloadResult = false } = {}) => {
     setError('');
     setNotice(''); setNoticeTone('success');
     try {
       const result = await operation();
       const pendingJob = jobFromResponse(result);
       if (pendingJob) {
+        if (downloadResult) requestedChatDownloads.current.add(pendingJob.id);
         setJob(pendingJob);
         setJobBusy(false);
         if (pendingJob.taskId && pendingJob.taskId === selectedTaskId) {
@@ -346,9 +357,9 @@ export function App() {
     }
   }, [refreshBootstrap, refreshTask, selectedTaskId]);
 
-  const startJob = useCallback(async (operation, { success = '' } = {}) => {
+  const startJob = useCallback(async (operation, { success = '', downloadResult = false } = {}) => {
     setJobBusy(true);
-    try { return await run(operation, { refresh: false, success }); }
+    try { return await run(operation, { refresh: false, success, downloadResult }); }
     finally { setJobBusy(false); }
   }, [run]);
 
@@ -432,12 +443,12 @@ export function App() {
         && (!approvalVersion || Number(approvalVersion) === displayed.sheetVersion)
         && !answers
         && !files.length
-        && /^(?:确认|同意)(?:当前)?(?:制作单|方案)(?:v\d+)?(?:并|，)?(?:开始绘图|开始制作|执行|出图)$/iu.test(normalizedApprovalText),
+        && classifyDialogueIntent(instructionText) === 'sheet',
       );
       if (explicitlyApprovesDisplayedSheet) await ensureCanvasConnected(taskId);
       const result = await startJob(
         () => api.chat(taskId, chatText, chatRevision, requestId, { model, displayed, answers, ...(completedSourceId ? { attachmentSourceIds: [completedSourceId] } : {}) }),
-        { refresh: false },
+        { downloadResult: classifyDialogueIntent(instructionText) === 'delivery' },
       );
       setPendingChatsByTask((all) => ({
         ...all,

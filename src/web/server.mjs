@@ -833,6 +833,22 @@ export function createStudioServer({
     return { id, task };
   }
 
+  async function approveAndExport(id, body) {
+    let {task:current}=await currentFreshTask(id,body.expectedRevision,body.version,body.images);
+    const images=(current.execution?.pages || []).map(page=>({page:page.page,sha256:page.image?.sha256}));
+    if(current.sheetVersion!==body.version || current.execution?.status!=='succeeded' || !images.length
+      || JSON.stringify(images)!==JSON.stringify(body.images)) throw error('ERR_FINAL_APPROVAL_STALE','当前成品与展示版本不一致，请查看最新预览。',409);
+    // One explicit human delivery decision covers the displayed set; there is no separate per-page form.
+    for(const image of images) current=await recordReview(id,{...image,decision:'pass',reviewer:'本机用户',notes:'用户在对话中确认当前展示的整套图片用于交付。'},{root:data,expectedRevision:current.revision});
+    current=await approveFinal(id,{version:body.version,images,by:'本机用户',note:'用户在左侧对话明确确认当前展示版本并交付。'},{root:data,expectedRevision:current.revision});
+    await assertFreshOrRollbackApproval(id,current,body.version,images);
+    const result=await exportTask(id,{root:data,expectedRevision:current.revision});
+    try {await currentFreshTask(id,result.task.revision,body.version,images);}
+    catch(freshError){await rollbackExport(id,result.task,result.export);throw freshError;}
+    const assistantMessage = await appendConversation(id,{role:'assistant',text:'当前成品已按你的确认打包，可以下载交付文件。'},data);
+    return {task:result.task,assistantMessage,export:{...result.export,downloadUrl:`/api/tasks/${encodeURIComponent(id)}/exports/${encodeURIComponent(result.export.version)}`}};
+  }
+
   function sameApproval(left, right) {
     return Boolean(left && right
       && left.version === right.version
@@ -1061,19 +1077,8 @@ export function createStudioServer({
         await currentFreshTask(id, body.expectedRevision, current.sheetVersion, [{ page: body.page, sha256: body.sha256 }]);
         task = await recordReview(id, body, opts);
       } else if (action === 'approve-and-export') {
-        let {task:current}=await currentFreshTask(id,body.expectedRevision,body.version,body.images);
-        const images=(current.execution?.pages || []).map(page=>({page:page.page,sha256:page.image?.sha256}));
-        if(current.sheetVersion!==body.version || current.execution?.status!=='succeeded' || !images.length
-          || JSON.stringify(images)!==JSON.stringify(body.images)) throw error('ERR_FINAL_APPROVAL_STALE','当前成品与展示版本不一致，请查看最新预览。',409);
-        // One explicit human delivery decision covers the displayed set; there is no separate per-page form.
-        for(const image of images) current=await recordReview(id,{...image,decision:'pass',reviewer:'本机用户',notes:'用户在对话中确认当前展示的整套图片用于交付。'},{root:data,expectedRevision:current.revision});
-        current=await approveFinal(id,{version:body.version,images,by:'本机用户',note:'用户在左侧对话明确确认当前展示版本并交付。'},{root:data,expectedRevision:current.revision});
-        await assertFreshOrRollbackApproval(id,current,body.version,images);
-        const result=await exportTask(id,{root:data,expectedRevision:current.revision});
-        try {await currentFreshTask(id,result.task.revision,body.version,images);}
-        catch(freshError){await rollbackExport(id,result.task,result.export);throw freshError;}
-        await appendConversation(id,{role:'assistant',text:'当前成品已按你的确认打包，可以下载交付文件。'},data);
-        return {task:publicTask(result.task),export:{...result.export,downloadUrl:`/api/tasks/${encodeURIComponent(id)}/exports/${encodeURIComponent(result.export.version)}`}};
+        const result = await approveAndExport(id, body);
+        return {task:publicTask(result.task),export:result.export};
       } else if (action === 'approve-final') {
         await currentFreshTask(id, body.expectedRevision, body.version, body.images);
         task = await approveFinal(id, body, opts);
@@ -1302,6 +1307,9 @@ export function createStudioServer({
               ...(validatedAnswers ? { answers: validatedAnswers.answers } : {}),
             }, data);
             const conversation = await readConversation(taskId, data);
+            if (humanIntent === 'delivery') {
+              return approveAndExport(taskId, {expectedRevision:currentTask.revision,version:body.displayed.sheetVersion,images:body.displayed.images});
+            }
             if (humanIntent === 'sheet') {
               if (typeof canvas?.executionOptions !== 'function') throw error('ERR_CANVAS_UNAVAILABLE', 'Canvas 当前不可用', 503);
               const options = await canvas.executionOptions(taskId, {target:currentTask.execution?.target});
@@ -1449,7 +1457,7 @@ export function createStudioServer({
             }, data);
             return { assistantMessage, task: result.task || await readTask(taskId, data) };
           },
-          resultView: (result) => ({ text: result.assistantMessage.text, taskRevision: result.task?.revision ?? null }),
+          resultView: (result) => ({ text: result.assistantMessage.text, taskRevision: result.task?.revision ?? null, ...(result.export ? {downloadUrl:result.export.downloadUrl} : {}) }),
         });
         return json(response, 202, { job });
       }

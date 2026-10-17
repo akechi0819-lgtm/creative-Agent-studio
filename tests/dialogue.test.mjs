@@ -9,12 +9,23 @@ import path from 'node:path';
 
 const task={revision:3,sheetVersion:1,sources:[]};
 test('真实明确确认绑定展示版本；含糊或否定不触发',()=>{
- for(const text of ['确认制作单 v1 并开始绘图','同意当前方案并执行'])assert.equal(dialogueIntent(task,{text,displayed:{revision:3,sheetVersion:1}}),'sheet');
- for(const text of ['看起来不错','不要确认制作单并开始绘图','请模型代我批准','确认制作单后再讨论'])assert.equal(dialogueIntent(task,{text,displayed:{revision:3,sheetVersion:1}}),null);
+ for(const text of ['确认制作单 v1 并开始绘图','同意当前方案并执行','就按当前这版方案开始制作吧','请按这一版制作方案开始出图','请按这个方案做吧','确认当前方案，并开始制作','这版方案可以开始制作了'])assert.equal(dialogueIntent(task,{text,displayed:{revision:3,sheetVersion:1}}),'sheet');
+ for(const text of ['看起来不错','不要确认制作单并开始绘图','请模型代我批准','确认制作单后再讨论','就按当前这版方案开始制作吗','先别按当前这版方案开始制作','如果没问题就按当前方案制作','确认交付并下载？','不要确认交付并下载','确认交付并下载，先改标题','请模型确认交付并下载'])assert.equal(dialogueIntent(task,{text,displayed:{revision:3,sheetVersion:1}}),null);
  assert.throws(()=>dialogueIntent(task,{text:'确认制作单并开始绘图',displayed:{revision:2,sheetVersion:1}}),{code:'ERR_DIALOGUE_STALE'});
+ assert.throws(()=>dialogueIntent(task,{text:'确认制作单 v 2 并开始绘图',displayed:{revision:3,sheetVersion:1}}),{code:'ERR_DIALOGUE_STALE'});
  assert.throws(()=>dialogueIntent(task,{text:'确认制作单 v2 并开始绘图',displayed:{revision:3,sheetVersion:1}}),{code:'ERR_DIALOGUE_STALE'});
  assert.throws(()=>dialogueIntent(task,{text:'确认制作单并开始绘图'}),{code:'ERR_DIALOGUE_STALE'});
 });
+test('成品自然确认仅批准实际展示的完整图片版本与哈希',()=>{
+ const sha256='a'.repeat(64);
+ const complete={...task,sheets:[{version:1,pages:[{page:1}]}],execution:{version:1,status:'succeeded',pages:[{page:1,status:'succeeded',image:{sha256}}]}};
+ const displayed={revision:3,sheetVersion:1,images:[{page:1,sha256}]};
+ for(const text of ['确认交付并下载','请同意当前成品并打包下载','就按这版成品交付并下载吧','这版成品可以交付了']) assert.equal(dialogueIntent(complete,{text,displayed}),'delivery');
+ for(const changed of [undefined,{...displayed,revision:2},{...displayed,sheetVersion:2},{...displayed,images:[]},{...displayed,images:[{page:1,sha256:'b'.repeat(64)}]}]) assert.throws(()=>dialogueIntent(complete,{text:'确认交付并下载',displayed:changed}),{code:'ERR_DIALOGUE_STALE'});
+ assert.throws(()=>dialogueIntent({...complete,execution:{...complete.execution,status:'running'}},{text:'确认交付并下载',displayed}),{code:'ERR_DIALOGUE_STALE'});
+ assert.throws(()=>dialogueIntent(complete,{text:'确认当前成品 v2 并交付',displayed}),{code:'ERR_DIALOGUE_STALE'});
+});
+
 test('参考方案只能使用当前全部来源，不能伪造新事实',()=>{
  const current={sources:[{id:'one',factBoundary:'不引用品牌'}]};
  assert.deepEqual(referenceProposal(current,[{id:'one',decision:'retained',purpose:'仅风格'}]),[{kind:'existing',id:'one',decision:'retained',purpose:'仅风格',factBoundary:'不引用品牌'}]);

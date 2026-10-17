@@ -139,6 +139,22 @@ test('manifest refuses user-data Python environments and downloaded OCR model ca
   }
 });
 
+test('manifest accepts locked SDK session code while still rejecting user session data', async t => {
+  const root = await temporaryDirectory();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sdkFile = 'adapters/dsh/node_modules/@anthropic-ai/sdk/lib/sessions/accumulate.d.mts';
+  const userSession = 'web/dsh/sessions/current.json';
+  await mkdir(path.dirname(path.join(root, sdkFile)), { recursive: true });
+  await writeFile(path.join(root, sdkFile), 'export interface Accumulate {}\n');
+  await mkdir(path.dirname(path.join(root, userSession)), { recursive: true });
+  await writeFile(path.join(root, userSession), '{"messages":[]}\n');
+
+  await assert.rejects(writeBundleManifest(root, 'darwin-arm64', 'v1'), /不允许进入 Release 的路径：web\/dsh\/sessions\/current\.json/);
+  await rm(path.join(root, 'web/dsh'), { recursive: true, force: true });
+  const manifest = await writeBundleManifest(root, 'darwin-arm64', 'v1');
+  assert.ok(manifest.files.some(file => file.path === sdkFile));
+});
+
 test('compiled macOS launcher points to the native bundled Node path without opening its GUI', async t => {
   if (process.platform !== 'darwin') return t.skip('osacompile is available only on macOS runners.');
   const fixture = await temporaryDirectory();

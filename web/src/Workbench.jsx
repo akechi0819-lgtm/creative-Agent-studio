@@ -137,6 +137,7 @@ export function Workbench({
       revision: task.revision,
       sheetVersion: task.sheetVersion,
       referenceProposalId: latestProposalId,
+      ...(canDeliver ? {images:deliveryImages} : {}),
     });
   }
 

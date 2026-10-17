@@ -224,7 +224,7 @@ export function createWorkspaceToolDefinitions(options) {
       {
         language: { type: 'string', enum: ['python', 'javascript'], required: true, description: '脚本语言' },
         code: { type: 'string', required: true, description: '脚本源代码，最多 32000 字符' },
-        timeoutSeconds: { type: 'integer', description: '超时秒数，默认 10，范围 1–30' },
+        timeoutSeconds: { type: 'integer', description: '超时秒数，默认 30，范围 1–30' },
       },
       async ({ language, code, timeoutSeconds }, signal) => {
         const run = () => runWorkspaceScript({

@@ -22,6 +22,9 @@ candidateAsset=await cleanAsset(candidateAsset.id,{root,expectedRevision:candida
 candidateAsset=await confirmAsset(candidateAsset.id,{by:'隔离测试用户',note:'仅为浏览器回归冻结山景原件与摘要'},{root,expectedRevision:candidateAsset.revision});
 let referenceTask=await createTask({title:'P5 隔离素材候选示例',brief:'隔离浏览器回归：讨论并确认一份冻结山景素材'},root);
 referenceTask=await setAssetSources(referenceTask.id,[{assetId:candidateAsset.id,assetRevision:candidateAsset.revision,decision:'pending',purpose:'等待讨论的候选用途',factBoundary:'仅作视觉参考，不将历史内容作为当前事实'}],{root,expectedRevision:referenceTask.revision});
+let naturalTask=await createTask({title:'P5 自然语言确认隔离示例',brief:{content:'同类单页方案的宿主自然语言确认回归，不请求真实模型。'}},root);
+naturalTask=await confirmInputs(naturalTask.id,{revision:naturalTask.revision,by:'测试用户',note:'隔离自然语言确认回归'},{root});
+naturalTask=await setSheet(naturalTask.id,{title:'自然语言确认隔离方案',pages:[{page:1,copy:'确认路径样张标题',prompt:'隔离浏览器回归图片，不调用生图 API',size:'3:4'}]},{root,expectedRevision:naturalTask.revision,inputRevision:naturalTask.inputConfirmation.revision});
 const image=await readFile(path.join(repo,'docs/evidence/p0/gpt-image-2.png'));let nodes=[],connections=[],runs=0;
 const canvas={state:async()=>({status:'connected',projectId:'fixture',clientConnected:true}),ensure:async()=>({openUrl:'http://127.0.0.1:1',projectId:'fixture',clientConnected:true}),assertFresh:async()=>{},executionOptions:async()=>({config:{projectId:'fixture',webUrl:'http://fixture',clientId:'fixture'},getHealth:async()=>({targets:[{hasCanvas:true,projectId:'fixture',clientId:'fixture'}]}),tool:async(name,input)=>{
  if(name==='canvas_get_state')return {nodes,connections};
@@ -29,11 +32,12 @@ const canvas={state:async()=>({status:'connected',projectId:'fixture',clientConn
  if(name==='canvas_run_generation'){runs++;const out={id:`image-${runs}`,type:'image',metadata:{status:'success'}};nodes.push(out);connections.push({fromNodeId:input.nodeId,toNodeId:out.id});return {};}
  throw new Error(name);
 },recover:async(nodeId,file)=>{await mkdir(path.dirname(file),{recursive:true});await writeFile(file,image);return {path:file,nodeId};}})};
-const app=await listenStudioServer({root,staticDir,canvas,agent:{chat:async({taskId,onEvent})=>{const current=await readTask(taskId,root);if(taskId===referenceTask.id&&!current.inputConfirmation)await onEvent({type:'reference-proposal',items:current.sources.map(source=>({id:source.id,decision:'retained',purpose:'参考山景留白与主标题层级'}))});return {text:'隔离测试响应'};},check:async()=>({text:true,tools:true,vision:false})}});
+let naturalAgentCalls=0;
+const app=await listenStudioServer({root,staticDir,canvas,agent:{chat:async({taskId,onEvent})=>{const current=await readTask(taskId,root);if(taskId===referenceTask.id&&!current.inputConfirmation)await onEvent({type:'reference-proposal',items:current.sources.map(source=>({id:source.id,decision:'retained',purpose:'参考山景留白与主标题层级'}))});if(taskId===naturalTask.id)naturalAgentCalls+=1;return {text:'隔离测试普通对话响应，不含任何批准'};},check:async()=>({text:true,tools:true,vision:false})}});
 const url=`http://127.0.0.1:${app.address.port}`;const browser=await chromium.launch();const errors=[];let page;
 try{
- page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',e=>errors.push(e.message));
- await page.addInitScript(id=>localStorage.setItem('studio.activeTask',id),task.id);await page.goto(url);await page.getByRole('heading',{name:'P5 样张方案'}).waitFor();
+ page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',e=>errors.push(e.message));let downloadCount=0;page.on('download',()=>{downloadCount+=1;});
+ await page.addInitScript(id=>{if(!localStorage.getItem('studio.activeTask'))localStorage.setItem('studio.activeTask',id);},task.id);await page.goto(url);await page.getByRole('heading',{name:'P5 样张方案'}).waitFor();
  const left=page.getByRole('region',{name:'创作对话'}); // section with accessible name is region
  const right=page.getByRole('region',{name:'当前任务预览'});
  assert.equal(await right.getByRole('button',{name:/确认.*开始绘图/}).count(),0);
@@ -44,7 +48,7 @@ try{
  assert.equal(await page.getByRole('button',{name:/复审本页|审核通过|制作单|成品审核/}).count(),0);
  const downloadEvent=page.waitForEvent('download');
  await left.getByRole('button',{name:'确认交付并下载',exact:true}).click();
- const download=await downloadEvent;assert.equal(await download.failure(),null);
+ const download=await downloadEvent;assert.equal(await download.failure(),null);assert.equal(downloadCount,1,'按钮交付只应自动下载一次');
  await right.getByRole('link',{name:'下载素材包',exact:true}).waitFor();
  await page.setViewportSize({width:1280,height:800});await page.screenshot({path:path.join(evidence,'workbench-desktop-1280.png'),fullPage:true});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
@@ -78,11 +82,29 @@ try{
  await page.getByRole('button',{name:'请求停止'}).waitFor({state:'detached',timeout:15000});
  await page.getByRole('heading',{name:'P5 隔离素材候选示例'}).waitFor();assert.equal((await candidateCard.locator('.source-preview-status').textContent()).trim(),'已保留');
  await page.screenshot({path:path.join(evidence,'reference-candidates-confirmed.png'),fullPage:true});
+ await page.getByRole('button',{name:/P5 自然语言确认隔离示例/}).click();await page.getByRole('heading',{name:'P5 自然语言确认隔离示例'}).waitFor();
+ await page.locator('#chat-message').fill('就按当前这版方案开始制作吧');await page.getByRole('button',{name:'发送消息',exact:true}).click();
+ await left.getByRole('button',{name:'确认交付并下载',exact:true}).waitFor({timeout:30000});
+ let naturalDone;for(let i=0;i<100;i++){naturalDone=await readTask(naturalTask.id,root);if(naturalDone.execution?.status==='succeeded')break;await new Promise(resolve=>setTimeout(resolve,100));}
+ assert.equal(naturalDone.sheetConfirmation?.version,1);assert.equal(naturalDone.execution?.status,'succeeded');assert.equal(runs,2);assert.equal(naturalAgentCalls,0,'宿主明确确认路径不得委托普通 Agent 对话判断批准');
+ const naturalImage=right.locator('img[alt="第 1 页当前图片"]');await naturalImage.waitFor();
+ const naturalImageMetrics=await naturalImage.evaluate(img=>({complete:img.complete,naturalWidth:img.naturalWidth,naturalHeight:img.naturalHeight,width:img.getBoundingClientRect().width,height:img.getBoundingClientRect().height}));
+ assert.ok(naturalImageMetrics.complete&&naturalImageMetrics.naturalWidth>0&&naturalImageMetrics.naturalHeight>0,'自然确认绘图后当前图片应完整加载');
+ assert.ok(Math.abs(naturalImageMetrics.width/naturalImageMetrics.height-naturalImageMetrics.naturalWidth/naturalImageMetrics.naturalHeight)<0.02,'右侧当前图片应按原始宽高比完整显示');
+ await page.screenshot({path:path.join(evidence,'natural-confirm-current-image.png'),fullPage:true});
+ const naturalDeliveryDownloadEvent=page.waitForEvent('download',{timeout:30000});
+ await page.locator('#chat-message').fill('确认交付并下载');await page.getByRole('button',{name:'发送消息',exact:true}).click();
+ const naturalDeliveryDownload=await naturalDeliveryDownloadEvent;assert.equal(await naturalDeliveryDownload.failure(),null);assert.equal(downloadCount,2,'自然语言交付应触发一次 ZIP 下载');
+ await right.getByRole('link',{name:'下载素材包',exact:true}).waitFor();
+ assert.equal(await left.getByRole('button',{name:'确认交付并下载',exact:true}).count(),0,'自然语言交付后不应再要求点击确认按钮');
+ const naturalExport=await readTask(naturalTask.id,root);assert.ok(naturalExport.finalApproval);assert.equal(naturalExport.exports.length,1);
+ await page.reload();await page.getByRole('heading',{name:'P5 自然语言确认隔离示例'}).waitFor();await right.getByRole('link',{name:'下载素材包',exact:true}).waitFor();
+ await page.waitForTimeout(500);assert.equal(downloadCount,2,'刷新已确认交付的任务不得再次自动下载');
  await page.getByRole('button',{name:'模型与服务设置',exact:true}).click();await page.getByRole('button',{name:'重新打开首次引导'}).click();
  await page.getByRole('heading',{name:/服务商|模型|开始|设置/}).first().waitFor();await page.screenshot({path:path.join(evidence,'onboarding-wide.png'),fullPage:true});
  await page.setViewportSize({width:1280,height:800});await page.screenshot({path:path.join(evidence,'onboarding-desktop-1280.png'),fullPage:true});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
  assert.deepEqual(errors,[]);
- await writeFile(path.join(evidence,'browser.json'),JSON.stringify({status:'passed',checks:['已有效配置直接进工作台','左侧一次确认并执行','右侧无重复确认','1440与1280桌面视口无横溢出','预览折叠与展开','一次确认交付下载','无逐页复审表单','首次引导可重开','冻结山景原件显示为编号 1 的真实候选缩略图','提案显示拟保留且优先显示最新用途','人工确认后候选状态显示已保留','自然语言参考方案在左侧一次应用并继续'],runs,errors},null,2));
+ await writeFile(path.join(evidence,'browser.json'),JSON.stringify({status:'passed',checks:['已有效配置直接进工作台','左侧按钮一次确认并执行','右侧无重复确认','1440与1280桌面视口无横溢出','预览折叠与展开','按钮一次确认交付下载','自然语言明确确认由宿主执行且不调用普通 Agent 对话','自然确认后当前图片完整显示','自然语言交付自动下载 ZIP 并显示重下链接','刷新后不重复自动下载','无逐页复审表单','首次引导可重开','冻结山景原件显示为编号 1 的真实候选缩略图','提案显示拟保留且优先显示最新用途','人工确认后候选状态显示已保留','自然语言参考方案在左侧一次应用并继续'],runs,downloads:downloadCount,errors},null,2));
  console.log('P5 browser passed; image generation is a local controlled fixture.');
 }finally{await page?.context().close();await browser.close();await app.close();await rm(root,{recursive:true,force:true});}
