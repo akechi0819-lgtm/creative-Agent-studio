@@ -206,4 +206,5 @@ test('archive Office smoke keeps shared conversion and surfaces native error dia
   assert.match(source, /convertWorkspaceDocument\(\{ workspaceRoot/);
   assert.match(source, /Native LibreOfficeKit diagnostic:/);
   assert.match(source, /diagnosticConverter\.convert\(\{ inputPath, outputPath: diagnosticOutputPath \}\)/);
+  assert.match(source, /const \{ ensureLibreOfficeKitWindowsPathFix \} = await import\(pathToFileURL\(path\.join\(stage, 'src\/launcher\/prepare\.mjs'\)\)\.href\);\s+await ensureLibreOfficeKitWindowsPathFix\(stage\)/);
 });

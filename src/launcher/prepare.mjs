@@ -11,6 +11,9 @@ import { buildTargets, captureBuildInputs, inspectBuildOutputs, canAdoptBuild } 
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const npmTargets = ['.', 'third_party/canvas/canvas-agent', 'third_party/canvas/web', 'adapters/dsh'];
+const libreOfficeKitEntrypoints = ['lib/index.js', 'lib/cli.js'];
+const libreOfficeKitPathGuard = 'if (process.platform !== "win32" || engine.executable.length < 260 && engine.programDirectory.length < 260) return run(engine);';
+const libreOfficeKitWindowsPathGuard = 'if (process.platform !== "win32") return run(engine);';
 
 function resolveNpmCli(nodePath) {
   const executableDirs = new Set([path.dirname(nodePath), path.dirname(process.execPath)]);
@@ -64,6 +67,30 @@ function runNpm(nodePath, npmCli, args, cwd, env) {
   if (result.status !== 0) {
     throw new Error(`npm 命令失败（退出码 ${result.status ?? 1}）：${args.join(' ')}`);
   }
+}
+
+/** Keep LibreOfficeKit's existing profile-owned junction active on Windows, whose resources can exceed MAX_PATH even when its executable does not. */
+export async function ensureLibreOfficeKitWindowsPathFix(root, {platform = process.platform, beforeChange = async () => {}} = {}) {
+  if (platform !== 'win32') return false;
+  const packageRoot = path.join(root, 'adapters/dsh/node_modules/@deepseek-ai/libreoffice-kit');
+  const packageJson = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  if (packageJson.name !== '@deepseek-ai/libreoffice-kit' || packageJson.version !== '0.1.5') {
+    throw new Error('Windows LibreOfficeKit 长路径修正只支持已核对的 @deepseek-ai/libreoffice-kit@0.1.5。');
+  }
+  const replacements = [];
+  for (const entrypoint of libreOfficeKitEntrypoints) {
+    const file = path.join(packageRoot, entrypoint);
+    const source = await readFile(file, 'utf8');
+    if (source.includes(libreOfficeKitWindowsPathGuard)) continue;
+    if (!source.includes(libreOfficeKitPathGuard)) {
+      throw new Error(`Windows LibreOfficeKit 长路径修正无法识别固定 0.1.5 源码：${entrypoint}`);
+    }
+    replacements.push([file, source.replace(libreOfficeKitPathGuard, libreOfficeKitWindowsPathGuard)]);
+  }
+  if (!replacements.length) return false;
+  await beforeChange();
+  for (const [file, source] of replacements) await writeFile(file, source, 'utf8');
+  return true;
 }
 
 async function writeState(statePath, state) {
@@ -222,6 +249,12 @@ export async function prepareWorkspace({
       } else {
         actions.dependenciesReused.push(target);
         onProgress({phase: 'reuse', target, message: `验证并复用固定依赖：${target}`});
+      }
+      if (target === 'adapters/dsh' && await ensureLibreOfficeKitWindowsPathFix(root, {
+        platform: operations.platform ?? process.platform,
+        beforeChange: ensureOffline,
+      })) {
+        onProgress({phase: 'repair', target, message: '修正 LibreOfficeKit Windows 原生资源长路径启动。'});
       }
       state.dependencies[target] = {status: 'ready', fingerprint: input, verifiedAt: new Date().toISOString()};
       activeStep = null;

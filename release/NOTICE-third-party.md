@@ -6,7 +6,7 @@
 
 - `@deepseek-ai/libreoffice-kit@0.1.5` 与对应原生 `@deepseek-ai/libreoffice-kit-<平台>@0.1.5` 声明 MPL-2.0。保留包内 `LICENSE`、`NOTICE`、原生包 `licenses/LibreOffice-MPL-2.0.txt`、`licenses/LibreOffice-third-party.html`，以及嵌入式 LibreOffice 的 `program/LibreOfficeDev.app/Contents/Resources/LICENSE` 和 `NOTICE`（这些在归档内原路径）。
 - 上游源代码入口：[DeepSeek LibreOffice Kit](https://github.com/deepseek-ai/dsh-libreoffice-kit)，具体 npm 版本为 0.1.5。静态 MPL 文本另见 `release/licenses/MPL-2.0.txt`。
-- 本项目不修改上述上游包。若将来修改 MPL 覆盖代码，必须随正式分发提供对应修改的源代码；打包器不会替代这一义务。
+- Windows 依赖准备会对固定 `@deepseek-ai/libreoffice-kit@0.1.5` 的 `lib/index.js` 与 `lib/cli.js` 应用精确校验补丁：始终启用上游已有的独立 profile 短路径机制，避免深层安装目录追加资源路径后无法加载。修改后的可读 JavaScript 源码随包保留在上述文件原路径；补丁实现位于随项目源码及运行包提供的 `src/launcher/prepare.mjs`。原生引擎二进制不修改，原始 MPL 文本、版权与 NOTICE 继续保留。
 - 若生产依赖清理后仍包含 `lightningcss@1.32.0`，其自身 `LICENSE` 也随包保留；其为前端构建依赖，通常在 `npm prune --omit=dev` 后不会进入运行包。
 
 ## LGPL-3.0-or-later：sharp/libvips

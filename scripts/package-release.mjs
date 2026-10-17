@@ -574,6 +574,8 @@ async function build(options) {
       if (!npmCli) throw new Error('随包 Node.js 的 npm CLI 未找到，无法裁剪开发依赖。');
       run(nodePath, [npmCli, 'prune', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: targetRoot, env });
     }
+    const { ensureLibreOfficeKitWindowsPathFix } = await import(pathToFileURL(path.join(stage, 'src/launcher/prepare.mjs')).href);
+    await ensureLibreOfficeKitWindowsPathFix(stage);
     await packageNodeRuntime(nodePath, stage);
     await writeLicenseInventory(stage, target, nodePath);
     if (target.platform === 'darwin') await makeMacApp(stage, target);

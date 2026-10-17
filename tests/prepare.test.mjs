@@ -23,6 +23,14 @@ async function installGroup(base) {
   await put(base,'node_modules/fixture-dependency/package.json',JSON.stringify({name:'fixture-dependency',version,main:'index.js'}));
   await put(base,'node_modules/fixture-dependency/index.js','module.exports = true;');
 }
+const libreOfficeKitOriginalGuard='if (process.platform !== "win32" || engine.executable.length < 260 && engine.programDirectory.length < 260) return run(engine);';
+async function installLibreOfficeKitFixture(root,version='0.1.5') {
+  const base=path.join(root,'adapters/dsh/node_modules/@deepseek-ai/libreoffice-kit');
+  await put(root,'adapters/dsh/node_modules/@deepseek-ai/libreoffice-kit/package.json',JSON.stringify({name:'@deepseek-ai/libreoffice-kit',version}));
+  const source=`async function withNativeEngine(engine, profile, run) {\n\t${libreOfficeKitOriginalGuard}\n\tconst root = join(profile, "engine");\n\tawait symlink(engine.root, root, "junction");\n}\n`;
+  await put(base,'lib/index.js',source);
+  await put(base,'lib/cli.js',source);
+}
 async function emitBuild(root,target) {
   const files=new Set(target.output.requiredFiles);
   if(target.output.htmlEntry) {
@@ -43,6 +51,7 @@ async function fixture(t,{installed=true,outputs=true}={}) {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'studio-prepare-'));
   t.after(()=>fs.rm(root,{recursive:true,force:true}));
   for(const group of groups) await packageGroup(root,group,'1.0.0',installed);
+  await installLibreOfficeKitFixture(root);
   for(const target of buildTargets) {
     for(const file of target.inputFiles) {
       if(!file.endsWith('package.json')&&!file.endsWith('package-lock.json')) await put(root,file,'// fixture build input');
@@ -124,6 +133,35 @@ test('a Node patch metadata change does not reinstall or rebuild working compone
   const f=await fixture(t);await f.run();const file=path.join(f.root,'.studio-runtime/prepare-state.json');
   const state=JSON.parse(await fs.readFile(file,'utf8'));state.nodeVersion='22.0.0';await fs.writeFile(file,JSON.stringify(state));await f.run();
   assert.deepEqual(f.installs,[]);assert.deepEqual(f.builds,[]);
+});
+test('Windows LibreOfficeKit path fix repairs healthy dependency reuse and preserves its profile junction',async t=>{
+  const f=await fixture(t);f.operations.platform='win32';const before=[...f.installs];
+  await f.run();
+  const packageRoot=path.join(f.root,'adapters/dsh/node_modules/@deepseek-ai/libreoffice-kit');
+  for(const entrypoint of ['lib/index.js','lib/cli.js']) {
+    const source=await fs.readFile(path.join(packageRoot,entrypoint),'utf8');
+    assert.match(source,/if \(process\.platform !== "win32"\) return run\(engine\);/);
+    assert.doesNotMatch(source,/engine\.executable\.length < 260/);
+    assert.match(source,/const root = join\(profile, "engine"\)/);
+  }
+  assert.deepEqual(f.installs,before);
+  await f.run();
+  assert.deepEqual(f.installs,before);
+});
+test('Windows LibreOfficeKit path fix fails closed when the pinned SDK version changes',async t=>{
+  const f=await fixture(t);f.operations.platform='win32';
+  await installLibreOfficeKitFixture(f.root,'0.1.6');
+  await assert.rejects(f.run(),/只支持已核对的 @deepseek-ai\/libreoffice-kit@0\.1\.5/);
+});
+test('Windows LibreOfficeKit path fix rejects unknown pinned source without partially changing the first entrypoint',async t=>{
+  const f=await fixture(t);f.operations.platform='win32';
+  const packageRoot=path.join(f.root,'adapters/dsh/node_modules/@deepseek-ai/libreoffice-kit');
+  const indexPath=path.join(packageRoot,'lib/index.js');
+  const cliPath=path.join(packageRoot,'lib/cli.js');
+  const originalIndex=await fs.readFile(indexPath,'utf8');
+  await fs.writeFile(cliPath,'async function withNativeEngine() { return run(engine); }\n');
+  await assert.rejects(f.run(),/无法识别固定 0\.1\.5 源码：lib\/cli\.js/);
+  assert.equal(await fs.readFile(indexPath,'utf8'),originalIndex);
 });
 test('unrelated edits during a build do not invalidate it, while edits to its own inputs prevent a false ready stamp',async t=>{
   const f=await fixture(t);await f.run();await put(f.root,'web/src/main.js','export const ui=3;');
