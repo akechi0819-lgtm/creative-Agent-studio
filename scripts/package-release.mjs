@@ -13,6 +13,7 @@ import {
   hashFile, materializeBundleSymlinks, normalizeTargetId, pathWithin, pruneBuildState,
   trackedFiles, writeBundleManifest,
 } from '../src/launcher/distribution.mjs';
+import { assembleMacApp, resolveRuntimeRoot, sealMacAppBundle, verifyMacAppBundle, verifyMacAppSeal } from '../src/launcher/macos-bundle.mjs';
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NODE_VERSION = '22.23.3';
@@ -264,27 +265,6 @@ async function writeLicenseInventory(stage, target, nodePath) {
   return inventory;
 }
 
-async function makeMacApp(stage, target, { profile = 'general' } = {}) {
-  const productName = profile === 'company' ? 'Creative Agent Studio Company' : 'Creative Agent Studio';
-  const bundle = path.join(stage, `${productName}.app`);
-  if (profile === 'company') await rm(path.join(stage, 'Creative Agent Studio.app'), { recursive: true, force: true });
-  const sourcePath = path.join(stage, 'release/macos-launcher.applescript');
-  let source = await readFile(sourcePath, 'utf8');
-  if (profile === 'company') source = source.replaceAll('Creative Agent Studio', productName);
-  const marker = '__NODE_DIRECTORY__';
-  if (!source.includes(marker)) throw new Error('macOS 启动脚本缺少 Node 目录占位符。');
-  const nodeDirectoryName = path.posix.basename(path.posix.dirname(path.posix.dirname(target.nodeRelative)));
-  const compiledSource = path.join(stage, '.studio-runtime', 'macos-launcher.applescript');
-  await writeFile(compiledSource, source.replaceAll(marker, nodeDirectoryName), { flag: 'wx' });
-  run('osacompile', ['-o', bundle, compiledSource]);
-  const compiledScript = path.join(bundle, 'Contents/Resources/Scripts/main.scpt');
-  const decompiled = execFileSync('osadecompile', [compiledScript], { encoding: 'utf8' });
-  if (!decompiled.includes(nodeDirectoryName) || decompiled.includes(marker)) {
-    throw new Error('编译后的 macOS 图形启动器没有指向本平台随包 Node。');
-  }
-  await rm(compiledSource, { force: true });
-}
-
 async function makeWindowsEntry(stage, { profile = 'general' } = {}) {
   if (profile === 'company') {
     await rm(path.join(stage, 'Start.vbs'), { force: true });
@@ -309,6 +289,7 @@ async function relocatedRuntimeSmoke(stage, target, { profile = 'general' } = {}
   const env = {
     ...environmentWithoutSystemPython(stage, nodePath),
     STUDIO_DATA_DIR: dataRoot,
+    UV_CACHE_DIR: path.join(dataRoot, 'uv-cache'),
     STUDIO_RELEASE_NO_OPEN: '1',
   };
   const launcherPath = path.join(stage, 'release/launcher.mjs');
@@ -530,22 +511,28 @@ async function writeCompanyServicesFile(source, stage, servicesPath) {
 async function verifyCompanyArchive(archivePath, extractionRoot, rootName, target) {
   await extractArchive(archivePath, extractionRoot, target);
   const extracted = path.join(extractionRoot, rootName);
-  const manifestPath = path.join(extracted, 'release-manifest.json');
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const runtimeRoot = resolveRuntimeRoot(extracted, target, { profile: 'company' });
+  if (target.platform === 'darwin') {
+    const appName = 'Creative Agent Studio Company.app';
+    const entries = await readdir(extracted);
+    if (entries.length !== 1 || entries[0] !== appName) throw new Error('公司 Mac ZIP 只能包含自包含的公司 app。');
+    await verifyMacAppBundle(path.join(extracted, appName), target, { profile: 'company' });
+    verifyMacAppSeal(path.join(extracted, appName));
+  }
+  const manifest = JSON.parse(await readFile(path.join(runtimeRoot, 'release-manifest.json'), 'utf8'));
   if (manifest.profile !== 'company' || manifest.product !== 'Creative Agent Studio Company'
-    || manifest.target !== target.id || manifest.pythonRuntime?.bundled !== false) {
-    throw new Error('Company 归档 manifest 与产品或平台不符。');
-  }
+    || manifest.target !== target.id || manifest.pythonRuntime?.bundled !== false) throw new Error('Company 归档 manifest 与产品或平台不符。');
   for (const file of manifest.files) {
-    const absolute = path.join(extracted, file.path);
-    await access(absolute);
-    if (await hashFile(absolute) !== file.sha256) throw new Error(`Company 归档 manifest 哈希不符：${file.path}`);
+    const absolute = path.join(runtimeRoot, file.path);
+    if (!pathWithin(runtimeRoot, absolute)) throw new Error('Company manifest 路径越界。');
+    const info = await lstat(absolute);
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== file.size || await hashFile(absolute) !== file.sha256) throw new Error(`Company 归档 manifest 大小或哈希不符：${file.path}`);
   }
-  await access(path.join(extracted, 'company-services.json'));
-  await access(path.join(extracted, 'src/company/risk-lexicon.json'));
-  if (target.platform === 'darwin') await access(path.join(extracted, 'Creative Agent Studio Company.app'));
-  else await access(path.join(extracted, 'Start-Company.vbs'));
-  await relocatedRuntimeSmoke(extracted, target, { profile: 'company' });
+  await access(path.join(runtimeRoot, 'company-services.json'));
+  await access(path.join(runtimeRoot, 'src/company/risk-lexicon.json'));
+  if (target.platform === 'win32') await access(path.join(runtimeRoot, 'Start-Company.vbs'));
+  await relocatedRuntimeSmoke(runtimeRoot, target, { profile: 'company' });
+  if (target.platform === 'darwin') verifyMacAppSeal(path.join(extracted, 'Creative Agent Studio Company.app'));
 }
 
 async function buildCompany(options) {
@@ -598,15 +585,18 @@ Node、程序依赖和界面已经随包准备好。首次启动可能联网准�
 包内没有共享账号、密码或模型钥匙。
 `, 'utf8');
     await writeCompanyLicenseInventory(stage);
-    if (target.platform === 'darwin') await makeMacApp(stage, target, { profile: 'company' });
-    else await makeWindowsEntry(stage, { profile: 'company' });
+    if (target.platform === 'win32') await makeWindowsEntry(stage, { profile: 'company' });
+    else await rm(path.join(stage, 'Creative Agent Studio.app'), { recursive: true, force: true });
     await rm(path.join(stage, 'release-manifest.json'), { force: true });
     await materializeBundleSymlinks(stage);
+    if (target.platform === 'darwin') await assembleMacApp(stage, target, { profile: 'company' });
     relocatedRoot = await realpath(await mkdtemp(path.join(parent, 'relocated-')));
     const relocatedStage = path.join(relocatedRoot, rootName);
     await rename(stage, relocatedStage);
     stage = relocatedStage;
-    const manifest = await writeBundleManifest(stage, targetId, options.version, { profile: 'company' });
+    const runtimeRoot = resolveRuntimeRoot(stage, target, { profile: 'company' });
+    const manifest = await writeBundleManifest(runtimeRoot, targetId, options.version, { profile: 'company' });
+    if (target.platform === 'darwin') sealMacAppBundle(path.join(stage, 'Creative Agent Studio Company.app'));
     await mkdir(outputRoot, { recursive: true });
     const filename = companyArchiveName(options.version, targetId);
     const archivePath = path.join(outputRoot, filename);
@@ -712,12 +702,29 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 async function verifyArchiveAfterExtraction(archivePath, extractionRoot, rootName, target) {
   await extractArchive(archivePath, extractionRoot, target);
   const extracted = path.join(extractionRoot, rootName);
-  const manifest = JSON.parse(await readFile(path.join(extracted, 'release-manifest.json'), 'utf8'));
+  const runtimeRoot = resolveRuntimeRoot(extracted, target);
+  if (target.platform === 'darwin') {
+    const outerEntries = await readdir(extracted);
+    if (outerEntries.length !== 1 || outerEntries[0] !== 'Creative Agent Studio.app') {
+      throw new Error('macOS ZIP 外层只能包含自包含的 Creative Agent Studio.app。');
+    }
+    const bundle = path.join(extracted, 'Creative Agent Studio.app');
+    await verifyMacAppBundle(bundle, target);
+    verifyMacAppSeal(bundle);
+  }
+  const manifest = JSON.parse(await readFile(path.join(runtimeRoot, 'release-manifest.json'), 'utf8'));
   if (manifest.target !== target.id || manifest.pythonRuntime?.bundled !== false) {
     throw new Error('归档解压后的 Release manifest 与目标或 Python 首次准备布局不符。');
   }
-  for (const file of manifest.files) await access(path.join(extracted, file.path));
-  await relocatedRuntimeSmoke(extracted, target);
+  for (const file of manifest.files) {
+    const filePath = path.join(runtimeRoot, file.path);
+    if (!pathWithin(runtimeRoot, filePath)) throw new Error(`归档 manifest 路径越界：${file.path}`);
+    const info = await lstat(filePath);
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== file.size || await hashFile(filePath) !== file.sha256) {
+      throw new Error(`归档解压文件与 manifest 的大小或 SHA-256 不符：${file.path}`);
+    }
+  }
+  await relocatedRuntimeSmoke(runtimeRoot, target);
 }
 
 async function buildGeneral(options) {
@@ -781,21 +788,23 @@ async function buildGeneral(options) {
     await ensureLibreOfficeKitWindowsPathFix(stage);
     await packageNodeRuntime(nodePath, stage);
     await writeLicenseInventory(stage, target, nodePath);
-    if (target.platform === 'darwin') await makeMacApp(stage, target);
-    else await makeWindowsEntry(stage);
+    if (target.platform === 'win32') await makeWindowsEntry(stage);
     await pruneBuildState(stage);
     await materializeBundleSymlinks(stage);
+    if (target.platform === 'darwin') await assembleMacApp(stage, target);
     relocationRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cas-release-moved-')));
     const relocatedStage = path.join(relocationRoot, rootName);
     await rename(stage, relocatedStage);
     stage = relocatedStage;
-    const manifest = await writeBundleManifest(stage, targetId, options.version);
+    const runtimeRoot = resolveRuntimeRoot(stage, target);
+    const manifest = await writeBundleManifest(runtimeRoot, targetId, options.version);
     if (manifest.pythonRuntime?.bundled !== false || manifest.pythonRuntime?.preparedOnFirstStart !== true
         || manifest.files.some(file => file.path.startsWith('.venv-ocr/')
           || file.path.startsWith('.studio-runtime/python/')
           || file.path.startsWith('.studio-runtime/rapidocr-models/'))) {
       throw new Error('主运行包必须排除 Python/OCR 首次准备资源，并保留首次准备元数据。');
     }
+    if (target.platform === 'darwin') sealMacAppBundle(path.join(stage, 'Creative Agent Studio.app'));
     await mkdir(outputRoot, { recursive: true });
     const filename = archiveName(options.version, targetId);
     const archivePath = path.join(outputRoot, filename);

@@ -9,7 +9,7 @@ on:
       version:
         description: Company package version
         required: true
-        default: company-p5.1
+        default: company-p5.1.1
         type: string
 
 permissions:
@@ -26,9 +26,6 @@ jobs:
           - target: darwin-arm64
             runner: macos-15
             archive: Creative-Agent-Studio-p5-pr.1.9-macOS-arm64.zip
-          - target: win32-x64
-            runner: windows-2025
-            archive: Creative-Agent-Studio-p5-pr.1.9-Windows-x64.zip
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +71,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           BASE_ARCHIVE: ${{ runner.temp }}/p5-base/${{ matrix.archive }}
           OUTPUT_DIRECTORY: ${{ runner.temp }}/company-output
-          PACKAGE_VERSION: ${{ inputs.version || 'company-p5.1' }}
+          PACKAGE_VERSION: ${{ inputs.version || 'company-p5.1.1' }}
           COMPANY_SERVICES_FILE: ${{ runner.temp }}/company-services.json
         run: |
           set -euo pipefail

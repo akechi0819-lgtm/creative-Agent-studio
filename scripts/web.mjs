@@ -32,7 +32,7 @@ try{lock=await open(lockPath,'wx',0o600);}catch(error){
 }
 const instanceId=randomUUID();
 const sourceRuntime=path.resolve(import.meta.dirname,'../.studio-runtime');
-const sourceMarker=path.join(sourceRuntime,'servers',`${instanceId}.json`);
+const sourceMarker=process.env.STUDIO_RELEASE_BUNDLE==='1'?null:path.join(sourceRuntime,'servers',`${instanceId}.json`);
 await lock.writeFile(JSON.stringify({pid:process.pid,instanceId}));
 const getConfig=()=>readConfig({root});
 const canvas=createCompanyCanvasManager({root,readConfig:getConfig,readCompanyConfig});
@@ -44,7 +44,7 @@ async function stop(){
   await canvas.stop().catch(()=>{});
   await stopModelPlugin({root}).catch(()=>{});
   await controlClose?.();
-  await rm(sourceMarker,{force:true});
+  if(sourceMarker)await rm(sourceMarker,{force:true});
   await lock.close();
   const owner=await readFile(lockPath,'utf8').then(JSON.parse).catch(()=>null);
   if(owner?.instanceId===instanceId)await rm(lockPath,{force:true});
@@ -52,10 +52,12 @@ async function stop(){
 process.once('SIGINT',()=>void stop());
 process.once('SIGTERM',()=>void stop());
 try{
-  await mkdir(path.dirname(sourceMarker),{recursive:true,mode:0o700});
-  await writeFile(sourceMarker,JSON.stringify({pid:process.pid,instanceId,dataRoot:root}),{mode:0o600});
-  const preparing=await readJson(path.join(sourceRuntime,'prepare.lock'));
-  if(preparing&&alive(preparing.pid))throw new Error('当前源码正在准备依赖，请等待完成后启动。');
+  if(sourceMarker){
+    await mkdir(path.dirname(sourceMarker),{recursive:true,mode:0o700});
+    await writeFile(sourceMarker,JSON.stringify({pid:process.pid,instanceId,dataRoot:root}),{mode:0o600});
+    const preparing=await readJson(path.join(sourceRuntime,'prepare.lock'));
+    if(preparing&&alive(preparing.pid))throw new Error('当前源码正在准备依赖，请等待完成后启动。');
+  }
   await readFile(path.resolve(import.meta.dirname,'../web/dist/index.html'));
   await ensureModelPlugin({root});
   app=await listenStudioServer({root,agent,canvas,readConfig:getConfig,port,host:'127.0.0.1'});

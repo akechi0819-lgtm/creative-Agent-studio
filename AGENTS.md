@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## 公司版 Mac 隔离启动返修（2026-10-17 用户授权）
+
+同步 P5 `806dce0`／`52736f6`：Mac 必须使用自包含 `Creative Agent Studio Company.app`，Node 和产品位于 `Contents/Resources/studio`，Bundle ID 为 `com.creativeagentstudio.company`。成品不写只读程序目录，配置、运行状态与 Python 仍在 Company 用户数据目录。旧 `company-p5.1` Mac 包暂停分发；仅重打 Mac，Windows 沿用原包。必须区分模拟隔离路径、真实只读卷、原生首启与用户原报错设备复测；不清除 quarantine 或关闭系统安全设置。
+
 ## 公司版 P5 成品微调（2026-10-17 已获授权）
 
 公司版以已独立复验的 P5 源码 `8cd572e`／交付文档 `125fac2` 及原生双平台候选包为基础，继承桌面对话、自然确认、文件工具与预构建启动方式。公司服务地址由管理员预置到运行包根目录 `company-services.json`，不写公开源码；员工只填写个人 Teedy 账号密码以及基础／生图两类 API。两类 API 均保存本机，远端 Canvas 通过任务专用、准确 Origin 认证的本机工具桥接访问图片代理；模型钥匙不得发送到远端静态站点或写进浏览器持久化。Teedy 账号按现有 ACL 访问，不放共享凭据。保持 Company 数据目录、4311、Codex 不启动 DSH、Canvas 纯工具边界。复用 P5 包内 Node 与生产依赖；Python／OCR／Office 仍按已授权 P5 方式在首次启动单独检查准备，不宣称完全离线。旧远端服务、挂靠、标签与 ACL 不变；本轮不部署服务器、不重放付费模型。公司版新增范围需单独自检，不沿用 P5 结果冒充公司现网或独立验收。

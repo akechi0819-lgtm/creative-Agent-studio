@@ -24,3 +24,7 @@
 源码开发入口仍为 `Start.command`／`Start.cmd`，与普通同事成品包入口分开。Codex 使用 [项目 Skill](.agents/skills/creative-studio/SKILL.md) 和 [共享 CLI](docs/Codex使用.md)，不启动 DSH；公司素材搜索用 `node scripts/company.mjs search @payload.json`。
 
 P5 通用版基线通过范围见 [最终独立复验](docs/P5最终独立复验.md)。公司新增范围的进度与证据见 [工程进度](docs/工程进度.md)和[公司版自检](docs/公司版自检.md)，不把通用版通过冒充公司现网或员工设备验证。未签名提示与普通设备双击体验按实际证据记录。
+
+## Mac 隔离启动修复（2026-10-17）
+
+旧 `company-p5.1` Mac 包暂停分发：启动器依赖 app 外文件，在系统隔离启动时可能找不到 Node。公司修正版将程序全部收进 `Creative Agent Studio Company.app/Contents/Resources/studio`，运行状态继续保存在个人 Company 数据目录。Windows 仍使用原有 `company-p5.1` 包。修复与检查进度见 [公司版自检](docs/公司版自检.md)。

@@ -1,6 +1,6 @@
 on run
 	set bundlePath to POSIX path of (path to me)
-	set packageRoot to do shell script "/usr/bin/dirname " & quoted form of bundlePath
+	set packageRoot to bundlePath & "/Contents/Resources/studio"
 	set selected to choose from list {"启动或打开工作台", "停止工作台", "查看运行状态"} with title "Creative Agent Studio" with prompt "本地工作台控制" default items {"启动或打开工作台"} OK button name "继续" cancel button name "退出"
 	if selected is false then return
 	set actionName to "start"

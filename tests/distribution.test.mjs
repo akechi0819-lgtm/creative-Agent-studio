@@ -273,7 +273,7 @@ test('Company bundle has its own identity, service profile, data root and port',
   assert.match(packager, /COMPANY_BASE_PACKAGE/);
   assert.match(packager, /writeCompanyServicesFile/);
   assert.match(packager, /companyRiskLexicon/);
-  assert.match(packager, /relocatedRuntimeSmoke\(extracted, target, \{ profile: 'company' \}\)/);
+  assert.match(packager, /relocatedRuntimeSmoke\(runtimeRoot, target, \{ profile: 'company' \}\)/);
   assert.match(packager, /Company 运行包未按要求绑定本机 4311 端口/);
   assert.doesNotMatch(packager, /https:\/\/teedy\.apinova\.cn|https:\/\/image\.apinova\.cn/);
 });
