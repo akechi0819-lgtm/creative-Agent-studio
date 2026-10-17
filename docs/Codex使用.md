@@ -1,13 +1,13 @@
 # Codex 创作入口
 
-当前公司版差异见 [公司版接入](公司版接入.md)：公司服务地址已预配，填写个人 Teedy 账号密码与本机基础／生图 API，不启动通用版本地 Canvas；远端前端更新由用户负责。公司素材检索用 `node scripts/company.mjs search @payload.json`，本机素材另列。下文原 P0—P4 验收不能代替公司现网验证。
+当前公司版差异见 [公司版接入](公司版接入.md)：公司服务地址已预配，填写个人 Teedy 账号密码与本机基础／生图 API，不启动通用版本地 Canvas；远端前端更新由用户负责。公司素材检索用 `node scripts/company.mjs search @payload.json`，本机素材另列。P5主体验收与公司新增范围自检分别记录，不能代替公司现网验证。
 
 
 在本地 Codex 中打开下载或克隆的仓库根目录，让当前 Codex 会话通过项目 Skill 和共享 CLI 创作。日常创作不启动 DSH，不调用 `codex exec`；Canvas 按任务独立打开。两个入口的区别见 [README](../README.md)。
 
 ## 新用户首次使用
 
-1. 从 [GitHub 仓库](https://github.com/akechi0819-lgtm/creative-Agent-studio) 下载 ZIP 并完整解压，或用 Git 克隆；在本地 Codex 中选择包含 `AGENTS.md` 和 `package.json` 的根目录。仅把仓库链接交给无本机执行环境的云端聊天，不会启动你电脑上的 Canvas。
+1. 从 [公司版源码分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/codex/company-edition) 下载 ZIP 并完整解压，或运行 `git clone --branch codex/company-edition --single-branch https://github.com/akechi0819-lgtm/creative-Agent-studio.git`；在本地 Codex 中选择包含 `AGENTS.md` 和 `package.json` 的根目录。仅把仓库链接交给无本机执行环境的云端聊天，不会启动你电脑上的 Canvas。
 2. 准备运行依赖。可让 Codex 读取 README 后执行以下对应平台命令，也可自己在仓库终端执行。两条命令只安装和构建，不启动 Web DSH；系统没有合格 Node 时会准备项目私有运行时。
 
    macOS：
