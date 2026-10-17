@@ -1,40 +1,50 @@
 # Codex 创作入口
 
-在本地 Codex 中打开下载或克隆的仓库根目录，让当前 Codex 会话通过项目 Skill 和共享 CLI 创作。日常创作不启动 DSH，不调用 `codex exec`；Canvas 按任务独立打开。两个入口的区别见 [README](../README.md)。
+在本机 Codex 中打开个人版源码仓库根目录，让当前 Codex 会话通过项目 Skill 和共享 CLI 创作。成品包用于独立 Web 工作台，不是 Codex 的源码工作目录。Codex 日常创作不启动 Web DSH；按任务打开的 Canvas 使用 Creative Agent Studio 中已保存的生图 API。
 
-## 新用户首次使用
+## 个人版源码
 
-1. 从 [GitHub 仓库](https://github.com/akechi0819-lgtm/creative-Agent-studio) 下载 ZIP 并完整解压，或用 Git 克隆；在本地 Codex 中选择包含 `AGENTS.md` 和 `package.json` 的根目录。仅把仓库链接交给无本机执行环境的云端聊天，不会启动你电脑上的 Canvas。
-2. 准备运行依赖。可让 Codex 读取 README 后执行以下对应平台命令，也可自己在仓库终端执行。两条命令只安装和构建，不启动 Web DSH；系统没有合格 Node 时会准备项目私有运行时。
+P5 通用版源码位于 [main 分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/main)。请显式克隆该分支，仓库默认分支可能不是 P5：
 
-   macOS：
+    git clone --branch main --single-branch https://github.com/akechi0819-lgtm/creative-Agent-studio.git
 
-   ```sh
-   ./Start.command prepare
-   ```
+在本机 Codex 中打开克隆后的仓库根目录。仅把 GitHub 链接交给没有本机执行环境的云端聊天，不会启动你电脑上的 Canvas。
+
+## 首次准备与 API 配置
+
+1. 在仓库根目录准备依赖。命令只准备源码运行所需依赖和构建文件，不启动 Web 工作台或 DSH。首次准备需要联网。
+
+   Mac：
+
+       ./Start.command prepare
 
    Windows PowerShell：
 
-   ```powershell
-   .\Start.cmd prepare
-   ```
+       .\Start.cmd prepare
 
-   Mac ZIP 解压后如提示无执行权限，在仓库目录执行一次 `chmod +x Start.command scripts/bootstrap-node.sh`；首次准备需要联网，耗时由网络决定。不要只运行 `node scripts/prepare.mjs` 并假设新设备已经有 Node；该命令适合已有合格 Node 的环境。
-3. 首次填写产品生图服务配置。当前可双击平台启动入口，在 Web 的“模型与服务”设置中填写并保存；需要显式素材 AI 清洗时也配置基础 API。配置后在启动菜单选择 `2 停止服务`，再回到 Codex 创作。网页设置是独立入口的配置操作；之后 Codex 的对话推理由宿主承担，日常创作无需保持 Web DSH 运行，也无需给 Codex 更换基础模型。
-4. 在 Codex 输入自然语言需求，例如：
+   如果 Mac ZIP 解压后入口没有执行权限，在仓库目录运行 chmod +x Start.command scripts/bootstrap-node.sh。不要只运行 node scripts/prepare.mjs 并假定新设备已具备 Node。
 
-   ```text
-   请读取 AGENTS.md 和 .agents/skills/creative-studio/SKILL.md，使用本项目共享 CLI 帮我制作一组 3 页图文。
-   主题是家长陪练，受众是小学家长；先和我确认内容与参考，再整理制作单。
-   我使用 Codex 入口，不启动 Web DSH。需要我配置生图服务时，请告诉我设置位置。
-   ```
+2. 若尚未保存图片 API，启动本机工作台并在“模型与服务”配置。基础 API 用于 Web 对话、工具、读图和素材 AI 清洗；生图 API 用于任务 Canvas 图片生成。同一服务商可以复用地址与密钥。正常 Codex 对话使用当前 Codex 会话，不需要 Studio 基础 API；只有 Codex 任务中显式使用素材 AI 清洗时才需要基础 API。
 
-Codex CLI／IDE 可用 `$creative-studio` 显式选择本项目 Skill，也可以直接用上述自然语言。项目 Skill 位于 `.agents/skills/creative-studio/`，无需复制到全局目录；具体发现和调用规则见 [OpenAI 官方 Skills 文档](https://learn.chatgpt.com/docs/build-skills)。如果当前客户端没有列出技能，可让它直接读取上述 `SKILL.md`，按文档执行；必要时重新打开项目会话。普通用户不需要手工填写下面的 CLI payload，它们供宿主 Agent 和开发者使用。
+   Mac 和 Windows 的源码启动入口不带参数时都会打开本机工作台并提供维护菜单。配置保存后，从菜单停止工作台，再回到 Codex 创作。也可运行 Start.command stop 或 Start.cmd stop。
 
-首次完整创作会确认需求与来源、制作单和最终成品。用户明确要求修改已有图片时，使用 `edit-pages` 做局部修改，恢复单页用 `restore-page`，无需重走整套新创作流程；见 [对话局部改图](P3对话局部改图.md)。
+3. 在 Codex 输入自然语言需求，例如：
 
-P0 至 P4 已按各自授权范围独立验收或复验；最新交付与未测边界见 [P4最终独立复验](P4最终独立复验.md)。普通设备双击体验和上游模型能力按实际证据记录，不把阶段通过当成任意来源或场景的效果承诺。
+   > 请读取 AGENTS.md 和 .agents/skills/creative-studio/SKILL.md，使用本项目共享 CLI 帮我制作一组 3 页图文。
+   > 主题是家长陪练，受众是小学家长；先和我确认内容与参考，再整理制作单。
+   > 我使用 Codex 入口。图片通过本机配置的生图 API 和任务 Canvas 执行，不启动 Web DSH。
 
+Codex CLI／IDE 可以使用 $creative-studio 显式选择本项目 Skill，也可直接用自然语言。项目 Skill 位于 .agents/skills/creative-studio/，无需复制到全局目录。完整发现与调用规则见 [OpenAI 官方 Skills 文档](https://learn.chatgpt.com/docs/build-skills)。如果当前客户端没有列出技能，可让它直接读取上述 SKILL.md。
+
+Codex 入口中的对话与推理由当前 Codex 会话承担；图片由共享 Canvas 使用保存的生图 API 完成。此路径不启动 DSH，也不调用 Codex 自带图片生成服务。
+
+首次完整创作会确认需求与来源、制作单和最终成品。用户明确要求修改已有图片时，使用 edit-pages 做局部修改，恢复单页用 restore-page；见 [对话局部改图](P3对话局部改图.md)。
+
+## 验收与设备边界
+
+P5 通用版已按 [最终独立复验](P5最终独立复验.md) 所列范围通过。之后发现的 Mac AppTranslocation 启动缺陷已修复，当前云端 Actions artifact 包含该修复；修正版通过本机只读磁盘和包完整性检查，原先报错的 Mac 设备仍待实际双击复测。
+
+Windows 包已在 Windows Actions runner 构建和验证，未在普通用户 Windows 电脑复测。Mac 当前包未完成 Developer ID 签名与公证，Windows 包未完成 Authenticode 签名。当前临时下载链接、artifact 到期时间和状态以 [README](../README.md) 为准；仓库尚无正式 GitHub Release。
 ## 运行边界与数据位置
 
 在仓库根目录运行 `node scripts/studio.mjs`。Codex 创作路径使用本地 Canvas 和共享任务核心，不启动 DSH，也不运行 `codex exec`。首次使用按项目准备说明安装固定依赖并准备本产品的独立 Canvas 实例；不得连接旧 Canvas 实例。
