@@ -6,14 +6,16 @@
 
 ## 当前成品下载
 
-Windows 首次准备与控制台闪窗修正版 `company-p5.1.4` 构建中。下表 `company-p5.1.3` 为上一轮成品；本轮说明见 [修复记录](docs/Windows首次启动修复.md)。
+公司首次准备与控制台闪窗修正版 company-p5.1.4 已完成 macOS 和 Windows 原生构建，两个成品均已下载并完成文件完整性校验。Windows 2025 GUI 已通过真实 VBS 入口完成首次配置及停止、重启流程；原报错员工电脑仍待复测，验证边界见 [修复记录](docs/Windows首次启动修复.md)。
 
-| 设备 | 应下载版本 | 下载 |
-| --- | --- | --- |
-| Apple 芯片 Mac | `company-p5.1.3`，本地 Canvas 版 | [Mac 修正版](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39030283951/artifacts/12100615928) |
-| Windows 64 位 | `company-p5.1.3`，本地 Canvas 版 | [Windows 公司包](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39030283951/artifacts/12099574086) |
+以下是 Actions 候选成品，尚非正式长期 Release。Artifact 容器内含产品 ZIP 和校验文件，下载需要 GitHub 登录；SHA-256 是产品 ZIP 的摘要，可与 sidecar 核对。
 
-Actions 下载可能要求 GitHub 登录；外层 ZIP 内还有产品 ZIP，请完整解压产品包。本轮文件保留至 2026-10-31。两平台均使用本轮本地 Canvas 版，旧包保留作历史记录。
+| 设备 | 版本 | 下载 | 产品 ZIP SHA-256 | 到期时间（北京时间） |
+| --- | --- | --- | --- | --- |
+| Apple 芯片 Mac | company-p5.1.4 | [Mac artifact 12330321033](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478/artifacts/12330321033) | 026704ab119b41d105a8c8b4f0a544ec4da5b6559f8cfd2774d366014c8babf0 | 2026-11-04 15:59:52 |
+| Windows 64 位 | company-p5.1.4 | [Windows artifact 12329329237](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478/artifacts/12329329237) | d98b7daeedd319ff70595a2fbef383138fef60cfc72b97746fee336b60ca30ce | 2026-11-04 16:02:51 |
+
+两平台均为本地 Canvas 版。Mac 尚无 Developer ID 签名与公证，Windows 尚无 Authenticode 签名；原报错 Mac 与员工 Windows 设备、真实 Teedy 账号与 ACL、付费图片生成仍待分别验证。旧 company-p5.1.3 包保留作历史记录，不再作为当前下载入口。
 
 ## 普通同事使用
 

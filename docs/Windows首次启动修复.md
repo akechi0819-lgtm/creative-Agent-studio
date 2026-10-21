@@ -19,6 +19,44 @@
 
 ## 验证
 
-本机完整Node回归：354项中353通过，1项Windows PowerShell专属测试跳过，零失败。使用已存在的健康OCR解释器及模型缓存、临时任务目录，不重新安装真实用户环境。新增真实子进程用例覆盖并发一次准备、实时输出、失败释放后重试、死进程锁回收、无输出超时与持续进展总上限；实际spawn/fork调用检查隐藏选项。Windows专属测试用PowerShell解析实际界面函数，检查空行、真实进度标签及滚动状态。
+### 源码与回归
 
-双平台原生ZIP构建、Windows界面逻辑与最终文件校验待Actions完成后补记。CI不能冒充原报错电脑的安装或使用中完全无闪窗复测；没有重放付费模型。旧公司包和历史结果保留作证据，新版下载以README为准。
+公司版本机 Node 回归为 354 项，353 项通过、1 项 Windows PowerShell 专属测试跳过；公司分支 Windows 源码 CI [run 39565191148](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191148) 为 352 项通过、2 项平台专属测试跳过。个人版本机回归为 317 项，316 项通过、1 项 Windows 专属测试跳过；个人版 Windows 源码 CI [run 39567504298](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39567504298) 首次 Office recalculation 校验失败后只重跑一次并成功，最终 316 项通过、1 项跳过；新增修复用例没有失败。首次失败与单次重跑均保留在 CI 历史中，不将重跑结果写成首次运行即通过。
+
+### 双平台原生包与文件校验
+
+个人版和公司版的 Mac、Windows native build 均成功，产品包已下载并核验 artifact digest、产品 ZIP CRC、sidecar SHA-256 与 manifest 文件 SHA-256。
+
+| 版本 | 平台 | Actions artifact | 产品 ZIP SHA-256 | manifest 文件 | 到期时间（北京时间） |
+| --- | --- | --- | --- | ---: | --- |
+| company-p5.1.4 | macOS arm64 | [12330321033](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478/artifacts/12330321033) | 026704ab119b41d105a8c8b4f0a544ec4da5b6559f8cfd2774d366014c8babf0 | 76,730 | 2026-11-04 15:59:52 |
+| company-p5.1.4 | Windows x64 | [12329329237](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478/artifacts/12329329237) | d98b7daeedd319ff70595a2fbef383138fef60cfc72b97746fee336b60ca30ce | 74,000 | 2026-11-04 16:02:51 |
+
+公司双平台 native build 来自 [run 39565191478](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478)，Personal 成品见其 README。Artifact 是有保留期的 Actions 候选包，不代表长期 Release。
+
+### 用户实际路径与剩余边界
+
+最终成品包通过 Windows 2025 GUI 上的真实 VBS 入口完成冷启动、首次配置、停止与重启流程。[最终验证工作流 run 39575253721](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39575253721) 的 Company 与 General 两个 job 均成功：
+
+| 版本 | Job | GUI证据 artifact |
+| --- | --- | --- |
+| Company | 119139075265 | [12334481482](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39575253721/artifacts/12334481482) |
+| General | 119139075613 | [12334007380](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39575253721/artifacts/12334007380) |
+
+测试覆盖首次冷启动准备进度与重复启动拦截；在真实工作台 UI 中分别保存基础 API 与生图 API 地址、模型和合成密钥，验证 Kilo 无密钥也能保存；刷新后不重复展示配置引导，并可打开本地 Canvas。停止服务再启动后，已保存配置仍在，热启动时追加一条准备入口日志，Python、依赖和模型仍处于 ready 状态；解释器路径、依赖指纹及模型文件 SHA 保持一致。公司包 74,000 项、个人包 73,986 项 manifest 文件均逐项保持不变。
+
+被测公司版与个人版产品源码提交分别为 41cf82b 和 a3de7a9；GUI 驱动／验证源码提交为 f4b8535。本轮没有修改成品包，所以原生下载包的 artifact、产品 ZIP SHA-256 与 manifest 数量仍是前表所列，不把 GUI 证据 artifact 当成新的产品包。
+
+模型列表请求使用本机 fixture，未调用图片生成；Teedy 请求数为 0，未连接真实公司素材服务。控制台窗口通过窗口 class 与轮询监控，配置阶段采样约 100ms，启动器 UIA 采样间隔为数秒。本轮未观察到新增可见控制台；该观察不代表所有设备、路径和时序下都不会闪窗，原报错员工电脑尚未复测。
+
+### GUI验证历史
+
+| 工作流 | 结果 |
+| --- | --- |
+| [39571640875](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39571640875) | 测试驱动 Drawing 引用编译失败，产品未启动。 |
+| [39572355102](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39572355102) | 真实 VBS 界面及重复启动拦截成功；驱动因 UIA 快照排除 RichEdit 正文而误判日志路径断言。 |
+| [39574096076](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39574096076) | Windows PowerShell 5 按默认 ANSI 编码读取 UTF-8 中文日志，导致“prepare记录数应为1、实际为0”的断言失败。 |
+| [39574962710](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39574962710) | 为修正热启动采样和空行断言而提前取消，未作为产品验证结果。 |
+| [39575253721](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39575253721) | Company 与 General 两个最终用户路径 job 均成功。 |
+
+原报错员工电脑与 Mac 尚未复测；真实员工 Teedy 登录、ACL 和付费图片生成未验证。Mac 未完成 Developer ID 签名与公证，Windows 未完成 Authenticode 签名。CI 结果不扩张到这些设备、账号和上游能力。
