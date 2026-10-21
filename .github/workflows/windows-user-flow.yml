@@ -138,13 +138,13 @@ jobs:
       - name: First-run configuration through the packaged workbench UI
         id: first_config
         if: success()
-        shell: pwsh
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -MTA -Command ". '{0}'"
         timeout-minutes: 45
         run: |
           $ErrorActionPreference = 'Stop'
           $packageRoot = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
-          node scripts/verify-windows-first-config.mjs --package-root $packageRoot --profile $env:TEST_PROFILE --data-dir (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) --evidence-dir (Join-Path $env:TEST_EVIDENCE_DIR 'browser')
-          if ($LASTEXITCODE -ne 0) { throw "First-run configuration UI verification failed with exit code $LASTEXITCODE." }
+          & .\scripts\verify-windows-launcher-ui.ps1 -PackageRoot $packageRoot -Profile $env:TEST_PROFILE -DataDirectory (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) -EvidenceDirectory (Join-Path $env:TEST_EVIDENCE_DIR 'launcher') -Action configure -ConfigurationScript (Join-Path $PWD 'scripts\verify-windows-first-config.mjs') -ConfigurationNode (Get-Command node).Source -TimeoutSeconds 600
+          if (-not $?) { throw 'Packaged configuration UI or console-window monitoring failed.' }
 
       - name: Stop the first-run instance through the real VBS
         id: cold_stop
@@ -178,13 +178,13 @@ jobs:
       - name: Resume the saved workbench configuration after restart
         id: resume_config
         if: success()
-        shell: pwsh
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -MTA -Command ". '{0}'"
         timeout-minutes: 45
         run: |
           $ErrorActionPreference = 'Stop'
           $packageRoot = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
-          node scripts/verify-windows-first-config.mjs --package-root $packageRoot --profile $env:TEST_PROFILE --data-dir (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) --evidence-dir (Join-Path $env:TEST_EVIDENCE_DIR 'browser') --resume
-          if ($LASTEXITCODE -ne 0) { throw "Restart configuration UI verification failed with exit code $LASTEXITCODE." }
+          & .\scripts\verify-windows-launcher-ui.ps1 -PackageRoot $packageRoot -Profile $env:TEST_PROFILE -DataDirectory (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) -EvidenceDirectory (Join-Path $env:TEST_EVIDENCE_DIR 'launcher') -Action configure -ConfigurationScript (Join-Path $PWD 'scripts\verify-windows-first-config.mjs') -ConfigurationNode (Get-Command node).Source -TimeoutSeconds 600 -ResumeConfiguration
+          if (-not $?) { throw 'Packaged configuration UI or console-window monitoring failed.' }
 
       - name: Final stop through the real VBS
         id: final_stop
@@ -240,7 +240,7 @@ jobs:
           foreach ($folder in @('launcher', 'browser')) {
             $folderPath = Join-Path $env:TEST_EVIDENCE_DIR $folder
             if (Test-Path -LiteralPath $folderPath) {
-              foreach ($report in (Get-ChildItem -LiteralPath $folderPath -File -Filter '*.json')) {
+              foreach ($report in (Get-ChildItem -LiteralPath $folderPath -File -Recurse -Filter '*.json')) {
                 $text = Get-Content -LiteralPath $report.FullName -Raw
                 if ($text -match '"(?:token|apiKey|password|authorization)"\s*:') { throw "Refusing sensitive report: $($report.Name)" }
                 Copy-Item -LiteralPath $report.FullName -Destination $destination -Force

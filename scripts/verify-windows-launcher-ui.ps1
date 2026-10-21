@@ -3,8 +3,11 @@
   [Parameter(Mandatory = $true)][ValidateSet('general', 'company')][string]$Profile,
   [Parameter(Mandatory = $true)][string]$DataDirectory,
   [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
-  [ValidateSet('start', 'stop')][string]$Action = 'start',
+  [ValidateSet('start', 'stop', 'configure')][string]$Action = 'start',
   [switch]$WarmStart,
+  [string]$ConfigurationScript,
+  [string]$ConfigurationNode,
+  [switch]$ResumeConfiguration,
   [ValidateRange(30, 7200)][int]$TimeoutSeconds = 2400
 )
 
@@ -14,6 +17,7 @@ foreach ($pathValue in @($PackageRoot, $DataDirectory, $EvidenceDirectory)) {
   if ([string]::IsNullOrWhiteSpace($pathValue)) { throw 'PackageRoot、DataDirectory、EvidenceDirectory 必须是非空路径。' }
 }
 if ($WarmStart -and $Action -ne 'start') { throw '-WarmStart 只能与 -Action start 一起使用。' }
+if ($ResumeConfiguration -and $Action -ne 'configure') { throw '-ResumeConfiguration 只能与 -Action configure 一起使用。' }
 
 function Resolve-FullPath {
   param([Parameter(Mandatory = $true)][string]$Value)
@@ -144,9 +148,13 @@ function Convert-ConsoleWindowEvidence {
 function Start-ConsoleWindowMonitor {
   $script:consoleBaselineKeys = @{}
   $script:consoleViolations = New-Object System.Collections.ArrayList
-  $windows = @([WindowsLauncherEvidence.NativeWindow]::GetConsoleWindows())
+  $windows = @([WindowsLauncherEvidence.NativeWindow]::GetConsoleWindows() | Where-Object { $_.Visible })
   foreach ($window in $windows) { $script:consoleBaselineKeys[(Get-ConsoleWindowKey -Window $window)] = $true }
-  $script:consoleBaseline = @($windows | ForEach-Object { Convert-ConsoleWindowEvidence -Window $_ })
+  if ($Action -eq 'configure') {
+    $script:consoleBaseline = @($windows | ForEach-Object { [pscustomobject]@{ className = $_.ClassName; visible = [bool]$_.Visible } })
+  } else {
+    $script:consoleBaseline = @($windows | ForEach-Object { Convert-ConsoleWindowEvidence -Window $_ })
+  }
   $script:consoleMonitorLastCheckedAt = [DateTime]::UtcNow
   $script:consoleLastPollAt = $script:consoleMonitorLastCheckedAt
   $script:consoleMonitoringStarted = $true
@@ -201,16 +209,17 @@ function Assert-NoNewConsoleWindows {
       handle = '0x' + $window.Handle.ToInt64().ToString('X')
       processId = [int]$window.ProcessId
       className = $window.ClassName
-      title = $window.Title
       screenshot = $null
     }
+    if ($Action -ne 'configure') { $evidence.title = $window.Title }
     try {
       $evidence.screenshot = Save-ConsoleWindowScreenshot -Window $window
       [void]$script:screenshots.Add($evidence.screenshot)
     } catch { $evidence.screenshotError = $_.Exception.Message }
     [void]$script:consoleViolations.Add($evidence)
     $script:baseEvidence.consoleWindowMonitor.observedViolations = @($script:consoleViolations.ToArray())
-    $details = "class=$($window.ClassName), hwnd=0x$($window.Handle.ToInt64().ToString('X')), pid=$($window.ProcessId), title=$($window.Title)"
+    $details = "class=$($window.ClassName), hwnd=0x$($window.Handle.ToInt64().ToString('X')), pid=$($window.ProcessId)"
+    if ($Action -ne 'configure') { $details += ", title=$($window.Title)" }
     throw "观察到启动后新增的可见控制台窗口（$details）；黑窗证据已记录。"
   }
 }
@@ -381,24 +390,82 @@ function Save-WindowScreenshot {
   }
 }
 
+function Get-PythonReadinessSnapshot {
+  $stateRoot = Join-Path $script:dataDirectory 'runtime\.studio-runtime'
+  $runtime = Get-Content -LiteralPath (Join-Path $stateRoot 'python-runtime-state.json') -Raw | ConvertFrom-Json
+  $dependencies = Get-Content -LiteralPath (Join-Path $stateRoot 'python-state.json') -Raw | ConvertFrom-Json
+  $models = Get-Content -LiteralPath (Join-Path $stateRoot 'rapidocr-model-state.json') -Raw | ConvertFrom-Json
+  if ($runtime.status -ne 'ready' -or $dependencies.status -ne 'ready' -or $models.status -ne 'ready') {
+    throw 'WarmStart 前后 Python、依赖和 OCR 模型状态都必须保持 ready。'
+  }
+  if ([string]$dependencies.fingerprint -notmatch '^[a-f0-9]{64}$' -or
+      [string]$models.fingerprint -notmatch '^[a-f0-9]{64}$' -or
+      [string]::IsNullOrWhiteSpace([string]$runtime.pythonExecutable) -or
+      [string]::IsNullOrWhiteSpace([string]$models.modelRoot)) {
+    throw 'WarmStart 状态缺少依赖指纹、模型指纹、Python 虚拟环境路径或模型缓存路径。'
+  }
+  $modelFiles = @(
+    $models.files | ForEach-Object {
+      if ([string]::IsNullOrWhiteSpace([string]$_.path) -or [long]$_.size -le 0 -or [string]$_.sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'WarmStart 模型缓存清单包含无效文件或 SHA-256。'
+      }
+      [pscustomobject]@{ path = [string]$_.path; size = [long]$_.size; sha256 = ([string]$_.sha256).ToLowerInvariant() }
+    } | Sort-Object -Property path
+  )
+  if ($modelFiles.Count -lt 2) { throw 'WarmStart 状态没有至少两个已核验的 OCR 模型缓存文件。' }
+  return [ordered]@{
+    python = [ordered]@{
+      status = [string]$runtime.status
+      executable = [string]$runtime.pythonExecutable
+      version = [string]$runtime.pythonVersion
+      basePrefix = [string]$runtime.basePrefix
+    }
+    dependencies = [ordered]@{
+      status = [string]$dependencies.status
+      fingerprint = ([string]$dependencies.fingerprint).ToLowerInvariant()
+      pythonVersion = [string]$dependencies.pythonVersion
+    }
+    models = [ordered]@{
+      status = [string]$models.status
+      fingerprint = ([string]$models.fingerprint).ToLowerInvariant()
+      root = [string]$models.modelRoot
+      files = @($modelFiles)
+    }
+  }
+}
+
 function Assert-ProgressWindow {
-  param([Parameter(Mandatory = $true)]$Window, [Parameter(Mandatory = $true)][string]$ExpectedLogPath)
+  param([Parameter(Mandatory = $true)]$Window, [string]$ExpectedLogPath = '')
   $snapshot = Get-WindowSnapshot -Window $Window
-  if (-not $snapshot.text.Contains('日志目录：')) { throw '真实进度窗口未显示隔离的数据目录。' }
   $openLogButton = Find-Button -Window $Window -AutomationId '' -Names @('打开安装日志')
   if (-not $openLogButton -or -not $openLogButton.Current.IsEnabled) { throw '真实进度窗口的“打开安装日志”按钮缺失或不可用。' }
   $edit = $null
+  $dataDirectoryLineVerified = $false
   $items = $Window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
   foreach ($item in $items) {
     try {
       if ($item.Current.ControlType -eq [System.Windows.Automation.ControlType]::Edit -or $item.Current.ClassName -match 'RichEdit') {
         $pattern = $item.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-        $logLine = $pattern.DocumentRange.FindText("安装日志：$ExpectedLogPath", $false, $false)
-        if ($null -ne $logLine) { $edit = $item; break }
+        $dataDirectoryLine = $pattern.DocumentRange.FindText("日志目录：$script:dataDirectory", $false, $false)
+        if ($null -eq $dataDirectoryLine) { continue }
+        $dataDirectoryLineVerified = $true
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedLogPath)) {
+          $logLine = $pattern.DocumentRange.FindText("安装日志：$ExpectedLogPath", $false, $false)
+          if ($null -ne $logLine) { $edit = $item; break }
+        } else {
+          $documentText = $pattern.DocumentRange.GetText(-1)
+          if (-not [string]::IsNullOrWhiteSpace($documentText)) { $edit = $item; break }
+        }
       }
     } catch { }
   }
-  if (-not $edit) { throw '真实滚动文本控件未显示本次 Python 安装日志路径，或没有提供可读的 TextPattern 正文。' }
+  if (-not $edit) {
+    if (-not $dataDirectoryLineVerified) { throw '真实 RichText 控件未显示隔离数据目录的完整路径。' }
+    if ([string]::IsNullOrWhiteSpace($ExpectedLogPath)) {
+      throw '真实滚动文本控件没有提供可读的 TextPattern 正文。'
+    }
+    throw '真实滚动文本控件未显示本次 Python 安装日志路径，或没有提供可读的 TextPattern 正文。'
+  }
   $visibleEdit = Get-VisibleEditText -Window $Window
   $scrollable = $false
   try {
@@ -415,10 +482,12 @@ function Assert-ProgressWindow {
   }
   return [pscustomobject]@{
     windowText = $snapshot.text
+    dataDirectoryLineVerified = $dataDirectoryLineVerified
     textControlClass = $edit.Current.ClassName
     hasTextPattern = $true
     visibleText = if ($visibleEdit) { $visibleEdit.text } else { '' }
     visibleRangeCount = if ($visibleEdit) { $visibleEdit.visibleRangeCount } else { 0 }
+    expectedLogPathVerified = -not [string]::IsNullOrWhiteSpace($ExpectedLogPath)
     verticallyScrollable = $scrollable
     scrollbarControls = $scrollbars
     logButtonEnabled = $openLogButton.Current.IsEnabled
@@ -518,9 +587,177 @@ function Save-LaunchEvidence {
 }
 
 function Get-LaunchEvidenceName {
+  if ($Action -eq 'configure') {
+    $suffix = if ($ResumeConfiguration) { 'resume' } else { 'first-run' }
+    return "launcher-configure-$Profile-$suffix.json"
+  }
   if ($Action -eq 'stop') { return 'launcher-stop.json' }
   if ($WarmStart) { return 'launcher-warm-start.json' }
   return 'launcher-start.json'
+}
+
+function Quote-ProcessArgument {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+  $builder = [System.Text.StringBuilder]::new()
+  [void]$builder.Append([char]34)
+  $slashes = 0
+  foreach ($character in $Value.ToCharArray()) {
+    if ($character -eq [char]92) { $slashes++; continue }
+    if ($character -eq [char]34) {
+      if ($slashes -gt 0) { [void]$builder.Append([char]92, [int]($slashes * 2)) }
+      [void]$builder.Append([char]92)
+      [void]$builder.Append([char]34)
+      $slashes = 0
+      continue
+    }
+    if ($slashes -gt 0) { [void]$builder.Append([char]92, $slashes); $slashes = 0 }
+    [void]$builder.Append($character)
+  }
+  if ($slashes -gt 0) { [void]$builder.Append([char]92, [int]($slashes * 2)) }
+  [void]$builder.Append([char]34)
+  return $builder.ToString()
+}
+
+function Stop-ConfigurationProcessTree {
+  param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+  try {
+    $taskkill = Join-Path $env:WINDIR 'System32\taskkill.exe'
+    $killInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $killInfo.FileName = $taskkill
+    $killInfo.Arguments = "/PID $($Process.Id) /T /F"
+    $killInfo.UseShellExecute = $false
+    $killInfo.CreateNoWindow = $true
+    $killInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $killInfo.RedirectStandardOutput = $true
+    $killInfo.RedirectStandardError = $true
+    $killer = [System.Diagnostics.Process]::Start($killInfo)
+    if ($killer) {
+      if (-not $killer.WaitForExit(10000)) { try { $killer.Kill() } catch { } }
+      $killer.Dispose()
+    }
+  } catch { }
+  try {
+    $Process.Refresh()
+    if (-not $Process.HasExited) {
+      $Process.Kill()
+      [void]$Process.WaitForExit(10000)
+    }
+  } catch { }
+}
+
+function Sanitize-ConfigurationOutputLine {
+  param([Parameter(Mandatory = $true)][string]$Line)
+  $safe = [regex]::Replace($Line, '(?i)(\bBearer\s+)[^\s,;"'']+', '$1<redacted>')
+  foreach ($value in $script:configurationRedactions) {
+    if ($value.Length -ge 4) {
+      $safe = [regex]::Replace($safe, [regex]::Escape($value), '<fixture-redacted>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+  }
+  return $safe
+}
+
+function Invoke-ConfigurationNode {
+  param([Parameter(Mandatory = $true)][DateTime]$Deadline)
+  $arguments = @(
+    $script:configurationScript,
+    '--package-root', $script:packageRoot,
+    '--profile', $Profile,
+    '--data-dir', $script:dataDirectory,
+    '--evidence-dir', $script:configurationEvidenceDirectory
+  )
+  if ($ResumeConfiguration) { $arguments += '--resume' }
+  $info = New-Object System.Diagnostics.ProcessStartInfo
+  $info.FileName = $script:configurationNode
+  $info.Arguments = (($arguments | ForEach-Object { Quote-ProcessArgument -Value ([string]$_) }) -join ' ')
+  $info.WorkingDirectory = Split-Path -Parent $script:configurationScript
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+  $info.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $info.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $info.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  $sourceText = Get-Content -LiteralPath $script:configurationScript -Raw
+  $script:configurationRedactions = @(
+    [regex]::Matches($sourceText, "(?m)^\s*const\s+[A-Z][A-Z0-9_]*\s*=\s*'([^']*)';") |
+      ForEach-Object { $_.Groups[1].Value } | Where-Object { -not [string]::IsNullOrEmpty($_) }
+  )
+  $environment = $info.EnvironmentVariables
+  foreach ($key in @($environment.Keys)) {
+    if ($key -match '(?i)(API[_-]?KEY|TOKEN|PASSWORD|SECRET|TEEDY|^TEST_|^CAS_)' -or
+        $key -eq 'STUDIO_RELEASE_NO_OPEN' -or $key -eq 'STUDIO_COMPANY_SERVICES_FILE') {
+      [void]$environment.Remove($key)
+    }
+  }
+  $environment['STUDIO_DATA_DIR'] = $script:dataDirectory
+  $environment['STUDIO_RELEASE_NO_OPEN'] = '1'
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $info
+  if (-not $process.Start()) { throw '无法启动 Windows first-config Node 验证进程。' }
+  $script:baseEvidence.configurationProcessId = $process.Id
+  $phaseName = if ($ResumeConfiguration) { 'resume' } else { 'first-run' }
+  $diagnosticName = "configuration-$phaseName-diagnostic.txt"
+  $diagnosticPath = Join-Path $script:configurationEvidenceDirectory $diagnosticName
+  $diagnosticRelativePath = "first-config-$Profile/$diagnosticName"
+  $script:baseEvidence.configurationDiagnostic = $diagnosticRelativePath
+  $stdoutLines = 0
+  $stderrLines = 0
+  $successSummary = ''
+  $diagnostics = [System.Text.StringBuilder]::new()
+  $stdoutTask = $process.StandardOutput.ReadLineAsync()
+  $stderrTask = $process.StandardError.ReadLineAsync()
+  try {
+    while ($true) {
+      Assert-NoNewConsoleWindows
+      if ($stdoutTask -and $stdoutTask.IsCompleted) {
+        $line = $stdoutTask.GetAwaiter().GetResult()
+        if ($null -eq $line) { $stdoutTask = $null } else {
+          $stdoutLines++
+          $safeLine = Sanitize-ConfigurationOutputLine -Line $line
+          [void]$diagnostics.AppendLine("[stdout] $safeLine")
+          [Console]::Out.WriteLine("[configuration stdout] $safeLine")
+          $expectedPrefix = if ($ResumeConfiguration) { "Windows restart UI smoke passed for profile ${Profile}:" } else { "Windows first-run UI smoke passed for profile ${Profile}:" }
+          if ($line.StartsWith($expectedPrefix, [System.StringComparison]::Ordinal)) {
+            $successSummary = $safeLine
+          }
+          $stdoutTask = $process.StandardOutput.ReadLineAsync()
+        }
+      }
+      if ($stderrTask -and $stderrTask.IsCompleted) {
+        $line = $stderrTask.GetAwaiter().GetResult()
+        if ($null -eq $line) { $stderrTask = $null } else {
+          $stderrLines++
+          $safeLine = Sanitize-ConfigurationOutputLine -Line $line
+          [void]$diagnostics.AppendLine("[stderr] $safeLine")
+          [Console]::Out.WriteLine("[configuration stderr] $safeLine")
+          $stderrTask = $process.StandardError.ReadLineAsync()
+        }
+      }
+      if ($process.HasExited -and -not $stdoutTask -and -not $stderrTask) { break }
+      if ([DateTime]::UtcNow -ge $Deadline) {
+        Stop-ConfigurationProcessTree -Process $process
+        $tail = @($diagnostics.ToString() -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 30) -join [Environment]::NewLine
+        throw "Windows first-config Node 验证超过时限；sanitized diagnostic 尾部：`n$tail"
+      }
+      Start-Sleep -Milliseconds 100
+    }
+    $process.WaitForExit()
+    $script:baseEvidence.stdoutLines = $stdoutLines
+    $script:baseEvidence.stderrLines = $stderrLines
+    if ($process.ExitCode -ne 0) {
+      $tail = @($diagnostics.ToString() -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 30) -join [Environment]::NewLine
+      throw "Windows first-config Node 验证退出代码为 $($process.ExitCode)；sanitized diagnostic 尾部：`n$tail"
+    }
+    if ([string]::IsNullOrWhiteSpace($successSummary)) { throw 'Windows first-config Node 验证未输出预期成功标记；sanitized diagnostic 已保留。' }
+    return [pscustomobject]@{ processId = $process.Id; exitCode = $process.ExitCode; stdoutLines = $stdoutLines; stderrLines = $stderrLines; successSummary = $successSummary; diagnostic = $diagnosticRelativePath }
+  } finally {
+    $process.Refresh()
+    if (-not $process.HasExited) { Stop-ConfigurationProcessTree -Process $process }
+    $process.Dispose()
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($diagnosticPath, $diagnostics.ToString(), $encoding)
+  }
 }
 
 if ($env:OS -ne 'Windows_NT' -or [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -532,7 +769,7 @@ try {
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
   Add-Type -AssemblyName System.Drawing
-  Add-Type -TypeDefinition @'
+  Add-Type -ReferencedAssemblies @('System.dll', 'System.Core.dll', 'System.Drawing.dll') -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -657,19 +894,25 @@ if (Test-Path -LiteralPath $script:dataDirectory) {
   }
 }
 New-Item -ItemType Directory -Path $script:evidenceDirectory -Force | Out-Null
+if ($Action -eq 'configure') {
+  if ([string]::IsNullOrWhiteSpace($ConfigurationScript) -or [string]::IsNullOrWhiteSpace($ConfigurationNode)) {
+    throw 'configure 必须提供 ConfigurationScript 和 ConfigurationNode。'
+  }
+  if (-not [System.IO.Path]::IsPathRooted($ConfigurationScript) -or -not (Test-Path -LiteralPath $ConfigurationScript -PathType Leaf)) {
+    throw 'ConfigurationScript 必须是存在的绝对文件路径。'
+  }
+  if (-not [System.IO.Path]::IsPathRooted($ConfigurationNode) -or -not (Test-Path -LiteralPath $ConfigurationNode -PathType Leaf)) {
+    throw 'ConfigurationNode 必须是存在的绝对文件路径。'
+  }
+  $script:configurationScript = Resolve-FullPath -Value $ConfigurationScript
+  $script:configurationNode = Resolve-FullPath -Value $ConfigurationNode
+  $script:configurationEvidenceDirectory = Join-Path $script:evidenceDirectory "first-config-$Profile"
+  New-Item -ItemType Directory -Path $script:configurationEvidenceDirectory -Force | Out-Null
+}
+
 if ($Action -eq 'start') {
   if ($WarmStart) {
-    $runtimeStateRoot = Join-Path $script:dataDirectory 'runtime\.studio-runtime'
-    $statePaths = @(
-      (Join-Path $runtimeStateRoot 'python-runtime-state.json'),
-      (Join-Path $runtimeStateRoot 'python-state.json'),
-      (Join-Path $runtimeStateRoot 'rapidocr-model-state.json')
-    )
-    foreach ($statePath in $statePaths) {
-      if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { throw "WarmStart 缺少就绪状态文件：$statePath" }
-      $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-      if ($state.status -ne 'ready') { throw "WarmStart 状态不是 ready：$statePath" }
-    }
+    $baseWarmReadiness = Get-PythonReadinessSnapshot
     if (Test-Path -LiteralPath (Join-Path $script:dataDirectory 'web\runtime.json') -PathType Leaf) { throw 'WarmStart 前需通过 VBS 停止上一次隔离实例。' }
     $warmLogText = Get-Content -LiteralPath $script:installLogPath -Raw -ErrorAction Stop
     $baseWarmPrepareCount = [regex]::Matches($warmLogText, '首次启动 Python/OCR 准备开始').Count
@@ -681,7 +924,8 @@ if ($Action -eq 'start') {
     }
   }
 } elseif (-not (Test-Path -LiteralPath $script:dataDirectory -PathType Container)) {
-  throw 'stop 验证需要已有的隔离 DataDirectory。'
+  if ($Action -eq 'stop') { throw 'stop 验证需要已有的隔离 DataDirectory。' }
+  throw 'configure 验证需要已有的隔离 DataDirectory。'
 }
 
 $sessionId = (Get-Process -Id $PID).SessionId
@@ -690,7 +934,24 @@ $desktopPath = [WindowsLauncherEvidence.NativeWindow]::GetCurrentDesktopPath()
 if (-not $desktopPath.Equals('WinSta0\Default', [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "当前桌面不是可见的 WinSta0\Default：$desktopPath；本次 GUI 验证明确失败。"
 }
-$baseEvidence = [ordered]@{
+$baseEvidence = if ($Action -eq 'configure') {
+  [ordered]@{
+    result = 'running'
+    startedAtUtc = $script:runStartedAt.ToString('o')
+    action = $Action
+    profile = $Profile
+    resumeConfiguration = [bool]$ResumeConfiguration
+    browserEvidenceDirectory = "first-config-$Profile"
+    windowsPowerShellVersion = $PSVersionTable.PSVersion.ToString()
+    userInteractive = [Environment]::UserInteractive
+    sessionId = $sessionId
+    sessionName = $env:SESSIONNAME
+    desktop = $desktopPath
+    driverProcessId = $PID
+    screenshots = @()
+  }
+} else {
+  [ordered]@{
   result = 'running'
   startedAtUtc = $script:runStartedAt.ToString('o')
   action = $Action
@@ -708,13 +969,30 @@ $baseEvidence = [ordered]@{
   driverProcessId = $PID
   warmStart = [bool]$WarmStart
   screenshots = @()
+  }
 }
 $script:baseEvidence = $baseEvidence
 if ($WarmStart) { $baseEvidence.prepareStartCountBeforeWarmStart = $baseWarmPrepareCount }
 Start-ConsoleWindowMonitor
 
 try {
-  if ($Action -eq 'start') {
+  if ($Action -eq 'configure') {
+    $configurationResult = Invoke-ConfigurationNode -Deadline $script:deadline
+    Assert-NoNewConsoleWindows
+    $baseEvidence.configurationProcessId = $configurationResult.processId
+    $baseEvidence.configurationExitCode = $configurationResult.exitCode
+    $baseEvidence.stdoutLines = $configurationResult.stdoutLines
+    $baseEvidence.stderrLines = $configurationResult.stderrLines
+    $baseEvidence.successSummary = $configurationResult.successSummary
+    $baseEvidence.configurationDiagnostic = $configurationResult.diagnostic
+    $baseEvidence.consoleWindowMonitor.lastCheckedAtUtc = $script:consoleMonitorLastCheckedAt.ToString('o')
+    $baseEvidence.consoleWindowMonitor.outcome = 'no new visible console windows observed while the Node configuration UI test ran'
+    $baseEvidence.result = 'passed'
+    $baseEvidence.finishedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $baseEvidence.screenshots = @($script:screenshots.ToArray())
+    $evidencePath = Save-LaunchEvidence -Name (Get-LaunchEvidenceName) -Value $baseEvidence
+    Write-Output "Windows 配置 UI 控制台监测通过；证据：$evidencePath"
+  } elseif ($Action -eq 'start') {
     $first = Start-VbsLauncher -EntryPath $script:entryPath -Deadline $script:deadline
     [void]$script:launches.Add($first)
     $firstPrompt = Wait-Window -ProcessId $first.powerShellPid -Kind choice -Deadline $script:deadline
@@ -746,8 +1024,8 @@ try {
     $baseEvidence.firstYesButton = $yesButton
     $progressWindow = Wait-Window -ProcessId $first.powerShellPid -Kind progress -Deadline $script:deadline
     $progressSnapshot = Get-WindowSnapshot -Window $progressWindow
-    $baseEvidence.progressWindowInitial = Assert-ProgressWindow -Window $progressWindow -ExpectedLogPath $script:installLogPath
     $liveProgress = Wait-ProgressText -Window $progressWindow -ExpectedLogPath $script:installLogPath -Deadline $script:deadline -WarmStart:$WarmStart
+    $baseEvidence.progressWindowInitial = Assert-ProgressWindow -Window $progressWindow -ExpectedLogPath $script:installLogPath
     $baseEvidence.liveProgress = $liveProgress
     $progressImage = Save-WindowScreenshot -Window $progressWindow -Name 'launcher-progress-live.png'
     [void]$script:screenshots.Add($progressImage)
@@ -779,8 +1057,15 @@ try {
     } else {
       $prepareText = Get-Content -LiteralPath $script:installLogPath -Raw
       $prepareCount = [regex]::Matches($prepareText, '首次启动 Python/OCR 准备开始').Count
-      if ($prepareCount -ne $baseWarmPrepareCount) { throw "WarmStart 触发了新的 Python/OCR prepare；记录数从 $baseWarmPrepareCount 变为 $prepareCount。" }
+      $expectedWarmPrepareCount = $baseWarmPrepareCount + 1
+      if ($prepareCount -ne $expectedWarmPrepareCount) { throw "WarmStart 应追加一次 Python/OCR prepare 入口日志；记录数应从 $baseWarmPrepareCount 增加到 $expectedWarmPrepareCount，实际为 $prepareCount。" }
       $baseEvidence.prepareStartCountAfterWarmStart = $prepareCount
+      $afterWarmReadiness = Get-PythonReadinessSnapshot
+      $beforeWarmJson = ConvertTo-Json -InputObject $baseWarmReadiness -Depth 10 -Compress
+      $afterWarmJson = ConvertTo-Json -InputObject $afterWarmReadiness -Depth 10 -Compress
+      if ($beforeWarmJson -cne $afterWarmJson) { throw 'WarmStart 改变了 Python venv、锁定依赖指纹或 RapidOCR 模型缓存 SHA。' }
+      $baseEvidence.pythonReadinessBeforeWarmStart = $baseWarmReadiness
+      $baseEvidence.pythonReadinessAfterWarmStart = $afterWarmReadiness
     }
 
     [void](Invoke-Button -Window $completion -AutomationId '' -Names @('关闭') -Description '启动完成窗口的关闭')
@@ -815,7 +1100,7 @@ try {
     $baseEvidence.noButton = Invoke-Button -Window $stopPrompt -AutomationId '7' -Names @('No', '否') -Description '停止工作台提示的 No'
     $progressWindow = Wait-Window -ProcessId $stop.powerShellPid -Kind progress -Deadline $script:deadline
     $progressSnapshot = Get-WindowSnapshot -Window $progressWindow
-    $baseEvidence.progressWindow = Assert-ProgressWindow -Window $progressWindow -ExpectedLogPath $script:installLogPath
+    $baseEvidence.progressWindow = Assert-ProgressWindow -Window $progressWindow
     $progressImage = Save-WindowScreenshot -Window $progressWindow -Name 'launcher-stop-progress.png'
     [void]$script:screenshots.Add($progressImage)
     $completion = Wait-Completion -ProcessId $stop.powerShellPid -Deadline $script:deadline
