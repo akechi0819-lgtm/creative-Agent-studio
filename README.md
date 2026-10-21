@@ -10,18 +10,16 @@
 
 ## 个人版成品下载
 
-首次安装进度、防重复启动及控制台闪窗修正版 `p5-startup.1` 构建中；[修复记录](docs/Windows首次启动修复.md)。下表为上一轮成品。
+首次安装进度、防重复启动及控制台闪窗修正版 p5-startup.1 已完成 Mac 与 Windows 原生构建，下载包已完成完整性校验。Windows 2025 GUI 已通过真实 VBS 入口完成首次配置及停止、重启流程；原报错员工电脑仍待复测，验证边界见 [修复记录](docs/Windows首次启动修复.md)。
 
-目前没有正式 GitHub Release。下方是 2026-10-17 生成的 GitHub Actions 临时成品，来自 P5 Pull Request #1 的 run 39013487213。请下载对应平台的 artifact；artifact 容器内有产品 ZIP 和校验文件。它不是长期下载地址，GitHub 标示的到期时间如下：
+目前没有正式 GitHub Release。以下为 Actions 临时候选 artifact，下载可能要求 GitHub 登录。Artifact 容器内含产品 ZIP 和 SHA-256 sidecar；请解压容器后核对 sidecar。表中摘要对应产品 ZIP。
 
-| 平台 | Actions 成品 | 当前到期时间（北京时间） |
-| --- | --- | --- |
-| Apple 芯片 Mac（arm64） | [下载 Mac artifact](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39013487213/artifacts/12093554430) | 2026-10-31 15:30:50 |
-| Windows 64 位（x64） | [下载 Windows artifact](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39013487213/artifacts/12094521018) | 2026-10-31 15:41:03 |
+| 平台 | Actions 成品 | 产品 ZIP SHA-256 | 到期时间（北京时间） |
+| --- | --- | --- | --- |
+| Apple 芯片 Mac（arm64） | [下载 Mac artifact 12330891582](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39567555684/artifacts/12330891582) | 19fc30584f8da9087e987fa1348982d196e6635e097ca5a19cfb77b943b105a9 | 2026-11-04 16:18:11 |
+| Windows 64 位（x64） | [下载 Windows artifact 12331153368](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39567555684/artifacts/12331153368) | a779b8dbf18fb9cb079561d9734d54837cb9e7647c4ccb1428568a1f26aab691 | 2026-11-04 16:30:56 |
 
-Mac artifact 已包含 AppTranslocation 隔离启动修复；旧 Mac 包有启动缺陷，请勿用旧包作为当前版本。修正版通过了自包含、只读磁盘启动和完整性检查，但原先报错的 Mac 设备仍待实际双击复测。当前包未完成 Developer ID 签名与公证，macOS 可能显示系统安全提示。
-
-Windows 包由 Windows Actions runner 构建并完成包内启动检查；尚未在普通 Windows 设备上复测，也没有 Authenticode 签名。成品包的验证边界见 [P5 最终独立复验](docs/P5最终独立复验.md) 与 [Mac 隔离启动修复记录](docs/Mac运行包隔离启动修复.md)。
+Mac 成品包含 AppTranslocation 隔离启动修复；原报错 Mac 设备仍待实际双击复测。当前包未完成 Developer ID 签名与公证，macOS 可能显示系统安全提示。Windows GUI 流程已在 Windows 2025 按真实 VBS 入口通过首次配置及停止、重启；原报错员工电脑仍待复测。Windows 包也没有 Authenticode 签名。
 
 ## 安装并首次启动成品包
 
