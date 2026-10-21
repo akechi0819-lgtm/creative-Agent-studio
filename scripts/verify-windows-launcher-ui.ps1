@@ -392,9 +392,9 @@ function Save-WindowScreenshot {
 
 function Get-PythonReadinessSnapshot {
   $stateRoot = Join-Path $script:dataDirectory 'runtime\.studio-runtime'
-  $runtime = Get-Content -LiteralPath (Join-Path $stateRoot 'python-runtime-state.json') -Raw | ConvertFrom-Json
-  $dependencies = Get-Content -LiteralPath (Join-Path $stateRoot 'python-state.json') -Raw | ConvertFrom-Json
-  $models = Get-Content -LiteralPath (Join-Path $stateRoot 'rapidocr-model-state.json') -Raw | ConvertFrom-Json
+  $runtime = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $stateRoot 'python-runtime-state.json') -Raw | ConvertFrom-Json
+  $dependencies = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $stateRoot 'python-state.json') -Raw | ConvertFrom-Json
+  $models = Get-Content -Encoding UTF8 -LiteralPath (Join-Path $stateRoot 'rapidocr-model-state.json') -Raw | ConvertFrom-Json
   if ($runtime.status -ne 'ready' -or $dependencies.status -ne 'ready' -or $models.status -ne 'ready') {
     throw 'WarmStart 前后 Python、依赖和 OCR 模型状态都必须保持 ready。'
   }
@@ -526,7 +526,7 @@ function Wait-Completion {
 function Get-RuntimeRecord {
   $runtimePath = Join-Path $script:dataDirectory 'web\runtime.json'
   if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) { return $null }
-  try { return Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json }
+  try { return Get-Content -Encoding UTF8 -LiteralPath $runtimePath -Raw | ConvertFrom-Json }
   catch { return $null }
 }
 
@@ -678,7 +678,7 @@ function Invoke-ConfigurationNode {
   $info.RedirectStandardError = $true
   $info.StandardOutputEncoding = [System.Text.Encoding]::UTF8
   $info.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-  $sourceText = Get-Content -LiteralPath $script:configurationScript -Raw
+  $sourceText = Get-Content -Encoding UTF8 -LiteralPath $script:configurationScript -Raw
   $script:configurationRedactions = @(
     [regex]::Matches($sourceText, "(?m)^\s*const\s+[A-Z][A-Z0-9_]*\s*=\s*'([^']*)';") |
       ForEach-Object { $_.Groups[1].Value } | Where-Object { -not [string]::IsNullOrEmpty($_) }
@@ -914,7 +914,7 @@ if ($Action -eq 'start') {
   if ($WarmStart) {
     $baseWarmReadiness = Get-PythonReadinessSnapshot
     if (Test-Path -LiteralPath (Join-Path $script:dataDirectory 'web\runtime.json') -PathType Leaf) { throw 'WarmStart 前需通过 VBS 停止上一次隔离实例。' }
-    $warmLogText = Get-Content -LiteralPath $script:installLogPath -Raw -ErrorAction Stop
+    $warmLogText = Get-Content -Encoding UTF8 -LiteralPath $script:installLogPath -Raw -ErrorAction Stop
     $baseWarmPrepareCount = [regex]::Matches($warmLogText, '首次启动 Python/OCR 准备开始').Count
     if ($baseWarmPrepareCount -ne 1) { throw "WarmStart 前的隔离日志应只有一次冷启动 prepare，实际为 $baseWarmPrepareCount。" }
   } else {
@@ -1033,7 +1033,7 @@ try {
     $baseEvidence.progressWindowInitialSnapshot = $progressSnapshot
 
     if (-not $WarmStart) {
-      $prepareText = Get-Content -LiteralPath $script:installLogPath -Raw -ErrorAction SilentlyContinue
+      $prepareText = Get-Content -Encoding UTF8 -LiteralPath $script:installLogPath -Raw -ErrorAction SilentlyContinue
       $prepareCount = [regex]::Matches($prepareText, '首次启动 Python/OCR 准备开始').Count
       if ($prepareCount -ne 1) { throw "冷启动 prepare 记录数应为 1，实际为 $prepareCount。" }
       $baseEvidence.prepareStartCountAfterDuplicate = $prepareCount
@@ -1050,12 +1050,12 @@ try {
     $baseEvidence.prepareLogBytes = (Get-Item -LiteralPath $script:installLogPath).Length
     $baseEvidence.prepareLogSha256 = (Get-FileHash -LiteralPath $script:installLogPath -Algorithm SHA256).Hash
     if (-not $WarmStart) {
-      $prepareText = Get-Content -LiteralPath $script:installLogPath -Raw
+      $prepareText = Get-Content -Encoding UTF8 -LiteralPath $script:installLogPath -Raw
       $prepareCount = [regex]::Matches($prepareText, '首次启动 Python/OCR 准备开始').Count
       if ($prepareCount -ne 1) { throw "重复点击导致 prepare 被执行多次；日志记录数为 $prepareCount。" }
       $baseEvidence.prepareStartCountFinal = $prepareCount
     } else {
-      $prepareText = Get-Content -LiteralPath $script:installLogPath -Raw
+      $prepareText = Get-Content -Encoding UTF8 -LiteralPath $script:installLogPath -Raw
       $prepareCount = [regex]::Matches($prepareText, '首次启动 Python/OCR 准备开始').Count
       $expectedWarmPrepareCount = $baseWarmPrepareCount + 1
       if ($prepareCount -ne $expectedWarmPrepareCount) { throw "WarmStart 应追加一次 Python/OCR prepare 入口日志；记录数应从 $baseWarmPrepareCount 增加到 $expectedWarmPrepareCount，实际为 $prepareCount。" }
