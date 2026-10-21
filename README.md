@@ -6,9 +6,11 @@
 
 **个人版（P5 通用版）**面向个人电脑，使用本机素材与自己配置的 API。当前源码在仓库默认的 [main 分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/main)。共享修复与公司版按产品边界同步，当前进度见 [工程进度](docs/工程进度.md)。
 
-**公司版**面向公司授权员工，使用公司现有 Teedy 素材库和新版远端 Canvas，属于独立配置与接入路径。入口见 [codex/company-edition 分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/codex/company-edition)。公司版不是下方个人版成品包。
+**公司版**面向公司授权员工，使用公司现有 Teedy 素材库和与个人版相同的本地 Canvas，属于独立配置与接入路径。入口见 [codex/company-edition 分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/codex/company-edition)。公司版不是下方个人版成品包。
 
 ## 个人版成品下载
+
+首次安装进度、防重复启动及控制台闪窗修正版 `p5-startup.1` 构建中；[修复记录](docs/Windows首次启动修复.md)。下表为上一轮成品。
 
 目前没有正式 GitHub Release。下方是 2026-10-17 生成的 GitHub Actions 临时成品，来自 P5 Pull Request #1 的 run 39013487213。请下载对应平台的 artifact；artifact 容器内有产品 ZIP 和校验文件。它不是长期下载地址，GitHub 标示的到期时间如下：
 

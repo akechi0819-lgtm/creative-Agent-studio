@@ -29,7 +29,7 @@ export async function ensureModelPlugin({ root = dataRoot() } = {}) {
     const existing = await descriptor(root); if (existing) return existing;
     return new Promise((resolve, reject) => {
       const child = fork(path.resolve(import.meta.dirname, '../../scripts/model-plugin.mjs'), [root], {
-        execArgv: ['--use-env-proxy'], detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        execArgv: ['--use-env-proxy'], detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       });
       let done = false;
       const finish = async ok => {

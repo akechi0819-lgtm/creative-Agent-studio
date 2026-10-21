@@ -1,17 +1,20 @@
 #!/usr/bin/env node
-import { access, mkdir, open, readFile, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { access, mkdir, open, readFile, rm, stat } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataRoot } from '../src/canvas/client.mjs';
 import { pathWithin } from '../src/launcher/distribution.mjs';
 import { auxiliaryStatus, stopAuxiliary } from '../src/launcher/services.mjs';
-import { runtimeStatus, stopRuntime } from '../src/launcher/control.mjs';
+import { alive, readJson, runtimeStatus, stopRuntime } from '../src/launcher/control.mjs';
 
 const bundleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const nodePath = process.execPath;
 const expectedTarget = `${process.platform}-${process.arch}`;
 const pythonPrepareScript = path.join(bundleRoot, 'release/prepare-python.mjs');
+const startLockPath = root => path.join(root, 'runtime/.studio-runtime/release-start.lock');
+const startBusyMessage = '本机已有启动或 Python/OCR 准备正在进行，请稍后再试。';
 
 async function verifyBundle() {
   const manifest = JSON.parse(await readFile(path.join(bundleRoot, 'release-manifest.json'), 'utf8'));
@@ -48,32 +51,127 @@ function packageEnvironment(pythonRuntime) {
   };
 }
 
+async function acquireStartLock(root) {
+  const lockPath = startLockPath(root);
+  await mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const owner = { pid: process.pid, token: randomUUID() };
+
+  const create = async () => {
+    const handle = await open(lockPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(JSON.stringify(owner));
+      await handle.sync();
+      return handle;
+    } catch (error) {
+      await handle.close().catch(() => {});
+      await rm(lockPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  };
+
+  let handle;
+  try {
+    handle = await create();
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    let before;
+    let previous;
+    try {
+      before = await readFile(lockPath, 'utf8');
+      previous = JSON.parse(before);
+      if (!Number.isSafeInteger(previous.pid) || previous.pid < 1 || typeof previous.token !== 'string') {
+        throw new Error(startBusyMessage);
+      }
+      if (alive(previous.pid)) throw new Error(startBusyMessage);
+      if (await readFile(lockPath, 'utf8') !== before) throw new Error(startBusyMessage);
+      await rm(lockPath);
+    } catch (readError) {
+      if (readError.message === startBusyMessage) throw readError;
+      if (readError.code !== 'ENOENT') throw new Error(startBusyMessage);
+    }
+    try {
+      handle = await create();
+    } catch (retryError) {
+      if (retryError.code === 'EEXIST') throw new Error(startBusyMessage);
+      throw retryError;
+    }
+  }
+
+  return async () => {
+    await handle.close();
+    const current = await readJson(lockPath);
+    if (current?.pid === owner.pid && current?.token === owner.token) await rm(lockPath, { force: true });
+  };
+}
+
+async function readRunLogTail(logPath, offset, maximumBytes = 6000) {
+  const info = await stat(logPath).catch(() => null);
+  if (!info || info.size <= offset) return '';
+  const length = Math.min(info.size - offset, maximumBytes);
+  const handle = await open(logPath, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, info.size - length);
+    return buffer.subarray(0, bytesRead).toString('utf8').trim();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function preparationError(logPath, runStart, reason) {
+  const tail = await readRunLogTail(logPath, runStart).catch(() => '');
+  return new Error([
+    '本机 Python/OCR 准备未完成，可重试。',
+    reason ? `原因：${reason}` : '',
+    tail ? `本次日志尾部：\n${tail}` : '本次未生成可读取的准备输出。',
+    `完整日志：${logPath}`,
+  ].filter(Boolean).join('\n'));
+}
+
 async function preparePythonRuntime(root) {
   const runtimeRoot = path.join(root, 'runtime');
   const runtimeStateRoot = path.join(runtimeRoot, '.studio-runtime');
   const logPath = path.join(root, 'python-prepare.log');
   await mkdir(root, { recursive: true, mode: 0o700 });
+  const previousLogSize = await stat(logPath).then(info => info.size, () => 0);
   const log = await open(logPath, 'a', 0o600);
-  await log.writeFile(`\n[${new Date().toISOString()}] 首次启动 Python/OCR 准备开始。\n`);
+  const header = `\n[${new Date().toISOString()}] 首次启动 Python/OCR 准备开始。\n`;
+  await log.writeFile(header);
+  const runStart = previousLogSize + Buffer.byteLength(header);
+  process.stderr.write(`安装日志：${logPath}\n`);
   const child = spawn(nodePath, [pythonPrepareScript], {
     cwd: bundleRoot,
     env: { ...process.env },
     windowsHide: true,
-    stdio: ['ignore', log.fd, log.fd],
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const pendingWrites = [];
+  let outputError = null;
+  const persist = chunk => pendingWrites.push(log.write(chunk).catch(error => { outputError ||= error; }));
+  child.stdout.on('data', chunk => {
+    persist(chunk);
+    process.stderr.write(chunk);
+  });
+  child.stderr.on('data', chunk => {
+    persist(chunk);
+    process.stderr.write(chunk);
   });
   let code;
+  let spawnError;
   try {
-    code = await new Promise((resolve, reject) => {
-      child.once('error', reject);
+    code = await new Promise(resolve => {
+      child.once('error', error => { spawnError = error; });
       child.once('close', resolve);
     });
-  } catch (error) {
-    await log.writeFile(`[${new Date().toISOString()}] Python/OCR 准备进程启动失败：${error.message}\n`);
-    throw new Error(`本机 Python/OCR 准备未完成，可重试；安装日志：${logPath}`);
+    await Promise.all(pendingWrites);
+    if (spawnError) await log.writeFile(`[${new Date().toISOString()}] Python/OCR 准备进程启动失败：${spawnError.message}\n`);
+    if (outputError) await log.writeFile(`[${new Date().toISOString()}] 写入 Python/OCR 准备日志失败：${outputError.message}\n`);
   } finally {
     await log.close();
   }
-  if (code !== 0) throw new Error(`本机 Python/OCR 准备未完成，可重试；安装日志：${logPath}`);
+  if (spawnError) throw await preparationError(logPath, runStart, `准备进程启动失败：${spawnError.message}`);
+  if (outputError) throw await preparationError(logPath, runStart, `写入准备日志失败：${outputError.message}`);
+  if (code !== 0) throw await preparationError(logPath, runStart, `准备进程退出代码 ${code}`);
 
   let runtimeState;
   let dependencyState;
@@ -84,19 +182,23 @@ async function preparePythonRuntime(root) {
       readFile(path.join(runtimeStateRoot, 'python-state.json'), 'utf8').then(JSON.parse),
       readFile(path.join(runtimeStateRoot, 'rapidocr-model-state.json'), 'utf8').then(JSON.parse),
     ]);
-  } catch {
-    throw new Error(`本机 Python/OCR 准备状态不完整，可重试；安装日志：${logPath}`);
+  } catch (error) {
+    throw await preparationError(logPath, runStart, `准备状态读取失败：${error.message}`);
   }
   const pythonPath = path.resolve(runtimeState.pythonExecutable || '');
   const modelRoot = path.resolve(modelState.modelRoot || '');
   if (runtimeState.status !== 'ready' || dependencyState.status !== 'ready' || modelState.status !== 'ready'
       || !runtimeState.pythonVersion?.startsWith('3.12.')
       || !pathWithin(runtimeRoot, pythonPath) || !pathWithin(runtimeRoot, modelRoot)) {
-    throw new Error(`本机 Python/OCR 检查未通过，可重试；安装日志：${logPath}`);
+    throw await preparationError(logPath, runStart, '准备状态检查未通过（Python、依赖或 RapidOCR 模型尚未就绪）。');
   }
-  await Promise.all([access(pythonPath), stat(modelRoot).then(info => {
-    if (!info.isDirectory()) throw new Error('模型缓存路径不是目录。');
-  })]);
+  try {
+    await Promise.all([access(pythonPath), stat(modelRoot).then(info => {
+      if (!info.isDirectory()) throw new Error('模型缓存路径不是目录。');
+    })]);
+  } catch (error) {
+    throw await preparationError(logPath, runStart, `准备产物检查失败：${error.message}`);
+  }
   return { pythonPath, modelRoot, logPath };
 }
 
@@ -134,37 +236,48 @@ async function start() {
     await openBrowser(existing.url);
     return { running: true, reused: true, url: existing.url, message: '工作台已在运行，已打开本机页面。' };
   }
-  const pythonRuntime = await preparePythonRuntime(root);
-  const afterPreparation = await runtimeStatus(root);
-  if (afterPreparation.running) {
-    await openBrowser(afterPreparation.url);
-    return { running: true, reused: true, url: afterPreparation.url, message: '本机运行环境已就绪，工作台已在运行并打开页面。' };
-  }
-  const logs = path.join(root, 'web');
-  await mkdir(logs, { recursive: true, mode: 0o700 });
-  const log = await open(path.join(logs, 'service.log'), 'a', 0o600);
-  const env = packageEnvironment(pythonRuntime);
-  const child = spawn(nodePath, [...(process.allowedNodeEnvironmentFlags.has('--use-env-proxy') ? ['--use-env-proxy'] : []), path.join(bundleRoot, 'scripts/web.mjs'), '--no-open'], {
-    cwd: bundleRoot, env, detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
-  });
-  let childError = null;
-  let exited = null;
-  child.once('error', error => { childError = error; });
-  child.once('exit', code => { exited = code; });
-  child.unref();
-  await log.close();
-
-  const deadline = Date.now() + 45_000;
-  while (Date.now() < deadline && !childError && exited === null) {
-    const current = await runtimeStatus(root).catch(() => ({ running: false }));
-    if (current.running) {
-      await openBrowser(current.url);
-      return { running: true, reused: false, url: current.url, message: '工作台已启动，正在默认浏览器打开。' };
+  const releaseStartLock = await acquireStartLock(root);
+  try {
+    const afterLock = await runtimeStatus(root);
+    if (afterLock.running) {
+      await openBrowser(afterLock.url);
+      return { running: true, reused: true, url: afterLock.url, message: '工作台已在运行，已打开本机页面。' };
     }
-    await new Promise(resolve => setTimeout(resolve, 200));
+    const pythonRuntime = await preparePythonRuntime(root);
+    const afterPreparation = await runtimeStatus(root);
+    if (afterPreparation.running) {
+      await openBrowser(afterPreparation.url);
+      return { running: true, reused: true, url: afterPreparation.url, message: '本机运行环境已就绪，工作台已在运行并打开页面。' };
+    }
+    const logs = path.join(root, 'web');
+    await mkdir(logs, { recursive: true, mode: 0o700 });
+    const log = await open(path.join(logs, 'service.log'), 'a', 0o600);
+    const env = packageEnvironment(pythonRuntime);
+    const webArgs = [path.join(bundleRoot, 'scripts/web.mjs'), '--no-open'];
+    const child = spawn(nodePath, [...(process.allowedNodeEnvironmentFlags.has('--use-env-proxy') ? ['--use-env-proxy'] : []), ...webArgs], {
+      cwd: bundleRoot, env, detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
+    });
+    let childError = null;
+    let exited = null;
+    child.once('error', error => { childError = error; });
+    child.once('exit', code => { exited = code; });
+    child.unref();
+    await log.close();
+
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline && !childError && exited === null) {
+      const current = await runtimeStatus(root).catch(() => ({ running: false }));
+      if (current.running) {
+        await openBrowser(current.url);
+        return { running: true, reused: false, url: current.url, message: '工作台已启动，正在默认浏览器打开。' };
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    const detail = childError?.message ?? (exited !== null ? `启动进程已退出（代码 ${exited}）` : '启动超过 45 秒仍未健康就绪');
+    throw new Error(`工作台启动失败：${detail}。可在本机应用数据目录的 web/service.log 查看日志。`);
+  } finally {
+    await releaseStartLock();
   }
-  const detail = childError?.message ?? (exited !== null ? `启动进程已退出（代码 ${exited}）` : '启动超过 45 秒仍未健康就绪');
-  throw new Error(`工作台启动失败：${detail}。可在本机应用数据目录的 web/service.log 查看日志。`);
 }
 
 async function stop() {

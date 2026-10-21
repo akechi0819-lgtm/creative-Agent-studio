@@ -147,6 +147,7 @@ async function runOcr(args, options) {
     cwd: workspaceRoot,
     env: isolatedEnv,
     stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
   });
   const timeoutMs = Number.isFinite(options.ocrTimeoutMs) && options.ocrTimeoutMs > 0
     ? options.ocrTimeoutMs

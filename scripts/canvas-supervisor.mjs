@@ -309,7 +309,7 @@ try {
   const bridgePort=await freePort();
   const logs = await open(path.join(data,'canvas-bridge.log'),'a',0o600);
   child=spawn(process.execPath,[path.join(root,'third_party/canvas/canvas-agent/dist/index.js')],{
-    cwd:root,env:{PATH:process.env.PATH||'',HOME:process.env.HOME||'',TMPDIR:process.env.TMPDIR||'',LANG:process.env.LANG||'en_US.UTF-8',PORT:String(bridgePort),CANVAS_AGENT_TOKEN:token,CANVAS_AGENT_DATA_DIR:path.join(data,'bridge'),CANVAS_AGENT_PROJECT_ID:projectId,CANVAS_AGENT_INSTANCE_ID:instanceId,CANVAS_AGENT_ORIGIN:webUrl},stdio:['ignore',logs.fd,logs.fd],
+    cwd:root,env:{PATH:process.env.PATH||'',HOME:process.env.HOME||'',TMPDIR:process.env.TMPDIR||'',LANG:process.env.LANG||'en_US.UTF-8',PORT:String(bridgePort),CANVAS_AGENT_TOKEN:token,CANVAS_AGENT_DATA_DIR:path.join(data,'bridge'),CANVAS_AGENT_PROJECT_ID:projectId,CANVAS_AGENT_INSTANCE_ID:instanceId,CANVAS_AGENT_ORIGIN:webUrl},stdio:['ignore',logs.fd,logs.fd],windowsHide:true,
   });
   await logs.close();
   child.once('exit',()=>{ if (!stopping) void stop(); });

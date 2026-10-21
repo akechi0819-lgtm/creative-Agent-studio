@@ -68,7 +68,7 @@ try{
   if(!args.includes('--no-open')){
     const command=process.platform==='darwin'?'open':process.platform==='win32'?'cmd':'xdg-open';
     const parameters=process.platform==='win32'?['/c','start','',url]:[url];
-    const opener=spawn(command,parameters,{stdio:'ignore'});opener.on('error',()=>console.log('可在浏览器打开上方本地地址。'));
+    const opener=spawn(command,parameters,{stdio:'ignore',windowsHide:true});opener.on('error',()=>console.log('可在浏览器打开上方本地地址。'));
   }
 }catch(error){
   await stop();

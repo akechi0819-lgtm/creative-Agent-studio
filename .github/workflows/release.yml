@@ -9,7 +9,7 @@ on:
       version:
         description: Release package version
         required: true
-        default: p5-prebuild
+        default: p5-startup.1
         type: string
 
 permissions:
