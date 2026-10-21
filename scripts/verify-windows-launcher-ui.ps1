@@ -532,7 +532,7 @@ try {
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
   Add-Type -AssemblyName System.Drawing
-  Add-Type -TypeDefinition @'
+  Add-Type -ReferencedAssemblies @('System.dll', 'System.Core.dll', 'System.Drawing.dll') -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Drawing;
