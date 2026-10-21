@@ -9,7 +9,7 @@ on:
       version:
         description: Company package version
         required: true
-        default: company-p5.1.3
+        default: company-p5.1.4
         type: string
 
 permissions:
@@ -74,7 +74,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           BASE_ARCHIVE: ${{ runner.temp }}/p5-base/${{ matrix.archive }}
           OUTPUT_DIRECTORY: ${{ runner.temp }}/company-output
-          PACKAGE_VERSION: ${{ inputs.version || 'company-p5.1.3' }}
+          PACKAGE_VERSION: ${{ inputs.version || 'company-p5.1.4' }}
           COMPANY_SERVICES_FILE: ${{ runner.temp }}/company-services.json
         run: |
           set -euo pipefail

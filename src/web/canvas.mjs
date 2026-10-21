@@ -346,7 +346,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
             spawnFailed ? 'Canvas 启动失败' : 'Canvas 启动超时');
         }
         const child = spawn(process.execPath, [...supervisorNodeArgs(), SUPERVISOR], {
-          cwd: REPO_ROOT, env: limitedEnv(taskDir, taskId, webPort), stdio: ['ignore', 'pipe', 'pipe'],
+          cwd: REPO_ROOT, env: limitedEnv(taskDir, taskId, webPort), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
         });
         let stdout = '';
         let ready = null;

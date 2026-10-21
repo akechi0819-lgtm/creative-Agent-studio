@@ -6,6 +6,8 @@
 
 ## 当前成品下载
 
+Windows 首次准备与控制台闪窗修正版 `company-p5.1.4` 构建中。下表 `company-p5.1.3` 为上一轮成品；本轮说明见 [修复记录](docs/Windows首次启动修复.md)。
+
 | 设备 | 应下载版本 | 下载 |
 | --- | --- | --- |
 | Apple 芯片 Mac | `company-p5.1.3`，本地 Canvas 版 | [Mac 修正版](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39030283951/artifacts/12100615928) |

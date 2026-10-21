@@ -242,7 +242,7 @@
     "inputSha256": "13e407d870e276a3ccd55984119f87b745d1549b88ae2ad3a6476fb4b154fa6f",
     "buildScript": "../../scripts/build-workbuddy-plugin.mjs",
     "runtimePath": "workbuddy/runtime.mjs",
-    "runtimeSha256": "c21ae850aad41af1329785c77d3469e0ed2838e3b41b17bfac48bb77c7d44a6e",
+    "runtimeSha256": "e140d25c19ab8fa914ba642ebf200132172cda00b7737125bb046037e98af390",
     "localAdapters": [
       "workbuddy/contracts.mjs",
       "workbuddy/images.mjs"
@@ -251,7 +251,8 @@
       "Export only Buddy/WorkBuddy registration and protocol dependencies",
       "Forward cancellation signal through login state and token/account polling",
       "Use project-owned credentials and image contracts",
-      "P4 public distribution removes unused Loomy credentials and Gemini OAuth constants; original upstream hash retained without copying credential literals"
+      "P4 public distribution removes unused Loomy credentials and Gemini OAuth constants; original upstream hash retained without copying credential literals",
+      "Hide the Windows browser-login helper console in the project-owned build transform; pinned upstream input remains unchanged"
     ],
     "upstreamInputSha256": "9793bea5c4ce51fb93fbba2dfe3691588ac050ed4727646c99d11977d2a8b457"
   }

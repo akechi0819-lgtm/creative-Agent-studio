@@ -44,6 +44,13 @@ replaceOnce(
   '登录轮询取消信号'
 )
 
+// Windows browser login is launched by a hidden helper, not a console window.
+replaceOnce(
+  'spawn("cmd", args, { detached: true, stdio: "ignore", windowsVerbatimArguments: true })',
+  'spawn("cmd", args, { detached: true, stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true })',
+  'Windows 登录浏览器隐藏窗口'
+)
+
 extracted += `\nexport {\n  BuddyAuth, CODEBUDDY, WORKBUDDY, fetchAuthState, decorateLoginUrl, runBuddyLoginFlow,\n  makeReadImage, makeReadImageRequest, registerBuddyLlm, configureDeadModelStore,\n  toGenerateOptions, toResponsesGenerateOptions, normalizeReasoningEffort,\n  responsesReasoningEffort, normalizeMaxTokens, responsesMaxOutputTokens, markGatewayChannel,\n  collectGatewayModels, collectGatewayEffortViews, toOpenAiModels\n};\n`
 
 const intermediate = path.join(sourceDir, `.workbuddy-extract-${process.pid}.mjs`)

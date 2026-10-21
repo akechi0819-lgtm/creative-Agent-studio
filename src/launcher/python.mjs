@@ -152,35 +152,49 @@ function environmentFor(paths, { managedPython = false } = {}) {
   return env;
 }
 
-function run(command, args, { cwd, env = process.env, capture = false, timeout = 30 * 60 * 1000 } = {}) {
+function run(command, args, { cwd, env = process.env, capture = false, timeout = 30 * 60 * 1000, idleTimeout = null } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd,
-      env,
-      windowsHide: true,
-      stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
     const stdout = [];
     const stderr = [];
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
+    let timedOut = '';
+    let killTimer;
+    const terminate = (reason) => {
+      if (timedOut) return;
+      timedOut = reason;
       child.kill('SIGTERM');
-      const killTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
       killTimer.unref?.();
-    }, timeout);
+    };
+    const timer = setTimeout(() => terminate('total'), timeout);
     timer.unref?.();
-    if (capture) {
-      child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
-      child.stderr.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
-    }
-    child.once('error', (error) => {
+    const idleTimer = idleTimeout == null ? null : setTimeout(() => terminate('idle'), idleTimeout);
+    idleTimer?.unref?.();
+    const clearTimers = () => {
       clearTimeout(timer);
-      reject(error);
+      clearTimeout(idleTimer);
+      clearTimeout(killTimer);
+    };
+    child.stdout.on('data', (chunk) => {
+      idleTimer?.refresh();
+      if (capture) stdout.push(Buffer.from(chunk));
+      else process.stdout.write(chunk);
     });
+    child.stderr.on('data', (chunk) => {
+      idleTimer?.refresh();
+      if (capture) stderr.push(Buffer.from(chunk));
+      else process.stderr.write(chunk);
+    });
+    child.once('error', (error) => { clearTimers(); reject(error); });
     child.once('close', (code, signal) => {
-      clearTimeout(timer);
-      if (timedOut) return reject(new Error(`命令超时：${path.basename(command)}`));
+      clearTimers();
+      if (timedOut) {
+        const duration = timedOut === 'idle' ? idleTimeout : timeout;
+        const detail = timedOut === 'idle' ? '连续无安装输出' : '总运行时间';
+        return reject(new Error(`${path.basename(command)} ${detail}超过 ${Math.round(duration / 60_000)} 分钟；已完成的下载缓存保留，下次启动可继续检查和安装。`));
+      }
       if (code !== 0) {
         const detail = capture ? Buffer.concat(stderr).toString('utf8').trim().slice(-3000) : '';
         return reject(new Error(`${path.basename(command)} 退出码 ${code ?? signal ?? 'unknown'}${detail ? `：${detail}` : ''}`));
@@ -518,8 +532,10 @@ async function createVenv(uv, venvPath, systemPython, paths, projectRoot) {
 
 async function syncDependencies(uv, pythonPath, paths, projectRoot) {
   const env = environmentFor(paths);
+  // A progressing first download must not be killed at 30 minutes. Bound stalls
+  // separately, keeping the uv cache and stage for the next attempt.
   await run(uv, ['pip', 'sync', '--no-config', '--python', pythonPath, '--require-hashes', paths.lock, paths.workspaceLock], {
-    cwd: projectRoot, env,
+    cwd: projectRoot, env, idleTimeout: 30 * 60 * 1000, timeout: 2 * 60 * 60 * 1000,
   });
   await run(uv, ['pip', 'check', '--python', pythonPath], {
     cwd: projectRoot, env, timeout: 5 * 60 * 1000,
@@ -807,7 +823,7 @@ export async function preparePython(options = {}) {
 }
 
 export const pythonInternals = Object.freeze({
-  runtimePaths, pythonExecutable, supportedAsset, fingerprint, dependencySpec,
+  runtimePaths, pythonExecutable, supportedAsset, fingerprint, dependencySpec, run,
   inspectPython, checkPython, verifyModelCache, modelStateReady, prepareWithOperations: preparePythonCore,
 });
 

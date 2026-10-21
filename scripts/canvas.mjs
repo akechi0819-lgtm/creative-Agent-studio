@@ -8,7 +8,7 @@ try {
     try {const c=await connection();await health(c);throw new Error('本数据目录 Canvas 已运行，请使用 status');} catch(e) {if(e.message.includes('已运行'))throw e;}
     await mkdir(dataRoot(),{recursive:true});
     const log=await open(path.join(dataRoot(),'supervisor.log'),'a',0o600);
-    const child=spawn(process.execPath,[path.join(root,'scripts/canvas-supervisor.mjs')],{cwd:root,env:process.env,detached:true,stdio:['ignore',log.fd,log.fd]}); child.unref(); await log.close();
+    const child=spawn(process.execPath,[path.join(root,'scripts/canvas-supervisor.mjs')],{cwd:root,env:process.env,detached:true,windowsHide:true,stdio:['ignore',log.fd,log.fd]}); child.unref(); await log.close();
     for(let i=0;i<150;i++){try{const c=await connection();await health(c);console.log(JSON.stringify({started:true,instanceId:c.instanceId,webUrl:c.webUrl,bridgeUrl:c.bridgeUrl,projectId:c.projectId}));process.exit(0);}catch{}await new Promise(r=>setTimeout(r,100));}
     throw new Error('Canvas 启动未完成，请检查 supervisor.log 和实例锁；不会连接其他服务');
   } else if (action === 'stop') {
