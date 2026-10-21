@@ -1,0 +1,263 @@
+name: Windows packaged user flow
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Release profile to exercise
+        required: true
+        default: both
+        type: choice
+        options: [both, company, general]
+      company_run_id:
+        description: Successful run that contains company-release-win32-x64
+        required: true
+        default: '39565191478'
+        type: string
+      personal_run_id:
+        description: Successful run that contains release-win32-x64
+        required: true
+        default: '39567555684'
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  windows-user-flow:
+    name: ${{ matrix.profile }} package first run and restart
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(inputs.profile == 'both' && '["company","general"]' || format('["{0}"]', inputs.profile)) }}
+    env:
+      TEST_PROFILE: ${{ matrix.profile }}
+      PACKAGE_DOWNLOAD_DIR: C:\w\artifact
+      PACKAGE_EXTRACT_DIR: C:\w\pkg
+      TEST_DATA_DIR: C:\w\data
+      TEST_EVIDENCE_DIR: C:\w\evidence
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        timeout-minutes: 10
+        with:
+          node-version: 22.23.3
+          cache: npm
+
+      - name: Prepare isolated short test paths
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @($env:PACKAGE_DOWNLOAD_DIR, $env:PACKAGE_EXTRACT_DIR, $env:TEST_DATA_DIR, $env:TEST_EVIDENCE_DIR, 'C:\w\evidence-upload')
+          foreach ($path in $paths) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+          }
+          New-Item -ItemType Directory -Path (Join-Path $env:TEST_EVIDENCE_DIR 'launcher') -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $env:TEST_EVIDENCE_DIR 'browser') -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) -Force | Out-Null
+
+      - name: Download selected final Windows artifact
+        uses: actions/download-artifact@v4
+        timeout-minutes: 30
+        with:
+          name: ${{ matrix.profile == 'company' && 'company-release-win32-x64' || 'release-win32-x64' }}
+          repository: ${{ github.repository }}
+          run-id: ${{ matrix.profile == 'company' && inputs.company_run_id || inputs.personal_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: C:\w\artifact
+
+      - name: Verify SHA-256 sidecar and extract package at a short path
+        shell: pwsh
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archives = @(Get-ChildItem -LiteralPath $env:PACKAGE_DOWNLOAD_DIR -File -Filter '*.zip')
+          if ($archives.Count -ne 1) { throw "Expected exactly one final ZIP; found $($archives.Count)." }
+          $archive = $archives[0]
+          $sidecarPath = $archive.FullName + '.sha256'
+          if (-not (Test-Path -LiteralPath $sidecarPath -PathType Leaf)) { throw "Missing SHA-256 sidecar for $($archive.Name)." }
+          $sidecar = (Get-Content -LiteralPath $sidecarPath -Raw).Trim()
+          $match = [regex]::Match($sidecar, '^(?<hash>[A-Fa-f0-9]{64})\s{2,}(?<name>.+?)\s*$')
+          if (-not $match.Success -or $match.Groups['name'].Value -ne $archive.Name) { throw 'The SHA-256 sidecar format or archive name is invalid.' }
+          $actualHash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $match.Groups['hash'].Value.ToLowerInvariant()) { throw "Final ZIP SHA-256 mismatch for $($archive.Name)." }
+
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $env:PACKAGE_EXTRACT_DIR
+          $packageFolders = @(Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory)
+          if ($packageFolders.Count -ne 1) { throw 'The final ZIP must contain exactly one package root directory.' }
+          $packageRoot = $packageFolders[0].FullName
+          $manifestPath = Join-Path $packageRoot 'release-manifest.json'
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'The extracted package has no release-manifest.json.' }
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.target -ne 'win32-x64' -or $manifest.platform -ne 'win32' -or $manifest.architecture -ne 'x64') { throw 'The selected artifact is not the final win32-x64 package.' }
+          if ($manifest.pythonRuntime.bundled -ne $false -or $manifest.pythonRuntime.preparedOnFirstStart -ne $true) { throw 'The package manifest does not describe first-start Python/OCR preparation.' }
+          if ($env:TEST_PROFILE -eq 'company') {
+            if ($manifest.profile -ne 'company' -or $manifest.product -ne 'Creative Agent Studio Company') { throw 'The selected artifact is not the Company release.' }
+            $entry = Join-Path $packageRoot 'Start-Company.vbs'
+            if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'company-services.json') -PathType Leaf)) { throw 'Company service provisioning is missing from the package.' }
+          } else {
+            if ($manifest.product -ne 'Creative Agent Studio' -or $manifest.profile -eq 'company') { throw 'The selected artifact is not the general Personal release.' }
+            $entry = Join-Path $packageRoot 'Start.vbs'
+          }
+          if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) { throw "Packaged VBS entry point is missing: $entry" }
+          Write-Host "Verified $($env:TEST_PROFILE) artifact sidecar and package root $packageRoot."
+          Write-Host 'Company service profile contents are not displayed or copied into evidence.'
+
+      - name: Install repository dependencies and Playwright Chromium
+        shell: pwsh
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE." }
+          npx playwright install chromium
+          if ($LASTEXITCODE -ne 0) { throw "Playwright Chromium install failed with exit code $LASTEXITCODE." }
+
+      - name: Real VBS cold start and duplicate-click check
+        id: cold_start
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -MTA -Command ". '{0}'"
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::MTA) { throw 'Windows GUI verification requires a Windows PowerShell MTA session.' }
+          $packageRoot = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
+          & .\scripts\verify-windows-launcher-ui.ps1 -PackageRoot $packageRoot -Profile $env:TEST_PROFILE -DataDirectory (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) -EvidenceDirectory (Join-Path $env:TEST_EVIDENCE_DIR 'launcher') -Action start -TimeoutSeconds 2400
+          if (-not $?) { throw 'Real packaged VBS cold-start UI verification failed.' }
+
+      - name: First-run configuration through the packaged workbench UI
+        id: first_config
+        if: success()
+        shell: pwsh
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageRoot = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
+          node scripts/verify-windows-first-config.mjs --package-root $packageRoot --profile $env:TEST_PROFILE --data-dir (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) --evidence-dir (Join-Path $env:TEST_EVIDENCE_DIR 'browser')
+          if ($LASTEXITCODE -ne 0) { throw "First-run configuration UI verification failed with exit code $LASTEXITCODE." }
+
+      - name: Stop the first-run instance through the real VBS
+        id: cold_stop
+        if: always()
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -MTA -Command ". '{0}'"
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dataDirectory = Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE
+          if (-not (Test-Path -LiteralPath (Join-Path $dataDirectory 'web\runtime.json') -PathType Leaf)) {
+            Write-Host 'No isolated running instance was recorded; no stop dialog is available.'
+            exit 0
+          }
+          if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::MTA) { throw 'Windows GUI verification requires a Windows PowerShell MTA session.' }
+          $packageRoot = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
+          & .\scripts\verify-windows-launcher-ui.ps1 -PackageRoot $packageRoot -Profile $env:TEST_PROFILE -DataDirectory $dataDirectory -EvidenceDirectory (Join-Path $env:TEST_EVIDENCE_DIR 'launcher') -Action stop -TimeoutSeconds 600
+          if (-not $?) { throw 'Real VBS stop UI verification after first-run failed.' }
+
+      - name: Real VBS warm restart with prepared runtime reuse
+        id: warm_start
+        if: success()
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -MTA -Command ". '{0}'"
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::MTA) { throw 'Windows GUI verification requires a Windows PowerShell MTA session.' }
+          $packageRoot = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
+          & .\scripts\verify-windows-launcher-ui.ps1 -PackageRoot $packageRoot -Profile $env:TEST_PROFILE -DataDirectory (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) -EvidenceDirectory (Join-Path $env:TEST_EVIDENCE_DIR 'launcher') -Action start -WarmStart -TimeoutSeconds 2400
+          if (-not $?) { throw 'Real packaged VBS warm-start UI verification failed.' }
+
+      - name: Resume the saved workbench configuration after restart
+        id: resume_config
+        if: success()
+        shell: pwsh
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageRoot = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
+          node scripts/verify-windows-first-config.mjs --package-root $packageRoot --profile $env:TEST_PROFILE --data-dir (Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE) --evidence-dir (Join-Path $env:TEST_EVIDENCE_DIR 'browser') --resume
+          if ($LASTEXITCODE -ne 0) { throw "Restart configuration UI verification failed with exit code $LASTEXITCODE." }
+
+      - name: Final stop through the real VBS
+        id: final_stop
+        if: always()
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -MTA -Command ". '{0}'"
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dataDirectory = Join-Path $env:TEST_DATA_DIR $env:TEST_PROFILE
+          if (-not (Test-Path -LiteralPath (Join-Path $dataDirectory 'web\runtime.json') -PathType Leaf)) {
+            Write-Host 'No isolated running instance remains; final stop is already complete.'
+            exit 0
+          }
+          if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::MTA) { throw 'Windows GUI verification requires a Windows PowerShell MTA session.' }
+          $packageRoot = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
+          & .\scripts\verify-windows-launcher-ui.ps1 -PackageRoot $packageRoot -Profile $env:TEST_PROFILE -DataDirectory $dataDirectory -EvidenceDirectory (Join-Path $env:TEST_EVIDENCE_DIR 'launcher') -Action stop -TimeoutSeconds 600
+          if (-not $?) { throw 'Final real VBS stop UI verification failed.' }
+
+      - name: Verify installed package files remain unchanged
+        if: success()
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $env:VERIFIED_PACKAGE_ROOT = (Get-ChildItem -LiteralPath $env:PACKAGE_EXTRACT_DIR -Directory | Select-Object -First 1).FullName
+          @'
+          import fs from 'node:fs/promises';
+          import path from 'node:path';
+          import { createHash } from 'node:crypto';
+          const root = process.env.VERIFIED_PACKAGE_ROOT;
+          const manifest = JSON.parse(await fs.readFile(path.join(root, 'release-manifest.json'), 'utf8'));
+          for (const file of manifest.files) {
+            const data = await fs.readFile(path.join(root, file.path));
+            if (data.length !== file.size || createHash('sha256').update(data).digest('hex') !== file.sha256) throw new Error('Installed package changed: ' + file.path);
+          }
+          const summary = { profile: process.env.TEST_PROFILE, filesVerified: manifest.files.length, result: 'passed' };
+          await fs.writeFile(path.join(process.env.TEST_EVIDENCE_DIR, 'package-integrity.json'), JSON.stringify(summary, null, 2));
+          console.log(JSON.stringify(summary));
+          '@ | node --input-type=module
+          if ($LASTEXITCODE -ne 0) { throw 'Package integrity verification failed.' }
+
+      - name: Stage sanitized evidence
+        if: always()
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Join-Path $env:TEST_EVIDENCE_DIR 'launcher'
+          $destination = 'C:\w\evidence-upload'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          if (Test-Path -LiteralPath $source) {
+            Get-ChildItem -LiteralPath $source -File -Filter '*.png' | Copy-Item -Destination $destination -Force
+          }
+          foreach ($folder in @('launcher', 'browser')) {
+            $folderPath = Join-Path $env:TEST_EVIDENCE_DIR $folder
+            if (Test-Path -LiteralPath $folderPath) {
+              foreach ($report in (Get-ChildItem -LiteralPath $folderPath -File -Filter '*.json')) {
+                $text = Get-Content -LiteralPath $report.FullName -Raw
+                if ($text -match '"(?:token|apiKey|password|authorization)"\s*:') { throw "Refusing sensitive report: $($report.Name)" }
+                Copy-Item -LiteralPath $report.FullName -Destination $destination -Force
+              }
+            }
+          }
+          $integrity = Join-Path $env:TEST_EVIDENCE_DIR 'package-integrity.json'
+          if (Test-Path -LiteralPath $integrity) { Copy-Item -LiteralPath $integrity -Destination $destination -Force }
+          $screenshots = @(Get-ChildItem -LiteralPath $destination -File -Filter '*.png')
+          Write-Host "Staged $($screenshots.Count) launcher screenshots; plus sanitized reports; runtime, logs and settings screenshots are excluded."
+
+      - name: Upload sanitized user-flow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        with:
+          name: windows-user-flow-${{ matrix.profile }}-${{ github.run_id }}
+          path: C:/w/evidence-upload/*
+          if-no-files-found: warn
+          retention-days: 14
