@@ -506,7 +506,7 @@ function Wait-ProgressText {
     try {
       $snapshot = Get-WindowSnapshot -Window $Window
       $editText = Get-VisibleEditText -Window $Window
-      $streamMarker = if ($WarmStart) { '[运行输出]' } else { '[安装进度]' }
+      $streamMarker = '[安装进度]'
       $actualProgress = $editText -and $editText.text.Contains($streamMarker)
       $actualTime = $snapshot.text -match '已运行\s+\d{2}:\d{2}'
       if ($actualProgress -and $actualTime) {
@@ -647,7 +647,7 @@ function Stop-ConfigurationProcessTree {
 }
 
 function Sanitize-ConfigurationOutputLine {
-  param([Parameter(Mandatory = $true)][string]$Line)
+  param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Line)
   $safe = [regex]::Replace($Line, '(?i)(\bBearer\s+)[^\s,;"'']+', '$1<redacted>')
   foreach ($value in $script:configurationRedactions) {
     if ($value.Length -ge 4) {
