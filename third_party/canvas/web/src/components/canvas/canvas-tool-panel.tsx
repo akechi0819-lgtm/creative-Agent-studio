@@ -6,6 +6,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
 import { imageToDataUrl } from "@/services/image-storage";
+import { createCanvasConnectionRecovery } from "@/lib/canvas/canvas-connection";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasImageOperationRequest } from "@/lib/canvas/canvas-image-operations";
 
@@ -15,12 +16,18 @@ export function CanvasToolPanel() {
     const navigate = useNavigate();
     const { panelOpen, url, token, enabled, connected, activity, studioManaged, setAgentState } = useCanvasToolStore();
     const theme = canvasThemes[useThemeStore(s => s.theme)];
+    const clientIdRef = useRef<string | null>(null);
+    if (!clientIdRef.current) clientIdRef.current = crypto.randomUUID();
     const [confirm, setConfirm] = useState(false);
     const confirmRef = useRef(confirm); confirmRef.current = confirm;
     const [pending, setPending] = useState<ToolCall | null>(null);
     const pendingRef = useRef<ToolCall | null>(null);
     const runRef = useRef<((call: ToolCall, reject?: boolean) => Promise<void>) | null>(null);
     const [error, setError] = useState("");
+    const [connectionError, setConnectionError] = useState("");
+    const projectId = useCanvasToolStore(state => state.canvasContext?.snapshot.projectId)
+        || new URLSearchParams(location.search).get("projectId")
+        || "";
     useEffect(() => {
         const params = new URLSearchParams(hash.slice(1));
         const endpoint = params.get("agentUrl"), credential = params.get("agentToken");
@@ -31,28 +38,48 @@ export function CanvasToolPanel() {
         }
     }, [hash, setAgentState]);
     useEffect(() => {
-        if (!enabled || !url || !token) return;
+        if (!enabled || !url || !token || !projectId) return;
         const endpoint = url.replace(/\/$/, "");
-        const clientId = crypto.randomUUID();
+        const clientId = clientIdRef.current!;
         let closed = false;
-        const query = () => new URLSearchParams({token, clientId, projectId: useCanvasToolStore.getState().canvasContext?.snapshot.projectId || new URLSearchParams(location.search).get("projectId") || ""});
-        const post = async (route: string, body: unknown) => {
-            const response = await fetch(endpoint + route + "?" + query(), {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)});
-            if (!response.ok) throw new Error((await response.json()).error || "绘图桥接请求失败");
+        const query = () => new URLSearchParams({token, clientId, projectId});
+        const post = async (route: string, body: unknown, signal?: AbortSignal) => {
+            const response = await fetch(endpoint + route + "?" + query(), {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body), signal});
+            if (!response.ok) {
+                const detail = await response.json().then(data => data.error).catch(() => "");
+                const error = new Error(detail || "绘图桥接请求失败") as Error & {status: number};
+                error.status = response.status;
+                throw error;
+            }
         };
-        const publish = async () => {
-            const context = useCanvasToolStore.getState().canvasContext;
-            const snapshot = context?.getSnapshot();
-            if (snapshot) await post("/canvas/state", {...snapshot, hasCanvas:true});
-        };
+        setAgentState({connected:false,activity:"纯绘图工具连接中"});
+        const connection = createCanvasConnectionRecovery({
+            createEventSource: () => new EventSource(endpoint + "/events?" + query()),
+            getSnapshot: () => {
+                const snapshot = useCanvasToolStore.getState().canvasContext?.getSnapshot();
+                return snapshot?.projectId === projectId ? snapshot : null;
+            },
+            publishSnapshot: (snapshot, signal) => post("/canvas/state", snapshot, signal),
+            onStatus: (isConnected, nextActivity) => setAgentState({connected:isConnected,activity:nextActivity}),
+            onConnectionError: setConnectionError,
+            onConnectionRecovered: () => setConnectionError(""),
+            onToolCall: event => {
+                const call = JSON.parse(event.data) as ToolCall;
+                if (confirmRef.current && ["canvas_apply_ops", "canvas_crop_image", "canvas_split_image", "canvas_resample_image", "canvas_stitch_images", "canvas_compose_images", "canvas_import_image", "workbench_image_generate"].includes(call.name)) {
+                    if (pendingRef.current) { void post("/canvas/result", {requestId:call.requestId,error:"已有待确认操作"}).catch(() => {}); return; }
+                    pendingRef.current=call; setPending(call);
+                } else void runRef.current?.(call);
+            },
+        });
         runRef.current = async (call, reject = false) => {
             try {
                 if (reject) throw new Error("用户拒绝画布操作");
                 const context = useCanvasToolStore.getState().canvasContext;
                 if (!context) throw new Error("请先打开目标画布");
+                if (context.getSnapshot().projectId !== projectId) throw new Error("画布项目已切换，请重新连接绘图工具");
                 let result: unknown;
                 if (isSiteTool(call.name)) result = await runSiteTool(call.name, call.input || {}, navigate, {canvasSnapshot:context.getSnapshot()});
-                else if (call.name === "canvas_apply_ops") { context.applyOps(call.input?.ops); result = context.getSnapshot(); await post("/canvas/state", {...(result as CanvasAgentSnapshot),hasCanvas:true}); }
+                else if (call.name === "canvas_apply_ops") { context.applyOps(call.input?.ops); result = context.getSnapshot(); await connection.writeState(result as CanvasAgentSnapshot); }
                 else if (call.name === "canvas_read_image") {
                     const node = context.getSnapshot().nodes.find(n => n.id === call.input?.nodeId);
                     if (!node || node.type !== "image") throw new Error("图片节点不存在");
@@ -60,37 +87,33 @@ export function CanvasToolPanel() {
                     result = {nodeId:node.id, dataUrl, width:node.metadata?.naturalWidth, height:node.metadata?.naturalHeight};
                 } else if (call.name === "canvas_crop_image" || call.name === "canvas_split_image" || call.name === "canvas_resample_image" || call.name === "canvas_stitch_images" || call.name === "canvas_compose_images" || call.name === "canvas_import_image") {
                     result = await context.runImageOperation(toCanvasImageOperationRequest(call));
-                    await post("/canvas/state", {...context.getSnapshot(),hasCanvas:true});
+                    await connection.writeState(context.getSnapshot());
                 } else throw new Error("未知绘图工具：" + call.name);
+                if (closed) return;
                 await post("/canvas/result", {requestId:call.requestId, result});
-                setAgentState({activity:"绘图工具已完成"});
+                if (!closed) setAgentState({activity:"绘图工具已完成"});
             } catch (e) {
+                if (closed) return;
                 const text = e instanceof Error ? e.message : String(e);
                 setError(text);
                 await post("/canvas/result", {requestId:call.requestId, error:text}).catch(() => {});
-            } finally { pendingRef.current = null; setPending(null); }
+            } finally { if (!closed) { pendingRef.current = null; setPending(null); } }
         };
-        const source = new EventSource(endpoint + "/events?" + query());
-        source.addEventListener("hello", () => {
-            if (closed) return;
-            setAgentState({connected:true, activity:"纯绘图工具已连接"});
-            void publish().catch(e => setError(String(e)));
-        });
-        source.addEventListener("tool_call", event => {
-            const call = JSON.parse((event as MessageEvent).data) as ToolCall;
-            if (confirmRef.current && ["canvas_apply_ops", "canvas_crop_image", "canvas_split_image", "canvas_resample_image", "canvas_stitch_images", "canvas_compose_images", "canvas_import_image", "workbench_image_generate"].includes(call.name)) {
-                if (pendingRef.current) { void post("/canvas/result", {requestId:call.requestId,error:"已有待确认操作"}); return; }
-                pendingRef.current=call; setPending(call);
-            } else void runRef.current?.(call);
-        });
-        source.onerror = () => { if (!closed) setAgentState({connected:false,activity:"绘图工具断开，等待重连"}); };
-        let timer: ReturnType<typeof setTimeout>;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         const unsubscribe = useCanvasToolStore.subscribe((state, previous) => {
             if (state.canvasContext === previous.canvasContext) return;
-            clearTimeout(timer); timer=setTimeout(() => void publish().catch(e => setError(String(e))), 100);
+            if (timer) clearTimeout(timer);
+            timer=setTimeout(() => connection.publishCurrentSnapshot(), 100);
         });
-        return () => {closed=true; source.close(); unsubscribe(); clearTimeout(timer); setAgentState({connected:false});};
-    }, [enabled, url, token, navigate, setAgentState]);
+        return () => {
+            closed=true;
+            connection.dispose();
+            unsubscribe();
+            if (timer) clearTimeout(timer);
+            runRef.current = null;
+            setAgentState({connected:false});
+        };
+    }, [enabled, url, token, projectId, navigate, setAgentState]);
     if (!panelOpen && !pending) return null;
     return <aside data-canvas-shortcuts-ignore className="w-80 shrink-0 border-l p-4 overflow-auto" style={{background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke}}>
         <p>Canvas 绘图工具</p><p>{connected ? "已连接" : "未连接"} · {activity}</p>
@@ -101,6 +124,7 @@ export function CanvasToolPanel() {
         </>}
         <Checkbox checked={confirm} onChange={e=>setConfirm(e.target.checked)}>逐次确认绘图操作</Checkbox>
         {pending && <div><p>待确认：{pending.name}</p><pre className="overflow-auto">{JSON.stringify(confirmationInput(pending),null,2)}</pre><Button onClick={()=>void runRef.current?.(pending)}>执行</Button><Button onClick={()=>void runRef.current?.(pending,true)}>拒绝</Button></div>}
+        {connectionError && <p role="alert">{connectionError}</p>}
         {error && <p role="alert">{error}</p>}
     </aside>;
 }

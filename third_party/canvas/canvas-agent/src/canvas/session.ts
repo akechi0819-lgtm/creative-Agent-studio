@@ -68,7 +68,10 @@ export class CanvasSession {
         this.assertProject(url.searchParams.get("projectId"));
         const clientId = url.searchParams.get("clientId")?.trim() || crypto.randomUUID();
         const old = this.clients.get(clientId);
-        if (old && old !== res) old.end();
+        if (old && old !== res) {
+            this.removeClient(clientId, old);
+            old.end();
+        }
 
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
         this.clients.set(clientId, res);

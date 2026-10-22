@@ -3,6 +3,7 @@ import { WhaleCharacter } from './WhaleCharacter.jsx';
 import { WhaleAvatar } from './WhaleAvatar.jsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, jobFromResponse } from './api.js';
+import { createCanvasWindowManager } from './canvas-windows.mjs';
 import { Workbench, ChatComposer } from './Workbench.jsx';
 import { Library } from './Library.jsx';
 import { DnaSettings, ModelSettings } from './Settings.jsx';
@@ -104,6 +105,8 @@ export function App() {
   const polling = useRef(false);
   const referenceContinue = useRef(false);
   const canvasReturnCheck = useRef({ selectedTaskId: '', inFlight: false, pendingTaskId: '', lastStartedAt: 0, timer: null });
+  const canvasWindows = useRef(null);
+  if (!canvasWindows.current) canvasWindows.current = createCanvasWindowManager({ windowObject: window, api });
   canvasReturnCheck.current.selectedTaskId = selectedTaskId;
   const notify = (message, tone = 'success') => { setNoticeTone(tone); setNotice(message); };
   const defaultBaseModel = bootstrap?.config?.base?.model || '';
@@ -578,48 +581,20 @@ export function App() {
   }
 
   async function openCanvas(id) {
-    const child = window.open('about:blank', '_blank');
-    if (!child) { setError('浏览器阻止了新标签页，请允许此本地工作台打开 Canvas。'); return; }
     setError('');
     try {
-      const result = await api.canvasOpen(id);
-      if (!result?.openUrl) throw new Error('Canvas 服务没有返回可打开的任务页面。');
-      child.opener = null;
-      child.location.replace(result.openUrl);
+      const result = await canvasWindows.current.open(id);
+      if (result?.reusedWindow) notify('已切换到该任务已有的 Canvas 标签页；连接状态以画布页面显示为准。');
+      else if (result?.clientConnected) notify('当前任务的 Canvas 已连接；请切换到已打开的画布标签页。');
     } catch (cause) {
-      child.close();
       setError(cause.message || 'Canvas 暂时无法打开。');
     }
   }
 
   async function ensureCanvasConnected(id) {
-    // Open the tab synchronously from the user's click so popup blockers allow it.
-    const child = window.open('about:blank', '_blank');
-    if (!child) throw new Error('浏览器阻止了 Canvas 新标签页，请允许本地工作台打开 Canvas 后重试。');
-    let navigated = false;
-    try {
-      const opened = await api.canvasOpen(id);
-      if (!opened.openUrl) throw new Error('Canvas 服务没有返回可打开的任务页面。');
-      if (opened.clientConnected) {
-        child.close();
-        return;
-      }
-      child.opener = null;
-      child.location.replace(opened.openUrl);
-      navigated = true;
-      // A cold Canvas tab loads its editor and local database before connecting.
-      notify('正在打开并连接当前任务的 Canvas，请稍候…');
-      const deadline = Date.now() + 30000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, 400));
-        const current = await api.task(id);
-        if (current.canvas?.clientConnected && current.canvas.projectId === opened.projectId) return;
-      }
-      throw new Error('Canvas 标签页已打开，但尚未连接到当前任务。请等画布加载完成后重试绘图。');
-    } catch (cause) {
-      if (!navigated) child.close();
-      throw cause;
-    }
+    return canvasWindows.current.ensureConnected(id, {
+      onConnecting: () => notify('正在打开并连接当前任务的 Canvas，请稍候…'),
+    });
   }
 
   const activeTaskSummary = useMemo(

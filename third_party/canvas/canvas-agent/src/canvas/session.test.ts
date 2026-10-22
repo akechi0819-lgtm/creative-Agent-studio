@@ -147,6 +147,75 @@ test("tool results are accepted only from the requesting client", async (t) => {
     assert.deepEqual(await result, { ok: true });
 });
 
+test("replacing a same-client connection invalidates its old state and pending calls", async (t) => {
+    const session = new CanvasSession("project-1", "instance-1");
+    const oldClient = connect(session, "client-1");
+    const target = { projectId: "project-1", clientId: "client-1" };
+    session.updateState("project-1", "client-1", {
+        projectId: "project-1",
+        nodes: [{ id: "old-node", type: "text", position: { x: 0, y: 0 }, width: 100, height: 40 }],
+        connections: [],
+        selectedNodeIds: [],
+    });
+
+    const oldToolResult = session.callTool("site_navigate", { path: "/canvas" }, target);
+    let oldSettlements = 0;
+    const oldOutcome = oldToolResult.then(
+        () => {
+            oldSettlements += 1;
+            return null;
+        },
+        (error: unknown) => {
+            oldSettlements += 1;
+            return error;
+        },
+    );
+    const oldRequestId = oldClient.event("tool_call")?.requestId as string;
+
+    const newClient = connect(session, "client-1");
+    t.after(() => {
+        oldClient.close();
+        newClient.close();
+    });
+
+    assert.equal(oldClient.ended, true);
+    assert.equal(newClient.event("tool_call"), undefined, "the pending old call is not replayed to the replacement connection");
+    assert.equal(session.health().clients, 1);
+    assert.equal(session.health().hasCanvas, false, "the replaced connection's snapshot is invalidated immediately");
+    assert.equal(session.health().targets[0]?.hasCanvas, false);
+    assert.equal(
+        await session.callTool("canvas_get_state", {}, target).then(() => false, (error: unknown) => error instanceof BridgeError && error.statusCode === 409),
+        true,
+    );
+    const oldError = await oldOutcome;
+    assert.ok(oldError instanceof BridgeError);
+    assert.equal(oldError.statusCode, 409);
+    assert.equal(oldSettlements, 1, "replacing the connection rejects its pending call once");
+
+    session.updateState("project-1", "client-1", {
+        projectId: "project-1",
+        nodes: [{ id: "new-node", type: "text", position: { x: 0, y: 0 }, width: 100, height: 40 }],
+        connections: [],
+        selectedNodeIds: [],
+    });
+    oldClient.close();
+    assert.equal(session.health().clients, 1, "the old stream's late close cannot remove the new connection");
+    assert.equal(session.health().hasCanvas, true, "the old stream's late close cannot remove the new snapshot");
+    const snapshot = await session.callTool("canvas_get_state", {}, target) as { nodes: Array<{ id: string }> };
+    assert.equal(snapshot.nodes[0]?.id, "new-node");
+
+    let newSettlements = 0;
+    const newToolResult = session.callTool("site_navigate", { path: "/image" }, target);
+    newToolResult.then(() => { newSettlements += 1; }, () => { newSettlements += 1; });
+    const newRequestId = newClient.event("tool_call")?.requestId as string;
+    assert.equal(session.resolveResult("project-1", "client-1", { requestId: oldRequestId, result: { stale: true } }), false);
+    assert.equal(newSettlements, 0, "a late old result cannot resolve the new connection's pending call");
+    assert.equal(session.resolveResult("project-1", "client-1", { requestId: newRequestId, result: { ok: true } }), true);
+    assert.deepEqual(await newToolResult, { ok: true });
+    assert.equal(newSettlements, 1);
+    assert.equal(oldSettlements, 1, "a late old result cannot settle the rejected call a second time");
+});
+
 function connect(session: CanvasSession, clientId: string) {
     const response = new FakeResponse();
     session.openEvents(new URL(`http://localhost/events?projectId=project-1&clientId=${clientId}`), response as unknown as ServerResponse);
@@ -155,11 +224,16 @@ function connect(session: CanvasSession, clientId: string) {
 
 class FakeResponse extends EventEmitter {
     readonly events: Array<{ type: string; data: Record<string, unknown> }> = [];
+    ended = false;
     writeHead() {}
     write(chunk: string) {
         const match = chunk.match(/^event: ([^\n]+)\ndata: (.+)\n\n$/);
         if (match) this.events.push({ type: match[1], data: JSON.parse(match[2]) as Record<string, unknown> });
         return true;
+    }
+    end() {
+        this.ended = true;
+        return this;
     }
     close() {
         this.emit("close");
