@@ -15,10 +15,15 @@
 ## 验证范围
 
 - Mac 本机：连接生命周期、窗口管理、真实浏览器故障注入、配置同步和局部改图共 31 项通过；Canvas bridge 16 项通过；Canvas TypeScript 检查通过。故障注入包含首次状态 503、连续三次关闭真实 SSE 流、重连时状态上报失败、切换标签页、工具已执行但回执丢失后断流。
+- Mac 可见 Chromium 补测 9 项通过。完整 Node 回归为 333 项通过、2 项跳过：Windows PowerShell 专属检查，以及当前 Python 环境缺少锁定文档依赖的工作区文件工具检查。未将跳过项计为通过。
 - 真实浏览器窗口测试使用不同 localhost 端口，验证移除 opener 后仍能复用 WindowProxy，同任务不重复开页、不重载，不同任务隔离、关闭后重开。
 - 单元测试使用虚拟时钟验证心跳超时、后台节流、请求悬挂与超时取消；不将虚拟时钟结果写成真实电脑休眠验证。
 - 云端工作流为 `.github/workflows/canvas-recovery.yml`，在 Windows 2025 与 macOS 14 原生 runner 构建并运行定向回归；Windows 新增浏览器测试使用可见 Chromium。实际运行与最终提交记录在验证后补充。
 - 所有任务和账号配置均为临时夹具。图片配置回归使用本机模拟服务；断连回归阻断外网，包括无关的公共提示词目录检查。未调用真实员工账号、Teedy 或付费生图。
+
+## 首轮云端验证记录
+
+个人版 [39751362951](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751362951) 的 macOS 14 job 通过；Windows bridge 测试为 14 项通过、2 项失败，失败均来自原有测试的平台假设：配置测试把目录期望写成 Unix `/tmp` 字符串，退出测试要求 Windows `child.kill('SIGTERM')` 执行 POSIX 的优雅退出回调。新增连接替换测试通过，首轮 Windows 未执行到后面的浏览器回归。公司版首轮 [39751391609](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751391609) 在 Windows 出现同样问题。保留首轮历史，不把测试修正后的复跑描述成初次即通过。
 
 ## 交付边界
 

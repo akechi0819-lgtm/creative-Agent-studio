@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { loadConfig } from "./config.js";
 
+const dataDir = path.resolve(os.tmpdir(), "canvas-bridge-instance-1");
 const env = {
     PORT: "17371",
     CANVAS_AGENT_TOKEN: "instance-token",
     CANVAS_AGENT_PROJECT_ID: "project-1",
     CANVAS_AGENT_INSTANCE_ID: "instance-1",
-    CANVAS_AGENT_DATA_DIR: "/tmp/canvas-bridge-instance-1",
+    CANVAS_AGENT_DATA_DIR: dataDir,
     CANVAS_AGENT_ORIGIN: "http://localhost:3000",
 };
 
@@ -19,7 +22,7 @@ test("loadConfig accepts launcher-provided instance settings", () => {
         token: "instance-token",
         projectId: "project-1",
         instanceId: "instance-1",
-        dataDir: "/tmp/canvas-bridge-instance-1",
+        dataDir,
         origin: "http://localhost:3000",
     });
 });

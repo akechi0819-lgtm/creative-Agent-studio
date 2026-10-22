@@ -16,7 +16,7 @@ const config = {
     token: "test-token",
     projectId: "project-1",
     instanceId: "instance-1",
-    dataDir: "/tmp/canvas-bridge-test",
+    dataDir: path.resolve(os.tmpdir(), "canvas-bridge-test"),
     origin: "http://localhost:3000",
 };
 
@@ -114,7 +114,9 @@ test("launcher data directory rejects a second live service instance", async (t)
     assert.equal(fs.existsSync(lockPath), false);
 });
 
-test("SIGTERM closes active SSE connections and releases the instance lock", async (t) => {
+test("SIGTERM closes active SSE connections and releases the instance lock", {
+    skip: process.platform === "win32" ? "Windows terminates the child on SIGTERM instead of exercising POSIX graceful-shutdown behavior" : false,
+}, async (t) => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "canvas-bridge-signal-test-"));
     const port = await freePort();
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
