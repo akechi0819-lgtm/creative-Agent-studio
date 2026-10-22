@@ -18,12 +18,22 @@
 - Mac 可见 Chromium 补测 9 项通过。完整 Node 回归为 333 项通过、2 项跳过：Windows PowerShell 专属检查，以及当前 Python 环境缺少锁定文档依赖的工作区文件工具检查。未将跳过项计为通过。
 - 真实浏览器窗口测试使用不同 localhost 端口，验证移除 opener 后仍能复用 WindowProxy，同任务不重复开页、不重载，不同任务隔离、关闭后重开。
 - 单元测试使用虚拟时钟验证心跳超时、后台节流、请求悬挂与超时取消；不将虚拟时钟结果写成真实电脑休眠验证。
-- 云端工作流为 `.github/workflows/canvas-recovery.yml`，在 Windows 2025 与 macOS 14 原生 runner 构建并运行定向回归；Windows 新增浏览器测试使用可见 Chromium。实际运行与最终提交记录在验证后补充。
+- 云端工作流为 `.github/workflows/canvas-recovery.yml`，在 Windows 2025 与 macOS 14 原生 runner 构建并运行定向回归；Windows 新增浏览器测试使用可见 Chromium。两版、两平台均为 31 项通过，零失败、零跳过；另外的桥接测试在 Mac 为 16 项通过，在 Windows 为 15 项通过、1 项 POSIX SIGTERM 用例明确跳过。
+- 公司版独立工作树在本机 Mac 构建后另跑同组 31 项回归，全部通过；新增窗口和断流测试使用可见 Chromium。未改动原公司工作区的未提交素材修改。
 - 所有任务和账号配置均为临时夹具。图片配置回归使用本机模拟服务；断连回归阻断外网，包括无关的公共提示词目录检查。未调用真实员工账号、Teedy 或付费生图。
 
 ## 首轮云端验证记录
 
-个人版 [39751362951](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751362951) 的 macOS 14 job 通过；Windows bridge 测试为 14 项通过、2 项失败，失败均来自原有测试的平台假设：配置测试把目录期望写成 Unix `/tmp` 字符串，退出测试要求 Windows `child.kill('SIGTERM')` 执行 POSIX 的优雅退出回调。新增连接替换测试通过，首轮 Windows 未执行到后面的浏览器回归。公司版首轮 [39751391609](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751391609) 在 Windows 出现同样问题。保留首轮历史，不把测试修正后的复跑描述成初次即通过。
+个人版 [39751362951](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751362951) 的 macOS 14 job 通过；Windows bridge 测试为 14 项通过、2 项失败，失败均来自原有测试的平台假设：配置测试把目录期望写成 Unix `/tmp` 字符串，退出测试要求 Windows `child.kill('SIGTERM')` 执行 POSIX 的优雅退出回调。新增连接替换测试通过，首轮 Windows 未执行到后面的浏览器回归。公司版首轮 [39751391609](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751391609) 在 Windows 出现同样问题；修正测试并启动新 run 后，主动取消仍在排队的旧 Mac job。保留首轮历史，不把测试修正后的复跑描述成初次即通过。
+
+## 最终云端证据
+
+| 版本／被测源码 | Windows 2025 与 macOS 14 专项 | 完整 Windows CI |
+| --- | --- | --- |
+| 个人版 `5dce8bc` | [39751950900](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751950900)，两个平台分别 31/31 | [39751950935](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751950935)，334 通过、1 跳过 |
+| 公司版 `418bab5` | [39751968852](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751968852)，两个平台分别 31/31 | [39751968968](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39751968968)，370 通过、2 跳过 |
+
+完整 Windows CI 的跳过项均为 Mac 专属启动器编译检查；两版均另通过 11 项图像区域夹具、安装构建及真实浏览器服务冒烟。已下载两版两平台的脱敏 TAP artifact 核对上述专项计数。随后提交只更新本报告与工程进度，不改被测产品代码。专项故障测试使用真实本机 HTTP/SSE 和浏览器，但连接关闭／回执丢失由夹具注入；不等同于原设备真实网络或休眠复现。
 
 ## 交付边界
 
