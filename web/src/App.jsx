@@ -87,6 +87,7 @@ export function App() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [noticeTone, setNoticeTone] = useState('success');
+  const [cleanupWarning, setCleanupWarning] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -105,6 +106,16 @@ export function App() {
   if (!canvasWindows.current) canvasWindows.current = createCanvasWindowManager({ windowObject: window, api });
   canvasReturnCheck.current.selectedTaskId = selectedTaskId;
   const notify = (message, tone = 'success') => { setNoticeTone(tone); setNotice(message); };
+  const reportCleanupFailure = (cleanup) => {
+    if (cleanup?.status !== 'failed') return;
+    const errors = Array.isArray(cleanup.errors) ? cleanup.errors : cleanup.error ? [cleanup.error] : [];
+    const retryIds = [...new Set([cleanup.retryId, ...(cleanup.retryIds || [])].filter((id) => typeof id === 'string' && id))];
+    setCleanupWarning({
+      message: errors.map((item) => item?.message).filter((message) => typeof message === 'string' && message).join('；') || '清理未能确认；相关临时文件或入口可能仍保留。',
+      retryIds,
+      hasUnretryable: errors.length > retryIds.length,
+    });
+  };
   const defaultBaseModel = bootstrap?.config?.base?.model || '';
   const selectedBaseModel = task?.id ? (taskModelSelections[task.id] ?? defaultBaseModel) : defaultBaseModel;
 
@@ -327,6 +338,7 @@ export function App() {
     setNotice(''); setNoticeTone('success');
     try {
       const result = await operation();
+      reportCleanupFailure(result?.cleanup);
       const pendingJob = jobFromResponse(result);
       if (pendingJob) {
         if (downloadResult) requestedChatDownloads.current.add(pendingJob.id);
@@ -409,6 +421,7 @@ export function App() {
         form.append('instructions', instructionText);
         files.forEach((file) => form.append('files', file, file.name || 'clipboard-image.png'));
         const uploaded = await api.attachTaskFiles(taskId, form);
+        reportCleanupFailure(uploaded.cleanup);
         completedUploadRevision = Number(uploaded.uploadRevision);
         completedUpload = true;
         completedSourceId = uploaded.sourceId || '';
@@ -466,6 +479,7 @@ export function App() {
       }));
       return result;
     } catch (cause) {
+      reportCleanupFailure(cause.cleanup);
       const status = Number(cause.status);
       const clientStatus = status >= 400 && status < 500 ? 'failed' : 'uncertain';
       if (cause.status === 409) await refreshTask(taskId).catch(() => {});
@@ -564,6 +578,38 @@ export function App() {
     }
   }
 
+  async function retryCleanupId(retryId) {
+    if (!retryId) return;
+    setError('');
+    try {
+      const result = await api.retryCleanup(retryId);
+      if (result.job) setJob(result.job);
+      if (result.job?.taskId === selectedTaskId) await refreshTask(selectedTaskId).catch(() => {});
+      if (result.cleanup?.status === 'succeeded') {
+        setCleanupWarning((current) => {
+          if (!current) return null;
+          const retryIds = current.retryIds.filter((id) => id !== retryId);
+          if (current.hasUnretryable) return { ...current, retryIds, message: '附件临时目录清理仍未能确认；目录可能保留。' };
+          if (retryIds.length) return { ...current, retryIds, message: '部分入口清理仍未能确认。' };
+          return null;
+        });
+        notify('任务入口已清理，可以继续操作。');
+      } else reportCleanupFailure(result.cleanup);
+    } catch (cause) {
+      setCleanupWarning((current) => {
+        if (!current) return { message: cause.message || '任务入口清理重试失败。', retryIds: cause.code === 'ERR_JOB_CLEANUP_UNAVAILABLE' ? [] : [retryId], hasUnretryable: true };
+        const retryIds = cause.code === 'ERR_JOB_CLEANUP_UNAVAILABLE' || cause.code === 'ERR_JOB_CLEANUP_NOT_FOUND'
+          ? current.retryIds.filter((id) => id !== retryId)
+          : current.retryIds;
+        return { ...current, retryIds, message: cause.message || current.message };
+      });
+    }
+  }
+
+  async function retryCurrentJobCleanup() {
+    return retryCleanupId(job?.cleanup?.retryId);
+  }
+
   async function openCanvas(id) {
     setError('');
     try {
@@ -646,8 +692,10 @@ export function App() {
 
       <main className={`main-area ${section === 'workbench' ? 'workbench-main' : ''}`}>
         {(error || notice) && <div className={`global-message ${error ? 'error' : noticeTone}`} role={error ? 'alert' : 'status'}><span>{error || notice}</span><button className="icon-button" aria-label="关闭提示" onClick={() => { setError(''); setNotice(''); setNoticeTone('success'); }}>×</button></div>}
-        {detachedTerminalJob && <div className={`job-status-summary ${detachedTerminalJob.status}`} role={detachedTerminalJob.status === 'failed' ? 'alert' : 'status'}>
-          <span><strong>{detachedTerminalJob.status === 'succeeded' ? '操作已完成' : detachedTerminalJob.status === 'cancelled' ? '操作已停止' : '操作失败'} · {jobLabel(detachedTerminalJob.kind)}</strong>{detachedTerminalJob.error?.message || detachedTerminalJob.result?.message || ''}</span>
+        {cleanupWarning && <div className="global-message warning cleanup-warning-banner" role="alert"><span>清理提示：{cleanupWarning.message}</span><div className="cleanup-warning-actions">{cleanupWarning.retryIds.map((retryId) => <button key={retryId} type="button" className="text-button" onClick={() => retryCleanupId(retryId)}>重试清理</button>)}<button className="icon-button" aria-label="关闭清理提示" onClick={() => setCleanupWarning(null)}>×</button></div></div>}
+        {detachedTerminalJob && <div className={`job-status-summary ${detachedTerminalJob.status}`} role={detachedTerminalJob.status === 'failed' || detachedTerminalJob.cleanup?.status === 'failed' ? 'alert' : 'status'}>
+          <span><strong>{detachedTerminalJob.status === 'succeeded' ? '操作已完成' : detachedTerminalJob.status === 'cancelled' ? '操作已停止' : '操作失败'} · {jobLabel(detachedTerminalJob.kind)}</strong>{detachedTerminalJob.error?.message || detachedTerminalJob.result?.message || ''}{detachedTerminalJob.cleanup?.status === 'failed' ? ` 清理提示：${detachedTerminalJob.cleanup.error?.message || '入口清理未能确认。'}` : ''}</span>
+          {detachedTerminalJob.cleanup?.retryId && <button type="button" className="text-button" onClick={retryCurrentJobCleanup}>重试清理</button>}
           <button className="icon-button" onClick={() => setJob(null)} aria-label="收起操作结果">×</button>
         </div>}
         {section === 'workbench' && <Workbench
@@ -683,6 +731,7 @@ export function App() {
           }}
           onOpenCanvas={() => openCanvas(task.id)}
           onCancelJob={cancelCurrentJob}
+          onRetryCleanup={retryCurrentJobCleanup}
           onSearchAssets={(filters) => api.assets({ ...filters, confirmedOnly: true })}
           onRefresh={() => refreshTask()}
           onRetryChat={retryChat}

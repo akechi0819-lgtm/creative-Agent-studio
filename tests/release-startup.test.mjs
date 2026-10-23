@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const launcherSource = await readFile(new URL('../release/launcher.mjs', import.meta.url), 'utf8');
+const identitySource = await readFile(new URL('../src/launcher/identity.mjs', import.meta.url), 'utf8');
 
 async function makeFixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'studio-release-startup-'));
@@ -28,14 +29,15 @@ async function makeFixture(t) {
 
   await mkdir(payload, { recursive: true });
   const files = [
-    'release', 'src/canvas', 'src/launcher', 'scripts', 'web/dist',
+    'release', 'src/canvas', 'src/launcher', 'scripts', 'web/src', 'web/dist',
     'third_party/canvas/web/dist', 'third_party/canvas/canvas-agent/dist',
-    'adapters/dsh/lib',
+    'adapters/dsh/lib', 'adapters/free-model',
   ];
   await Promise.all(files.map(relative => mkdir(path.join(payload, relative), { recursive: true })));
   await Promise.all([
     writeFile(path.join(payload, 'package.json'), '{"type":"module"}'),
     writeFile(path.join(payload, 'release/launcher.mjs'), launcherSource),
+    writeFile(path.join(payload, 'src/launcher/identity.mjs'), identitySource),
     writeFile(path.join(payload, 'release-manifest.json'), JSON.stringify({
       profile: 'general',
       product: 'Creative Agent Studio',
@@ -69,8 +71,12 @@ async function makeFixture(t) {
         try { return JSON.parse(await readFile(filename, 'utf8')); }
         catch (error) { if (error.code === 'ENOENT') return null; throw error; }
       }
-      export async function runtimeStatus() {
-        try { await access(process.env.TEST_RUNNING_MARKER); return { running: true, url: 'http://127.0.0.1:4311' }; }
+      export async function runtimeStatus(root, currentIdentity) {
+        try {
+          await access(process.env.TEST_RUNNING_MARKER);
+          const sourceIdentity = process.env.TEST_RUNNING_LEGACY === '1' ? null : currentIdentity;
+          return { running: true, url: 'http://127.0.0.1:4311', sourceIdentity, currentIdentity, identityMatches: Boolean(sourceIdentity) };
+        }
         catch { return { running: false }; }
       }
       export async function stopRuntime() { return { running: false }; }
@@ -249,6 +255,21 @@ test('an already running workbench is reused without preparing Python', async t 
   assert.equal(result.code, 0, run.output().stderr);
   assert.match(run.output().stdout, /工作台已在运行/);
   assert.doesNotMatch(run.output().stderr, /安装日志：/);
+  assert.equal(await fileExists(fixture.trace), false);
+});
+
+test('an already running workbench without a reported identity is not opened by the release entry', async t => {
+  const fixture = await makeFixture(t);
+  await writeFile(fixture.running, 'running');
+
+  const run = fixture.runLauncher({ TEST_RUNNING_LEGACY: '1' });
+  const result = await run.result;
+  assert.equal(result.code, 1, run.output().stdout);
+  assert.match(run.output().stderr, /当前入口不会打开旧实例/);
+  assert.match(run.output().stderr, /旧版本实例未上报运行身份/);
+  assert.match(run.output().stderr, /Start\.vbs/);
+  assert.match(run.output().stderr, /停止工作台/);
+  assert.doesNotMatch(run.output().stdout, /已打开本机页面/);
   assert.equal(await fileExists(fixture.trace), false);
 });
 

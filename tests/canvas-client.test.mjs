@@ -116,3 +116,21 @@ test("recoverImage 会取消在途的本地 HTTP 请求", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("桥接故障诊断编号传回调用方且不采用服务器任意错误内容", async () => {
+  const requestId = "e8ee0961-a2a3-4d21-a770-9f1d54a0af17";
+  const bridge = await startBridge((request, response) => {
+    if (request.url === "/health") return replyToHealth(response);
+    json(response, 500, {ok: false, requestId, error: "private prompt secret"});
+  });
+  try {
+    await assert.rejects(callCanvasTool("canvas_get_state", {}, configFor(bridge.url)), error => {
+      assert.equal(error.code, "ERR_CANVAS_TOOL_FAILED");
+      assert.equal(error.requestId, requestId);
+      assert.match(error.safeMessage, new RegExp(requestId));
+      assert.doesNotMatch(error.message, /private|secret/);
+      return true;
+    });
+  } finally { await bridge.close(); }
+});

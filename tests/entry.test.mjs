@@ -37,6 +37,16 @@ test('entry acquisition rejects an active external core transaction without leav
  const release=await acquireTaskEntry(task.id,root);await release();
 });
 
+test('entry status exposes a valid associated job ID without exposing its token',async t=>{
+ const {root,task}=await fixture(t);const jobId='f5a9495c-43bd-4c38-96d2-2e343fdc40ec';
+ const release=await acquireTaskEntry(task.id,root,{jobId});
+ try{
+  const status=await taskEntryStatus(task.id,{root});
+  assert.equal(status.jobId,jobId);
+  assert.equal(Object.hasOwn(status,'token'),false);
+ }finally{await release();}
+});
+
 test('dead entry must be checked explicitly before release, and live owner cannot be cleared',async t=>{
  const {root,task}=await fixture(t);const child=await childOwns(root,task.id,'entry');
  const pid=child.pid;

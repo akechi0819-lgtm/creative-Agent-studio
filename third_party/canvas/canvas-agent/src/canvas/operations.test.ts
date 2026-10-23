@@ -25,3 +25,10 @@ test("generation flow still creates a prompt node for prose prompts", () => {
     const config = ops.find((op) => op.type === "add_node" && op.nodeType === "config");
     assert.match(String(config?.metadata?.prompt), /@\[node:text-/);
 });
+
+
+test("large canvas placement does not exceed the JavaScript argument stack", async () => {
+    const { nextCanvasX } = await import("./tools.js");
+    const nodes = Array.from({ length: 200_000 }, (_, x) => ({ position: { x, y: 0 }, width: 10 }));
+    assert.equal(nextCanvasX({ nodes } as any), 200_089);
+});

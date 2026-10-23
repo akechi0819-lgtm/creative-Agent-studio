@@ -17,6 +17,7 @@ async function makeWebFixture(t) {
   const sourceRuntime = path.join(payload, '.studio-runtime');
   const trace = path.join(root, 'trace.log');
   const data = path.join(root, 'user-data');
+  const identitySource = await readFile(new URL('../src/launcher/identity.mjs', import.meta.url), 'utf8');
   await mkdir(payload, { recursive: true });
   await Promise.all([
     mkdir(path.dirname(script), { recursive: true }),
@@ -50,8 +51,10 @@ async function makeWebFixture(t) {
         }
         try { return JSON.parse(await readFile(filename, 'utf8')); } catch { return null; }
       }
+      export async function runtimeStatus() { return { running: false }; }
       export async function serveControl() { return async () => {}; }
     `),
+    module('src/launcher/identity.mjs', identitySource),
     module('src/canvas/client.mjs', `export function dataRoot() { return process.env.STUDIO_DATA_DIR; }`),
     module('src/web/model-plugin.mjs', `export async function ensureModelPlugin() {}\nexport async function stopModelPlugin() {}`),
     module('src/web/config.mjs', `export async function readConfig() { return {}; }`),

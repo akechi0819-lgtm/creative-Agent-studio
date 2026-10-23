@@ -3,9 +3,11 @@ import { test } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { backupData, restoreData, assertOffline } from '../src/launcher/backup.mjs';
 import { serveControl, runtimeStatus, stopRuntime } from '../src/launcher/control.mjs';
+import { runtimeIdentityMismatchMessage, runtimeSourceIdentity } from '../src/launcher/identity.mjs';
 
 async function fixture(t){
   const base=await fs.mkdtemp(path.join(os.tmpdir(),'studio-maintenance-'));
@@ -81,6 +83,122 @@ test('authenticated HTTP control supports Windows graceful stop without PID sign
   await assert.rejects(assertOffline(root),/stop/);
   assert.deepEqual(await stopRuntime(root),{running:false,stopped:true});
   assert.equal((await runtimeStatus(root)).running,false);
+});
+
+test('runtime source identity changes with code while keeping the checkout and build fingerprint visible',async t=>{
+  const base=await fs.mkdtemp(path.join(os.tmpdir(),'studio-identity-'));
+  t.after(()=>fs.rm(base,{recursive:true,force:true}));
+  await Promise.all(['src','web/src','web/dist','adapters/free-model'].map(relative=>fs.mkdir(path.join(base,relative),{recursive:true})));
+  await fs.writeFile(path.join(base,'package.json'),JSON.stringify({name:'fixture',version:'1.2.3'}));
+  await fs.writeFile(path.join(base,'src','entry.mjs'),'export const value = 1;');
+  await fs.writeFile(path.join(base,'web','src','app.mjs'),'export const app = 1;');
+  await fs.writeFile(path.join(base,'adapters','free-model','service.mjs'),'export const service = 1;');
+  const first=await runtimeSourceIdentity(base);
+  const second=await runtimeSourceIdentity(base);
+  assert.equal(first.sourceDirectory,await fs.realpath(base));
+  assert.equal(first.version,'1.2.3');
+  assert.equal(first.buildFingerprint,second.buildFingerprint);
+  await fs.writeFile(path.join(base,'src','entry.mjs'),'export const value = 2;');
+  const changed=await runtimeSourceIdentity(base);
+  assert.notEqual(changed.buildFingerprint,first.buildFingerprint);
+  await fs.writeFile(path.join(base,'web','src','app.mjs'),'export const app = 2;');
+  const webChanged=await runtimeSourceIdentity(base);
+  assert.notEqual(webChanged.buildFingerprint,changed.buildFingerprint);
+  await fs.writeFile(path.join(base,'adapters','free-model','service.mjs'),'export const service = 2;');
+  const adapterChanged=await runtimeSourceIdentity(base);
+  assert.notEqual(adapterChanged.buildFingerprint,webChanged.buildFingerprint);
+});
+
+test('health and status expose the active runtime identity and distinguish another checkout or build',async t=>{
+  const {root}=await fixture(t);await fs.mkdir(path.join(root,'web'));
+  const activeIdentity={sourceDirectory:'/old/creative-Agent-studio',gitCommit:'old-commit',version:'1',distribution:'source',buildFingerprint:'old-build'};
+  const currentIdentity={...activeIdentity,sourceDirectory:'/new/creative-Agent-studio',buildFingerprint:'new-build'};
+  const instanceId='identity-mismatch-instance';
+  await fs.writeFile(path.join(root,'web','instance.lock'),JSON.stringify({pid:process.pid,instanceId}));
+  let close;
+  close=await serveControl({root,instanceId,url:'http://127.0.0.1:12345',sourceIdentity:activeIdentity,stop:async()=>{await close();await fs.rm(path.join(root,'web','instance.lock'));}});
+  t.after(()=>close());
+  const record=JSON.parse(await fs.readFile(path.join(root,'web','runtime.json'),'utf8'));
+  const health=await fetch(`${record.controlUrl}/health`,{headers:{authorization:`Bearer ${record.token}`}}).then(response=>response.json());
+  assert.deepEqual(health.sourceIdentity,activeIdentity);
+  assert.equal(JSON.stringify(health).includes(record.token),false);
+  const status=await runtimeStatus(root,currentIdentity);
+  assert.equal(status.running,true);
+  assert.equal(status.identityMatches,false);
+  assert.equal(status.identityMismatch,true);
+  assert.deepEqual(status.sourceIdentity,activeIdentity);
+  assert.deepEqual(status.currentIdentity,currentIdentity);
+  const message=runtimeIdentityMismatchMessage(status);
+  assert.match(message,/确认旧工作台没有在途作业/);
+  assert.match(message,/node scripts\/launcher\.mjs stop/);
+  assert.match(message,/不会强制结束进程或删除数据/);
+});
+
+test('launcher entry reuses a healthy instance with the same runtime identity',async t=>{
+  const {root}=await fixture(t);await fs.mkdir(path.join(root,'web'));
+  const currentIdentity=await runtimeSourceIdentity(path.resolve(import.meta.dirname,'..'));
+  const {server,baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/health'&&req.headers.authorization==='Bearer fixture-control-token'){
+      res.setHeader('content-type','application/json');
+      res.end(JSON.stringify({instanceId:'same-source-instance',sourceIdentity:currentIdentity}));
+      return;
+    }
+    res.writeHead(403).end();
+  });
+  await fs.writeFile(path.join(root,'web','instance.lock'),JSON.stringify({pid:process.pid,instanceId:'same-source-instance'}));
+  await fs.writeFile(path.join(root,'web','runtime.json'),JSON.stringify({pid:process.pid,instanceId:'same-source-instance',url:'http://127.0.0.1:4310',controlUrl:baseUrl,token:'fixture-control-token'}));
+  const child=spawn(process.execPath,['scripts/launcher.mjs','start','--no-open'],{
+    cwd:path.resolve(import.meta.dirname,'..'),
+    env:{...process.env,STUDIO_DATA_DIR:root},
+    stdio:['ignore','pipe','pipe'],
+  });
+  let stdout='',stderr='';
+  child.stdout.setEncoding('utf8').on('data',value=>{stdout+=value;});
+  child.stderr.setEncoding('utf8').on('data',value=>{stderr+=value;});
+  const exitCode=await new Promise((resolve,reject)=>{
+    child.once('error',reject);
+    child.once('exit',(code,signal)=>resolve(signal?`signal:${signal}`:code));
+  });
+  assert.equal(exitCode,0,`stdout=${stdout}\nstderr=${stderr}`);
+  assert.match(stdout,/'identityMatches':true|"identityMatches":true/);
+  assert.match(stdout,/'reused':true|"reused":true/);
+  assert.doesNotMatch(stderr,/在途作业/);
+  await assert.rejects(fs.access(path.join(root,'web','service.log')));
+  await assert.rejects(fs.access(`${root}.launcher.lock`));
+  assert.equal(server.listening,true);
+});
+
+test('launcher start refuses a legacy active instance without runtime identity',async t=>{
+  const {root}=await fixture(t);await fs.mkdir(path.join(root,'web'));
+  const {server,baseUrl}=await serviceServer(t,(req,res)=>{
+    if(req.url==='/health'&&req.headers.authorization==='Bearer fixture-control-token'){
+      res.setHeader('content-type','application/json');
+      res.end(JSON.stringify({instanceId:'legacy-source-instance'}));
+      return;
+    }
+    res.writeHead(403).end();
+  });
+  await fs.writeFile(path.join(root,'web','instance.lock'),JSON.stringify({pid:process.pid,instanceId:'legacy-source-instance'}));
+  await fs.writeFile(path.join(root,'web','runtime.json'),JSON.stringify({pid:process.pid,instanceId:'legacy-source-instance',url:'http://127.0.0.1:4310',controlUrl:baseUrl,token:'fixture-control-token'}));
+  const child=spawn(process.execPath,['scripts/launcher.mjs','start','--no-open'],{
+    cwd:path.resolve(import.meta.dirname,'..'),
+    env:{...process.env,STUDIO_DATA_DIR:root},
+    stdio:['ignore','pipe','pipe'],
+  });
+  let stdout='',stderr='';
+  child.stdout.setEncoding('utf8').on('data',value=>{stdout+=value;});
+  child.stderr.setEncoding('utf8').on('data',value=>{stderr+=value;});
+  const exitCode=await new Promise((resolve,reject)=>{
+    child.once('error',reject);
+    child.once('exit',(code,signal)=>resolve(signal?`signal:${signal}`:code));
+  });
+  assert.equal(exitCode,1,`stdout=${stdout}\nstderr=${stderr}`);
+  assert.match(stderr,/当前入口不会打开旧实例/);
+  assert.match(stderr,/旧版本实例未上报运行身份/);
+  assert.match(stderr,/node scripts\/launcher\.mjs stop/);
+  await assert.rejects(fs.access(path.join(root,'web','service.log')));
+  await assert.rejects(fs.access(`${root}.launcher.lock`));
+  assert.equal(server.listening,true);
 });
 
 async function serviceServer(t,handler){

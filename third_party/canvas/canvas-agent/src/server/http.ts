@@ -1,9 +1,11 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Server } from "node:http";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { CanvasSession, BridgeError, PROTOCOL_VERSION } from "../canvas/session.js";
+import { isToolName } from "../canvas/tools.js";
 import { loadConfig, type BridgeConfig } from "../config.js";
 
 /** 创建仅供当前项目网页使用的绘图桥接 HTTP API。 */
@@ -11,6 +13,11 @@ export function createHttpApp(config: BridgeConfig) {
     const app = express();
     const session = new CanvasSession(config.projectId, config.instanceId);
     app.disable("x-powered-by");
+    app.use((_req, res, next) => {
+        res.locals.requestId = randomUUID();
+        res.setHeader("x-canvas-request-id", res.locals.requestId);
+        next();
+    });
     app.use(express.json({ limit: "30mb" }));
     app.use((req, res, next) => {
         if (!setCors(req, res, config)) return void res.status(403).json({ ok: false, error: "origin not allowed" });
@@ -57,8 +64,11 @@ export function createHttpApp(config: BridgeConfig) {
     app.use((_req, res) => res.status(404).json({ ok: false, error: "not found" }));
     app.use((error: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
         const status = error instanceof BridgeError ? error.statusCode : Number(error.status) || 500;
-        if (status >= 500) console.error("Canvas bridge request failed", error.message);
-        res.status(status).json({ ok: false, error: error.message || "request failed" });
+        const requestId = res.locals.requestId;
+        if (status >= 500) console.error(JSON.stringify(bridgeDiagnostic(error, _req, requestId, status)));
+        // Unknown errors may contain prompts, API credentials or local paths. Only known
+        // protocol errors are returned verbatim; correlate other failures by request ID.
+        res.status(status).json({ ok: false, error: error instanceof BridgeError ? error.message : "Canvas bridge request failed", requestId });
     });
     return app;
 }
@@ -146,4 +156,23 @@ function processIsAlive(pid: number) {
     } catch (error) {
         return (error as NodeJS.ErrnoException).code === "EPERM";
     }
+}
+
+/** Only static route/tool names and stack source locations enter the diagnostic log. */
+export function bridgeDiagnostic(error: Error, req: Pick<Request, "path" | "method" | "body">, requestId: string, status: number) {
+    const routes = new Set(["/health", "/config", "/events", "/canvas/state", "/canvas/activate", "/canvas/result", "/api/tools"]);
+    const frames = String(error.stack || "").split("\n").filter(line => /^\s+at /.test(line)).slice(0, 16).map(line => {
+        // Keep only a filename and line/column, never function names or absolute paths.
+        const match = line.match(/(?:[/\\])([A-Za-z0-9_.-]+\.[cm]?[jt]s):(\d+):(\d+)\)?$/);
+        return match ? `${match[1]}:${match[2]}:${match[3]}` : "[frame omitted]";
+    });
+    return {
+        time: new Date().toISOString(), event: "canvas_request_failed", requestId, status,
+        route: routes.has(req.path) ? req.path : "other",
+        method: ["GET", "POST", "OPTIONS"].includes(req.method) ? req.method : "other",
+        tool: req.path === "/api/tools" && isToolName(req.body?.name) ? req.body.name : null,
+        error: error instanceof RangeError ? "RangeError" : error instanceof TypeError ? "TypeError" : "Error",
+        reason: error instanceof RangeError && error.message === "Maximum call stack size exceeded" ? "stack_overflow" : "request_failed",
+        frames,
+    };
 }

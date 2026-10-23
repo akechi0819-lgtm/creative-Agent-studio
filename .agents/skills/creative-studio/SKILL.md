@@ -3,13 +3,13 @@ name: creative-studio
 description: 在本仓库使用共享 CLI 完成经用户确认的单张海报或多页图文任务；当前阶段与版本边界以工程进度为准；设备体验和上游模型能力按证据范围记录。
 ---
 
-先读 `docs/Codex使用.md`，阶段状态与版本差异见 `docs/工程进度.md`。P0—P5主体按各报告范围验收，后续Mac隔离启动修复及普通设备待测单独记录；不把历史测试扩张成所有模型或账号能力。首次准备使用 `node scripts/prepare.mjs`，不启动DSH。Codex使用本地Canvas与本机已保存图片API，不调用宿主内置生图、不调用 `codex exec`，也不召唤第二个Agent。
+先读 `docs/代理宿主使用.md`，阶段状态与版本差异见 `docs/工程进度.md`。P0—P5主体按各报告范围验收，后续Mac隔离启动修复及普通设备待测单独记录；不把历史测试扩张成所有模型或账号能力。首次准备从仓库根目录使用 `./Start.command prepare`（Windows PowerShell 使用 `.\Start.cmd prepare`），不启动Web UI。代理宿主提供对话与推理，本地Canvas使用项目已保存的生图API；不调用宿主内置生图，也不通过命令另启第二个代理会话。
 
-Codex 入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过 `@payload.json` 文件提供，不要把 JSON 内嵌到 shell 命令。先用 `list` 或 `show TASK_ID` 恢复任务；确认成功后再执行状态变更。基本链路为：
+代理宿主入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过 `@payload.json` 文件提供，不要把 JSON 内嵌到 shell 命令。先用 `list` 或 `show TASK_ID` 恢复任务；确认成功后再执行状态变更。基本链路为：
 
 1. `create` 创建任务，以 `set-brief` 和 `set-sources` 保存需求及来源决定。
 2. 用户明确确认需求和来源后，读取最新 revision，运行 `confirm-inputs`；再生成制作单、读取当前版本，由用户明确确认后运行 `confirm-sheet`。
-3. 用户授权生成后先运行 `canvas-open TASK_ID` 准备并打开任务专属 Canvas，再运行 `execute`。`execute`、`resume`、`edit-pages` 和 `select-image` 使用该任务的固定 Canvas 实例与已保存图片配置；CLI 会在启动 Canvas 前核对 revision 和制作单授权。中断后用同一版本调用 `resume`，只查询并续接原节点；不得自动重发状态未知的收费请求。只有确认页面失败时才显式传 `retryPage`。
+3. 用户授权生成后先运行 `canvas-open TASK_ID` 准备并打开任务专属 Canvas。页面连接后，以最新 revision 运行 `canvas-state TASK_ID @payload.json`；该命令成功返回才表示当前任务 Canvas 已就绪，然后运行 `execute`。`canvas-open` 若返回 `clientConnected:false`，只表示已尝试打开页面，不代表 Canvas 已就绪。`execute`、`resume`、`edit-pages` 和 `select-image` 使用该任务的固定 Canvas 实例与已保存图片配置；CLI 会在启动 Canvas 前核对 revision 和制作单授权。中断后用同一版本调用 `resume`，只查询并续接原节点；不得自动重发状态未知的收费请求。只有确认页面失败时才显式传 `retryPage`。
 4. 用实际读图工具打开当前成品，逐页检查准确文案、手机可读性、品牌一致性、主题对应和修改位置，然后运行 `record-review`。用户修改或 `select-image` 更新当前文件后，必须重新打开并审核；修改和选图会使旧审核与最终确认失效。
 5. 等用户明确确认最终成品后才运行 `approve-final`，再运行 `export`。
 
@@ -35,9 +35,9 @@ Codex 入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过
 
 任务锁异常时先运行 `lock-status TASK_ID`，人工核实显示的锁所有者 PID 已退出后，才可用仅含同一 `deadPid` 的 payload 调用 `unlock`；CLI 会再次验证锁记录与 PID。进程仍运行或状态不明时不清锁。
 
-`scripts/canvas.mjs` 只用于 P0 技术诊断。创作任务不得通过它绕过需求／来源、制作单、读图和最终成品确认。不要输出凭据、实例 token、锁 token 或浏览器个人数据；出现错误只传达 CLI 的固定提示，不展示异常对象、cause 或配置。
+`scripts/canvas.mjs` 只用于 P0 技术诊断。当前任务的图片生成、读取、编辑或恢复失败时，应先按该任务的 CLI 状态检查与恢复规则处理；不得改用其他任务的 Canvas、任务外图片脚本、宿主内置生图或诊断画布代替当前任务链路，也不得借此绕过需求／来源、制作单、读图和最终成品确认。普通资料与一般文件任务仍可使用宿主提供的文件读取、Python／JavaScript和批处理工具；这些操作不替代任务Canvas成品，也不产生任务执行、审核或批准记录。不要输出凭据、实例 token、锁 token 或浏览器个人数据；出现错误只传达 CLI 的固定提示，不展示异常对象、cause 或配置。
 
-## Codex 任务 Canvas 机械命令
+## 代理宿主任务 Canvas 机械命令
 
 使用 `canvas-state TASK_ID @payload.json` 读取节点清单，payload 为 `{"expectedRevision":当前任务revision}`。节点状态仅返回 `idle/loading/success/error` 枚举，缺失或非法值为 `null`；不会返回原始错误详情、配置或节点元数据。`canvas-read-image` 使用 `{"nodeId":"当前任务图片节点ID","expectedRevision":当前任务revision}`，返回带 SHA-256 的本机临时 `filePath`；用宿主读图工具打开真实图片，不打印 base64。`canvas-detect-regions` 接收同样字段，可选 `kinds:["text","barcode","rectangle"]`，结果中的来源 SHA 要随操作一起核对。
 
@@ -51,8 +51,10 @@ Codex 入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过
 
 DNA 见 `docs/DNA使用.md`，默认关闭，不自动编辑／保存。任务 `show` 中的 `dna` 是本次有效内容；据它整理需求、制作单和读图审核。全局新版不会影响旧任务。用户明确要求后才用 `apply-dna`，再确认输入并准备新制作单。与本次需求矛盾时先说明冲突，由用户决定。DNA 不参与素材事实清洗。
 
-## 独立 Web 入口
+## Web UI 与代理宿主共用合同
 
-DSH与Codex共用来源、版本、真实用户确认和实际读图合同。Web左侧讨论需求、参考用途和制作／交付确认，右侧主要预览；明确文字确认或按钮由宿主绑定实际展示版本处理，模型不能替用户批准。
+Web UI 与代理宿主共用来源、版本、真实用户确认和实际读图合同。Web UI左侧讨论需求、参考用途和制作／交付确认，右侧主要预览；明确文字确认或按钮由宿主绑定实际展示版本处理，模型不能替用户批准。
 
-DSH同时保留任务workspace中的Word／PDF／Excel／图片读取、Python／JavaScript、批处理及文件交付工具；普通资料任务不强制套海报制作单。它们按当前系统用户权限执行受信任务，不宣称OS沙箱，不新增同意图重复确认。机械图片任务优先用已有Canvas像素工具。Web与Codex的聊天历史不承诺互通，同一任务同时只由一个入口推进。
+Web UI保留任务workspace中的Word／PDF／Excel／图片读取、Python／JavaScript、批处理及文件交付工具；普通资料任务不强制套海报制作单。它们按当前系统用户权限执行受信任务，不宣称OS沙箱，不新增同意图重复确认。机械图片任务优先用已有Canvas像素工具。Web UI与代理宿主的聊天历史不承诺互通，同一任务同时只由一个入口推进。
+
+代理宿主会话中收到的文件附件不会自动成为任务来源。用户明确要把附件用于当前任务时，先通过 `attach-files TASK_ID @payload.json` 将其加入任务，再实际读取原件并按来源确认合同处理；不能只凭附件在宿主界面可见就声称它已进入任务。日常文档、表格和一般文件处理可继续使用宿主正常的文件与脚本工具。

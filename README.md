@@ -43,7 +43,7 @@ Mac 成品包含 AppTranslocation 隔离启动修复；原报错 Mac 设备仍�
 
 ## 在 Codex 中创作
 
-Codex 入口需要本机源码目录，不是上面的预构建成品包。先克隆个人版分支，再在本机 Codex 中打开仓库根目录：
+代理宿主入口需要本机源码目录，不是上面的预构建成品包。先克隆个人版分支，再在本机 Codex 中打开仓库根目录：
 
     git clone --branch main --single-branch https://github.com/akechi0819-lgtm/creative-Agent-studio.git
 
@@ -58,6 +58,6 @@ Codex 会话负责对话与推理，项目共享工具按任务打开 Canvas；�
 
 还没有设置图片 API 时，可先运行个人版工作台，在“模型与服务”保存设置，然后停止工作台服务，再回到 Codex。可通过项目 Skill 调用，也可以直接告诉 Codex：
 
-> 请读取 AGENTS.md 和 .agents/skills/creative-studio/SKILL.md，使用本项目共享 CLI 帮我完成这次创作。我使用 Codex 入口，图片通过本机已保存的生图 API 和任务 Canvas 执行；不要启动 Web DSH。
+> 请读取 AGENTS.md 和 .agents/skills/creative-studio/SKILL.md，使用本项目共享 CLI 帮我完成这次创作。我使用 代理宿主入口，图片通过本机已保存的生图 API 和任务 Canvas 执行；不要启动 Web DSH。
 
-更多入口与维护说明见 [Codex 创作入口](docs/Codex使用.md) 和 [本地 Web 交付与维护](docs/本地Web交付.md)。模型来源的实测范围与上游限制见 [模型来源与裁剪](docs/模型来源与裁剪.md)。
+更多入口与维护说明见 [代理宿主创作入口](docs/代理宿主使用.md) 和 [本地 Web 交付与维护](docs/本地Web交付.md)。模型来源的实测范围与上游限制见 [模型来源与裁剪](docs/模型来源与裁剪.md)。

@@ -16,6 +16,7 @@ async function request(path, options = {}) {
     error.status = response.status;
     error.code = body?.error?.code || body?.code;
     error.details = body?.error?.details || body?.details;
+    error.cleanup = body?.cleanup;
     throw error;
   }
   return body;
@@ -44,6 +45,7 @@ export const api = {
   reconcileCanvas: (id, payload) => request(`/api/tasks/${idPath(id)}/reconcile-canvas`, json('POST', payload)),
   job: (id) => request(`/api/jobs/${idPath(id)}`),
   cancelJob: (id) => request(`/api/jobs/${idPath(id)}`, { method: 'DELETE' }),
+  retryCleanup: (id) => request(`/api/cleanup/${idPath(id)}`, json('POST', {})),
 
   assets: (filters = {}) => {
     const query = new URLSearchParams();

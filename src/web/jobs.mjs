@@ -20,11 +20,45 @@ const USER_PATH = /(?:file:\/\/)?(?:\/Users\/[^\s,"']+|\/home\/[^\s,"']+|[A-Za-z
 const SAFE_JOB_ERROR_MESSAGES = Object.freeze({
   ERR_MODEL_CONFIG: '请先在模型与服务中保存完整基础模型配置。',
   ERR_MODEL_ID_INVALID: '所选模型 ID 格式无效；请从模型列表重新选择。',
-  ERR_JOB_RELEASE_FAILED: '任务锁释放未能确认；请刷新状态后再重试。',
+  ERR_JOB_RELEASE_FAILED: '任务锁释放未能确认；请查看清理状态后重试。',
+  ERR_TASK_ENTRY_RELEASE_FAILED: '任务入口清理未能确认；请按入口记录检查后再恢复。',
+  ERR_CANVAS_TOOL_FAILED: 'Canvas 工具请求失败，请核对画布状态。',
+  ERR_CANVAS_RESULT_READ_FAILED: '图片已返回但读取失败；请查看画布错误并重试。',
+  ERR_ATTACHMENT_EXTRACTION: '附件提取未完成；任务未更新。',
   ERR_JOB_EVENT_WRITE: '任务进度保存失败；请刷新状态后再重试。',
   ERR_JOB_PERSIST_FAILED: '任务结果保存失败；请刷新状态后再重试。',
 });
 const activeJobIds = new Set();
+
+function failedCleanup(code, message, retryId = null) {
+  return {
+    status: 'failed',
+    error: { code, message },
+    ...(retryId ? { retryId } : {}),
+  };
+}
+
+function attachCleanup(error, cleanup) {
+  try { error.cleanup = cleanup; return error; }
+  catch {
+    const wrapped = Object.assign(new Error(error?.message || '操作未完成'), error);
+    wrapped.cleanup = cleanup;
+    return wrapped;
+  }
+}
+
+function jobFailureMessage(error, code, cancelled) {
+  if (cancelled) return '操作已停止；已提交的上游请求不保证撤销。';
+  if (code === 'ERR_CANVAS_TOOL_FAILED') {
+    const diagnosticId = SAFE_JOB_ID.test(String(error?.requestId || '')) ? error.requestId : null;
+    return diagnosticId
+      ? `Canvas 工具请求失败，请核对画布日志（诊断编号 ${diagnosticId}）`
+      : SAFE_JOB_ERROR_MESSAGES.ERR_CANVAS_TOOL_FAILED;
+  }
+  if (typeof error?.safeMessage === 'string') return safeText(error.safeMessage);
+  if (code.startsWith('ERR_IMAGE_REGIONS_')) return '图像区域检测未完成；请读取当前任务状态后重试。';
+  return SAFE_JOB_ERROR_MESSAGES[code] || '操作未完成；请读取当前状态后重试。';
+}
 
 function jobError(code, message) {
   const error = new Error(message);
@@ -142,6 +176,8 @@ export function createJobManager({ root, onOperation } = {}) {
   const operations = new Map();
   const eventQueues = new Map();
   const finalizingJobs = new Set();
+  const pendingEntryReleases = new Map();
+  const retryingEntryReleases = new Map();
 
   async function initialize() {
     requestJobs.clear();
@@ -266,14 +302,43 @@ export function createJobManager({ root, onOperation } = {}) {
     if (typeof resourceKey !== 'string' || !resourceKey) throw new Error('mutation 需要 resourceKey');
     const token = reserve(resourceKey);
     let releaseEntry = null;
+    let mutationId = null;
+    let value;
+    let operationError = null;
     try {
       const taskMatch = /^task:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(resourceKey);
-      if (taskMatch) releaseEntry = await acquireTaskEntry(taskMatch[1], dataRoot);
-      return await operation();
-    } finally {
-      try { await releaseEntry?.(); }
-      finally { release(resourceKey, token); }
+      if (taskMatch) {
+        mutationId = crypto.randomUUID();
+        releaseEntry = await acquireTaskEntry(taskMatch[1], dataRoot, { jobId: mutationId });
+      }
+      value = await operation();
+    } catch (error) {
+      operationError = error;
     }
+    let cleanup = null;
+    try { await releaseEntry?.(); }
+    catch {
+      cleanup = failedCleanup('ERR_TASK_ENTRY_RELEASE_FAILED', SAFE_JOB_ERROR_MESSAGES.ERR_TASK_ENTRY_RELEASE_FAILED, mutationId);
+      if (mutationId) {
+        pendingEntryReleases.set(mutationId, {
+          release: releaseEntry,
+          taskId: resourceKey.slice('task:'.length),
+          cleanup,
+          job: null,
+        });
+      }
+    }
+    try {
+      if (!release(resourceKey, token)) {
+        cleanup ||= failedCleanup('ERR_JOB_RELEASE_FAILED', SAFE_JOB_ERROR_MESSAGES.ERR_JOB_RELEASE_FAILED);
+      }
+    } catch {
+      cleanup ||= failedCleanup('ERR_JOB_RELEASE_FAILED', SAFE_JOB_ERROR_MESSAGES.ERR_JOB_RELEASE_FAILED);
+    }
+    if (operationError) throw cleanup ? attachCleanup(operationError, cleanup) : operationError;
+    if (cleanup && value && typeof value === 'object' && !Array.isArray(value)) return { ...value, cleanup };
+    if (cleanup) return { result: value, cleanup };
+    return value;
   }
 
   async function appendEvent(job, event) {
@@ -333,6 +398,7 @@ export function createJobManager({ root, onOperation } = {}) {
       events: [],
       result: null,
       error: null,
+      cleanup: { status: 'pending' },
       cancelRequested: false,
       ownerPid: process.pid,
       ownerServerId: serverId,
@@ -346,7 +412,7 @@ export function createJobManager({ root, onOperation } = {}) {
     if (identity) requestJobs.set(identity.key, { fingerprint: identity.fingerprint, job, ready: requestReady.promise });
     try {
       await persist(job, dataRoot);
-      if (taskId) releaseEntry = await acquireTaskEntry(taskId, dataRoot);
+      if (taskId) releaseEntry = await acquireTaskEntry(taskId, dataRoot, { jobId: id });
       requestReady?.resolve();
     }
     catch (error) {
@@ -376,51 +442,35 @@ export function createJobManager({ root, onOperation } = {}) {
         controller.signal.throwIfAborted();
         terminal = { status: 'succeeded', result: sanitize(await resultView(value)), error: null };
         finalizingJobs.add(id);
-        await emitEvent({ type: 'status', text: '操作已完成' });
+        try { await emitEvent({ type: 'status', text: '操作已完成' }); }
+        catch { job.progressError = { code: 'ERR_JOB_EVENT_WRITE', message: SAFE_JOB_ERROR_MESSAGES.ERR_JOB_EVENT_WRITE }; }
       } catch (error) {
         finalizingJobs.add(id);
         const cancelled = controller.signal.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
         const code = typeof error?.code === 'string' && /^ERR_[A-Z0-9_]+$/.test(error.code)
           ? error.code
           : cancelled ? 'ERR_JOB_CANCELLED' : 'ERR_JOB_FAILED';
-        const message = cancelled
-          ? '操作已停止；已提交的上游请求不保证撤销。'
-          : (error?.safeMessage ? safeText(error.safeMessage) : (SAFE_JOB_ERROR_MESSAGES[code] || '操作未完成；请读取当前状态后重试。'));
+        const message = jobFailureMessage(error, code, cancelled);
         terminal = { status: cancelled ? 'cancelled' : 'failed', result: null, error: { code, message } };
         try {
           await emitEvent({ type: 'status', level: cancelled ? 'warning' : 'error', text: message });
-        } catch {
-          terminal = {
-            status: 'failed',
-            result: null,
-            error: { code: 'ERR_JOB_EVENT_WRITE', message: SAFE_JOB_ERROR_MESSAGES.ERR_JOB_EVENT_WRITE },
-          };
-        }
+        } catch { job.progressError = { code: 'ERR_JOB_EVENT_WRITE', message: SAFE_JOB_ERROR_MESSAGES.ERR_JOB_EVENT_WRITE }; }
       } finally {
         finalizingJobs.add(id);
         try {
           const pendingEvents = eventQueues.get(id);
           if (pendingEvents) await pendingEvents;
-        } catch {
-          terminal = {
-            status: 'failed',
-            result: null,
-            error: { code: 'ERR_JOB_EVENT_WRITE', message: SAFE_JOB_ERROR_MESSAGES.ERR_JOB_EVENT_WRITE },
-          };
-        }
+        } catch { job.progressError = { code: 'ERR_JOB_EVENT_WRITE', message: SAFE_JOB_ERROR_MESSAGES.ERR_JOB_EVENT_WRITE }; }
         const terminalAt = new Date().toISOString();
-        let releaseFailed = false;
+        let cleanup = { status: 'succeeded' };
         try { await releaseEntry?.(); }
-        catch { releaseFailed = true; }
-        try { if (!release(key, ownerToken)) releaseFailed = true; }
-        catch { releaseFailed = true; }
-        if (releaseFailed) {
-          terminal = {
-            status: 'failed',
-            result: null,
-            error: { code: 'ERR_JOB_RELEASE_FAILED', message: SAFE_JOB_ERROR_MESSAGES.ERR_JOB_RELEASE_FAILED },
-          };
+        catch {
+          cleanup = failedCleanup('ERR_JOB_RELEASE_FAILED', SAFE_JOB_ERROR_MESSAGES.ERR_JOB_RELEASE_FAILED, id);
+          pendingEntryReleases.set(id, { release: releaseEntry, taskId, cleanup, job });
         }
+        try { if (!release(key, ownerToken)) cleanup = failedCleanup('ERR_JOB_RELEASE_FAILED', SAFE_JOB_ERROR_MESSAGES.ERR_JOB_RELEASE_FAILED, cleanup.retryId || null); }
+        catch { cleanup = failedCleanup('ERR_JOB_RELEASE_FAILED', SAFE_JOB_ERROR_MESSAGES.ERR_JOB_RELEASE_FAILED, cleanup.retryId || null); }
+        job.cleanup = cleanup;
         if (!terminal) {
           terminal = {
             status: 'failed',
@@ -481,6 +531,43 @@ export function createJobManager({ root, onOperation } = {}) {
     return publicJob(job);
   }
 
+  async function retryCleanup(id) {
+    if (!SAFE_JOB_ID.test(String(id))) return null;
+    const job = jobs.get(id) || null;
+    const pending = pendingEntryReleases.get(id);
+    if (!pending) {
+      if (job?.cleanup?.status === 'failed') {
+        throw jobError('ERR_JOB_CLEANUP_UNAVAILABLE', '当前服务进程没有可验证的入口释放记录，未解除占用。');
+      }
+      return null;
+    }
+    if (retryingEntryReleases.has(id)) {
+      return retryingEntryReleases.get(id);
+    }
+    if ((job && (job.ownerServerId !== serverId || isRunning(job) || finalizingJobs.has(id) || operations.has(id) || activeJobIds.has(id)))
+      || (pending.taskId && activeByResource.has(`task:${pending.taskId}`))) {
+      throw jobError('ERR_JOB_CLEANUP_ACTIVE', '任务仍有活动操作，未尝试释放入口。');
+    }
+    const attempt = (async () => {
+      try {
+        await pending.release();
+        pendingEntryReleases.delete(id);
+        pending.cleanup = { status: 'succeeded' };
+      } catch {
+        pending.cleanup = failedCleanup('ERR_JOB_RELEASE_FAILED', SAFE_JOB_ERROR_MESSAGES.ERR_JOB_RELEASE_FAILED, id);
+      }
+      if (job) {
+        job.cleanup = pending.cleanup;
+        job.updatedAt = new Date().toISOString();
+        await persist(job, dataRoot);
+      }
+      return { cleanup: pending.cleanup, ...(job ? { job: publicJob(job) } : {}) };
+    })();
+    retryingEntryReleases.set(id, attempt);
+    try { return await attempt; }
+    finally { retryingEntryReleases.delete(id); }
+  }
+
   async function close({ timeoutMs = 5000 } = {}) {
     for (const controller of controllers.values()) controller.abort();
     const pending = [...operations.values()];
@@ -496,6 +583,7 @@ export function createJobManager({ root, onOperation } = {}) {
     initialize,
     start,
     get,
+    retryCleanup,
     latestForTask,
     latestForAsset,
     findRequest,

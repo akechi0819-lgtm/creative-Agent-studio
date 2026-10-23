@@ -3,8 +3,9 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {dataRoot} from '../canvas/client.mjs';
 
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function directory(id,root){
- if(typeof id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))throw new Error('任务ID无效');
+ if(typeof id!=='string'||!UUID.test(id))throw new Error('任务ID无效');
  return path.join(path.resolve(root??dataRoot()),'tasks',id);
 }
 function busy(message='任务正由另一个入口推进，请等该操作结束再接续。'){
@@ -15,7 +16,7 @@ async function record(file){try{return JSON.parse(await fs.readFile(file,'utf8')
 
 export async function taskEntryStatus(id,{root}={}){
  const owner=await record(path.join(directory(id,root),'.entry.json'));
- return owner?{pid:owner.pid,alive:alive(owner.pid),entry:owner.entry,startedAt:owner.startedAt}:null;
+ return owner?{pid:owner.pid,alive:alive(owner.pid),entry:owner.entry,startedAt:owner.startedAt,...(typeof owner.jobId==='string'&&UUID.test(owner.jobId)?{jobId:owner.jobId}:{})}:null;
 }
 export async function assertTaskEntryAccess(id,root){
  const owner=await record(path.join(directory(id,root),'.entry.json'));
@@ -34,14 +35,28 @@ export async function clearTaskEntry(id,{root,deadPid}={}){
  await fs.unlink(file);return {cleared:true};
 }
 /** A Web job owns the whole turn; core per-write locks remain inside it. */
-export async function acquireTaskEntry(id,root){
+export async function acquireTaskEntry(id,root,{jobId}={}){
  const file=path.join(directory(id,root),'.entry.json');
  await assertCoreUnlocked(id,root);
- const owner={pid:process.pid,token:randomUUID(),entry:'web',startedAt:new Date().toISOString()};
+ const owner={pid:process.pid,token:randomUUID(),entry:'web',startedAt:new Date().toISOString(),...(jobId?{jobId}:{})};
  let handle;
  try{handle=await fs.open(file,'wx',0o600);}catch(e){if(e.code==='EEXIST')throw busy();throw e;}
- try{await handle.writeFile(JSON.stringify(owner));await handle.close();}catch(error){await handle.close().catch(()=>{});await fs.unlink(file).catch(()=>{});throw error;}
- const release=async()=>{const current=await record(file);if(!current||current.token!==owner.token)throw busy('任务入口已变化，无法确认释放。');await fs.unlink(file);};
- try{await assertCoreUnlocked(id,root);}catch(e){await release().catch(()=>{});throw e;}
+ try{await handle.writeFile(JSON.stringify(owner));await handle.close();}catch(error){
+  await handle.close().catch(()=>{});
+  try{await fs.unlink(file);}catch(cleanupError){error.cleanup={status:'failed',error:{code:'ERR_TASK_ENTRY_RELEASE_FAILED',message:'任务入口清理未能确认；请按入口记录检查后再恢复。'}};}
+  throw error;
+ }
+ let released=false;
+ const release=async()=>{
+  if(released)return {cleared:false,alreadyReleased:true};
+  const current=await record(file);
+  if(!current){released=true;return {cleared:true};}
+  if(current.token!==owner.token||current.jobId!==owner.jobId)throw busy('任务入口已变化，无法确认释放。');
+  await fs.unlink(file);released=true;return {cleared:true};
+ };
+ try{await assertCoreUnlocked(id,root);}catch(e){
+  try{await release();}catch(cleanupError){e.cleanup={status:'failed',error:{code:'ERR_TASK_ENTRY_RELEASE_FAILED',message:'任务入口清理未能确认；请按入口记录检查后再恢复。'}};}
+  throw e;
+ }
  return release;
 }
