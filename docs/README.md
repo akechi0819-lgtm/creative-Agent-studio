@@ -8,7 +8,7 @@
 
 - [仓库首页与下载](../README.md)：对应分支的最新成品入口及已知限制。
 - [本地Web使用与维护](本地Web交付.md)：成品与源码启动、配置、备份及诊断。
-- [Codex使用](Codex使用.md)：共享Skill／CLI与Canvas工具链。
+- [代理宿主使用](代理宿主使用.md)：共享Skill／CLI与Canvas工具链。
 - [素材库使用](素材库使用.md)、[DNA使用](DNA使用.md)、[模型来源与裁剪](模型来源与裁剪.md)。
 - [工程进度](工程进度.md)、[PRD](../Creative_Agent_Studio_PRD.md)、[施工计划](../开发与施工计划.md)。
 - [Windows首次启动修复](Windows首次启动修复.md)：双版本 Windows 成品 GUI 首次配置验证范围、结果与限制。

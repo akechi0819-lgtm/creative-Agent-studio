@@ -81,6 +81,12 @@ jobs:
         run: |
           set -euo pipefail
           node --test --test-reporter=tap --test-timeout=180000 \
+            tests/launcher.test.mjs \
+            tests/release-startup.test.mjs \
+            tests/windows-launcher-ui.test.mjs \
+            tests/web-api.test.mjs \
+            tests/entry.test.mjs \
+            tests/canvas-client.test.mjs \
             tests/canvas-connection.test.mjs \
             tests/canvas-window.test.mjs \
             tests/web-canvas-recovery.test.mjs \

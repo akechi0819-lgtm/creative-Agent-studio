@@ -46,6 +46,7 @@ async function fixture(t, options = {}) {
   return {
     root,
     origin,
+    jobs: running.server.studioJobs,
     async request(url, { json, ...optionsValue } = {}) {
       const headers = new Headers(optionsValue.headers || {});
       if (optionsValue.method && optionsValue.method !== 'GET' && optionsValue.method !== 'HEAD') headers.set('origin', origin);
@@ -1404,12 +1405,11 @@ test('job recovery clears a dead task entry even when the process stopped before
   assert.deepEqual(await fs.readdir(path.join(root, 'web', 'jobs')), []);
 });
 
-test('a job does not publish success when the task entry release cannot be confirmed', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-studio-job-release-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+test('a job keeps its operation result and retries an entry release denied once', async (t) => {
+  const f = await fixture(t);
+  const root = f.root;
   const task = await createTask({ title: '锁释放失败', brief: '验证终态语义' }, root);
-  const jobs = createJobManager({ root });
-  await jobs.initialize();
+  const jobs = f.jobs;
   let markStarted;
   let finishRun;
   const runStarted = new Promise((resolve) => { markStarted = resolve; });
@@ -1421,17 +1421,84 @@ test('a job does not publish success when the task entry release cannot be confi
   });
   await runStarted;
   const entryPath = path.join(root, 'tasks', task.id, '.entry.json');
+  const originalUnlink = fs.unlink;
+  let denyEntryUnlink = true;
+  fs.unlink = async (file, ...args) => {
+    if (denyEntryUnlink && path.resolve(String(file)) === path.resolve(entryPath)) {
+      denyEntryUnlink = false;
+      throw Object.assign(new Error('injected access denied'), { code: 'EACCES' });
+    }
+    return originalUnlink(file, ...args);
+  };
+  try {
+    finishRun();
+    const completed = await waitFor(() => {
+      const current = jobs.get(started.id);
+      return current?.status === 'succeeded' && current.cleanup?.status === 'failed' ? current : null;
+    }, 'the successful result and failed cleanup state should both be visible');
+    assert.deepEqual(completed.result, { complete: true });
+    assert.equal(completed.error, null);
+    assert.equal(completed.cleanup.error.code, 'ERR_JOB_RELEASE_FAILED');
+    assert.equal(completed.cleanup.retryId, started.id);
+    const ownedEntry = JSON.parse(await fs.readFile(entryPath, 'utf8'));
+    assert.equal(ownedEntry.jobId, started.id);
+
+    const retried = await f.request(`/api/cleanup/${started.id}`, { method: 'POST', json: {} });
+    assert.equal(retried.response.status, 200);
+    assert.equal(retried.data.cleanup.status, 'succeeded');
+    assert.deepEqual(retried.data.job.result, { complete: true });
+    await assert.rejects(fs.access(entryPath), { code: 'ENOENT' });
+  } finally {
+    fs.unlink = originalUnlink;
+  }
+});
+
+test('entry cleanup retry refuses to remove a different owner token', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-studio-job-release-owner-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const task = await createTask({ title: '锁身份校验', brief: '验证不同 token 不会被清理' }, root);
+  const jobs = createJobManager({ root });
+  await jobs.initialize();
+  let markStarted;
+  let finishRun;
+  const runStarted = new Promise((resolve) => { markStarted = resolve; });
+  const runGate = new Promise((resolve) => { finishRun = resolve; });
+  const started = await jobs.start({ taskId: task.id, kind: 'release-owner-check', run: async () => { markStarted(); await runGate; return 'done'; } });
+  await runStarted;
+  const entryPath = path.join(root, 'tasks', task.id, '.entry.json');
   const entry = JSON.parse(await fs.readFile(entryPath, 'utf8'));
   await fs.writeFile(entryPath, JSON.stringify({ ...entry, token: crypto.randomUUID() }));
   finishRun();
 
+  const completed = await waitFor(() => {
+    const current = jobs.get(started.id);
+    return current?.status === 'succeeded' && current.cleanup?.status === 'failed' ? current : null;
+  }, 'release mismatch should be reported as cleanup failure after successful work');
+  assert.equal(completed.result, 'done');
+  assert.equal(completed.error, null);
+  assert.equal((await jobs.retryCleanup(started.id)).cleanup.status, 'failed');
+  assert.equal(JSON.parse(await fs.readFile(entryPath, 'utf8')).token !== entry.token, true);
+  await jobs.close();
+});
+
+test('job error keeps a verified Canvas diagnostic ID and rejects arbitrary safeMessage text', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-studio-job-diagnostic-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const task = await createTask({ title: 'Canvas 诊断编号', brief: '验证错误提示' }, root);
+  const jobs = createJobManager({ root });
+  await jobs.initialize();
+  const requestId = crypto.randomUUID();
+  const started = await jobs.start({
+    taskId: task.id,
+    kind: 'diagnostic-check',
+    run: async () => { throw Object.assign(new Error('untrusted external detail'), { code: 'ERR_CANVAS_TOOL_FAILED', requestId, safeMessage: 'untrusted safeMessage' }); },
+  });
   const failed = await waitFor(() => {
     const current = jobs.get(started.id);
     return current?.status === 'failed' ? current : null;
-  }, 'a release mismatch must finish as a failed job');
-  assert.equal(failed.error.code, 'ERR_JOB_RELEASE_FAILED');
-  assert.equal(failed.error.message, '任务锁释放未能确认；请刷新状态后再重试。');
-  assert.equal(failed.result, null);
+  }, 'Canvas tool failure should finish');
+  assert.equal(failed.error.code, 'ERR_CANVAS_TOOL_FAILED');
+  assert.equal(failed.error.message, `Canvas 工具请求失败，请核对画布日志（诊断编号 ${requestId}）`);
   await jobs.close();
 });
 
@@ -1460,6 +1527,39 @@ test('multipart asset import preserves file order and serves only allowlisted sa
   assert.equal(managementSearch.data.assets.length, 1);
   const traversal = await f.request(`/api/assets/${asset.id}/files/../metadata.json`);
   assert.notEqual(traversal.response.status, 200);
+});
+
+test('multipart cleanup failure preserves the imported asset result and reports the leftover upload directory', async (t) => {
+  const f = await fixture(t);
+  const form = new FormData();
+  form.set('title', '清理失败仍保留结果');
+  form.set('body', '验证附件临时目录清理失败');
+  form.append('files', new Blob(['kept asset bytes'], { type: 'text/plain' }), 'kept.txt');
+  const originalRm = fs.rm;
+  let deniedDirectory = null;
+  fs.rm = async (target, ...args) => {
+    const resolved = path.resolve(String(target));
+    const uploadRoot = path.join(f.root, 'web', 'uploads');
+    if (!deniedDirectory && resolved.startsWith(`${uploadRoot}${path.sep}`)) {
+      deniedDirectory = resolved;
+      throw Object.assign(new Error('injected upload cleanup denial'), { code: 'EACCES' });
+    }
+    return originalRm(target, ...args);
+  };
+  try {
+    const imported = await f.request('/api/assets', { method: 'POST', body: form });
+    assert.equal(imported.response.status, 201, JSON.stringify(imported.data));
+    assert.equal(imported.data.asset.title, '清理失败仍保留结果');
+    assert.equal(imported.data.cleanup.status, 'failed');
+    assert.equal(imported.data.cleanup.error.code, 'ERR_MULTIPART_CLEANUP_FAILED');
+    assert.ok(deniedDirectory);
+    assert.equal(await fs.readFile(path.join(deniedDirectory, '001.txt'), 'utf8'), 'kept asset bytes');
+    const stored = await f.request(imported.data.asset.files[0].fileUrl);
+    assert.equal(Buffer.from(stored.data).toString(), 'kept asset bytes');
+  } finally {
+    fs.rm = originalRm;
+    if (deniedDirectory) await originalRm(deniedDirectory, { recursive: true, force: true });
+  }
 });
 
 test('Canvas bootstrap ticket is only returned by the explicit open route; image preview is proxied', async (t) => {

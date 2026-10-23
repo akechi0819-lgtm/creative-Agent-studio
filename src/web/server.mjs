@@ -97,6 +97,30 @@ function error(code, message, status = 400, details) {
   return value;
 }
 
+function cleanupFailure(code, message, retryId = null) {
+  return { status: 'failed', error: { code, message }, ...(retryId ? { retryId } : {}) };
+}
+
+function combineCleanup(...values) {
+  const failures = values.filter((value) => value?.status === 'failed');
+  if (!failures.length) return null;
+  if (failures.length === 1) return failures[0];
+  return {
+    status: 'failed',
+    errors: failures.flatMap((failure) => failure.errors || (failure.error ? [failure.error] : [])),
+    retryIds: failures.flatMap((failure) => [failure.retryId, ...(failure.retryIds || [])].filter(Boolean)),
+  };
+}
+
+function attachCleanup(errorValue, cleanup) {
+  try { errorValue.cleanup = cleanup; return errorValue; }
+  catch {
+    const wrapped = Object.assign(new Error(errorValue?.message || '请求未完成'), errorValue);
+    wrapped.cleanup = cleanup;
+    return wrapped;
+  }
+}
+
 function sanitizeText(value) {
   return String(value ?? '')
     .replace(PRIVATE_TEXT, '[已隐藏凭据]')
@@ -446,7 +470,6 @@ async function parseMultipart(request, { root, maxBytes, allowedFileCount = MAX_
   if (files.length < 1 || files.length > allowedFileCount) throw error('ERR_FILE_COUNT', `文件数必须为 1 到 ${allowedFileCount}`);
   const directory = path.join(path.resolve(root), 'web', 'uploads', crypto.randomUUID());
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const installed = [];
   try {
     const normalizedFiles = [];
     for (const [index, file] of files.entries()) {
@@ -460,7 +483,6 @@ async function parseMultipart(request, { root, maxBytes, allowedFileCount = MAX_
       if (!buffer.length) throw error('ERR_FILE_EMPTY', '不能导入空文件');
       const destination = path.join(directory, `${String(index + 1).padStart(3, '0')}${extension || '.upload'}`);
       await fs.writeFile(destination, buffer, { flag: 'wx', mode: 0o600 });
-      installed.push(destination);
       normalizedFiles.push({
         order: index,
         name: name || `file-${index + 1}`,
@@ -474,10 +496,27 @@ async function parseMultipart(request, { root, maxBytes, allowedFileCount = MAX_
       cleanup: () => fs.rm(directory, { recursive: true, force: true }),
     };
   } catch (errorValue) {
-    await Promise.all(installed.map((file) => fs.rm(file, { force: true }).catch(() => {})));
-    await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
+    try { await fs.rm(directory, { recursive: true, force: true }); }
+    catch {
+      throw attachCleanup(errorValue, cleanupFailure('ERR_MULTIPART_CLEANUP_FAILED', '附件临时目录清理未能确认；目录可能仍保留。'));
+    }
     throw errorValue;
   }
+}
+
+async function withMultipartCleanup(parsed, operation) {
+  let value;
+  let operationError = null;
+  try { value = await operation(); }
+  catch (errorValue) { operationError = errorValue; }
+  let cleanup = null;
+  try { await parsed.cleanup(); }
+  catch { cleanup = cleanupFailure('ERR_MULTIPART_CLEANUP_FAILED', '附件临时目录清理未能确认；目录可能仍保留。'); }
+  if (operationError) {
+    const combined = combineCleanup(operationError.cleanup, cleanup);
+    throw combined ? attachCleanup(operationError, combined) : operationError;
+  }
+  return { value, cleanup };
 }
 
 function taskExtraction(result, originalName) {
@@ -545,7 +584,7 @@ function apiError(errorValue) {
   let status = errorValue?.statusCode || 400;
   if (!errorValue?.statusCode) {
     if (/NOT_FOUND|NO_TASK|NO_ASSET/.test(code)) status = 404;
-    else if (/CONFLICT|BUSY|LOCKED|STALE|REVISION|IMAGE_CHANGED|SYNC_REQUIRED|TARGET_CHANGED|SELECTION_CHANGED|PROJECT_MISMATCH/.test(code)) status = 409;
+    else if (/CONFLICT|BUSY|LOCKED|STALE|REVISION|IMAGE_CHANGED|SYNC_REQUIRED|TARGET_CHANGED|SELECTION_CHANGED|PROJECT_MISMATCH|CLEANUP_(?:ACTIVE|UNAVAILABLE)/.test(code)) status = 409;
     else if (/INTERNAL|FAILED$/.test(code) && code !== 'ERR_ASSET_CLEAN_FAILED') status = 500;
   }
   const raw = typeof errorValue?.safeMessage === 'string'
@@ -556,7 +595,8 @@ function apiError(errorValue) {
   for (const key of ['expectedRevision', 'actualRevision', 'expectedInputRevision', 'actualInputRevision']) {
     if (Number.isInteger(errorValue?.[key])) details[key] = errorValue[key];
   }
-  return { status, body: { error: { code, message, ...(Object.keys(details).length ? { details } : {}) } } };
+  const cleanup = errorValue?.cleanup?.status === 'failed' ? sanitizeValue(errorValue.cleanup) : null;
+  return { status, body: { error: { code, message, ...(Object.keys(details).length ? { details } : {}) }, ...(cleanup ? { cleanup } : {}) } };
 }
 
 function publicAsset(record) {
@@ -1197,7 +1237,7 @@ export function createStudioServer({
     if (segments[1] === 'tasks' && segments.length === 4 && method === 'POST' && segments[3] === 'attachments') {
       const taskId = assertUuid(segments[2]);
       const parsed = await parseMultipart(request, { root: data, maxBytes: maxUploadBytes });
-      try {
+      const multipartResult = await withMultipartCleanup(parsed, async () => {
         const form = parsed.form;
         const allowedFields = new Set(['files', 'expectedRevision', 'uploadId', 'instructions']);
         for (const [field] of form.entries()) {
@@ -1273,8 +1313,11 @@ export function createStudioServer({
           if (!source) throw error('ERR_ATTACHMENT_SAVE', '附件来源未能保存', 500);
           return { task, sourceId: source.id, replayed: false, uploadRevision: source.uploadRevision };
         });
-        return json(response, 200, { ...result, task: publicTask(result.task) });
-      } finally { await parsed.cleanup(); }
+        return result;
+      });
+      const result = multipartResult.value;
+      const cleanup = combineCleanup(result.cleanup, multipartResult.cleanup);
+      return json(response, 200, { ...result, task: publicTask(result.task), ...(cleanup ? { cleanup } : {}) });
     }
     if (segments[1] === 'tasks' && segments.length === 4 && method === 'POST') {
       const taskId = assertUuid(segments[2]);
@@ -1587,6 +1630,11 @@ export function createStudioServer({
       if (!job) throw error('ERR_JOB_NOT_FOUND', 'Job 不存在', 404);
       return json(response, 200, { job });
     }
+    if (segments[1] === 'cleanup' && segments.length === 3 && method === 'POST') {
+      const result = await jobs.retryCleanup(segments[2]);
+      if (!result) throw error('ERR_JOB_CLEANUP_NOT_FOUND', '没有可重试的入口清理记录', 404);
+      return json(response, 200, result);
+    }
 
     if (segments[1] === 'tasks' && segments.length === 5 && method === 'GET' && segments[3] === 'workspace-artifacts') {
       const {id} = await requireTask(segments[2]);
@@ -1685,7 +1733,7 @@ export function createStudioServer({
 
     if (segments.length === 2 && segments[1] === 'assets' && method === 'POST') {
       const parsed = await parseMultipart(request, { root: data, maxBytes: maxUploadBytes });
-      try {
+      const multipartResult = await withMultipartCleanup(parsed, async () => {
         const form = parsed.form;
         const title = form.get('title');
         const body = form.get('body') ?? '';
@@ -1696,19 +1744,24 @@ export function createStudioServer({
           source: parseJsonField(form, 'source', {}),
           files: parsed.files,
         }, { root: data }));
-        return json(response, 201, { asset: publicAsset(result) });
-      } finally { await parsed.cleanup(); }
+        return result;
+      });
+      const cleanup = combineCleanup(multipartResult.value.cleanup, multipartResult.cleanup);
+      return json(response, 201, { asset: publicAsset(multipartResult.value), ...(cleanup ? { cleanup } : {}) });
     }
 
     if (segments[1] === 'assets' && segments.length === 3 && segments[2] === 'import-folder' && method === 'POST') {
       const parsed = await parseMultipart(request, { root: data, maxBytes: maxUploadBytes, allowedFileCount: 1000 });
-      try {
+      const multipartResult = await withMultipartCleanup(parsed, async () => {
         const batchId = parsed.form.get('batchId');
         const result = await jobs.withMutation(`folder-import:${batchId}`, () => importFolder({
           root: data, files: parsed.files, paths: parseJsonField(parsed.form, 'paths', []), batchId, signal: request.abortSignal,
         }));
-        return json(response, 201, { ...result, entries: result.entries.map(entry => ({...entry,...(entry.asset?{asset:publicAsset(entry.asset)}:{})})) });
-      } finally { await parsed.cleanup(); }
+        return result;
+      });
+      const result = multipartResult.value;
+      const cleanup = combineCleanup(result.cleanup, multipartResult.cleanup);
+      return json(response, 201, { ...result, entries: result.entries.map(entry => ({...entry,...(entry.asset?{asset:publicAsset(entry.asset)}:{})})), ...(cleanup ? { cleanup } : {}) });
     }
 
     if (segments[1] === 'assets' && segments.length === 3 && method === 'GET') {
@@ -1776,13 +1829,15 @@ export function createStudioServer({
 
     if (segments[1] === 'assets' && segments.length === 4 && method === 'POST' && segments[3] === 'replace-files') {
       const parsed = await parseMultipart(request, { root: data, maxBytes: maxUploadBytes });
-      try {
+      const multipartResult = await withMultipartCleanup(parsed, async () => {
         const { id } = await requireAssetRecord(segments[2], data);
         const revision = Number(parsed.form.get('expectedRevision'));
         requiredRevision(revision);
         const result = await jobs.withMutation(`asset:${id}`, () => replaceAssetFiles(id, parsed.files, { root: data, expectedRevision: revision }));
-        return json(response, 200, { asset: publicAsset(result) });
-      } finally { await parsed.cleanup(); }
+        return result;
+      });
+      const cleanup = combineCleanup(multipartResult.value.cleanup, multipartResult.cleanup);
+      return json(response, 200, { asset: publicAsset(multipartResult.value), ...(cleanup ? { cleanup } : {}) });
     }
 
     if (segments[1] === 'assets' && segments.length === 3 && method === 'DELETE') {

@@ -33,7 +33,21 @@ export async function callCanvasTool(name, input = {}, config, { signal } = {}) 
     signal,
   });
   const body = await response.json();
-  if (!response.ok || !body.ok) throw new Error(`${name}: ${body.error || response.status}`);
+  if (!response.ok || !body.ok) {
+    const requestId = /^[0-9a-f-]{36}$/i.test(body.requestId || '') ? body.requestId : null;
+    if (response.status === 409 && ['clientId 未连接到此服务实例', '当前网页尚未上报画布状态'].includes(body.error)) {
+      throw Object.assign(new Error(`Canvas 未连接或状态尚未同步${requestId ? `（诊断编号 ${requestId}）` : ''}`), {
+        code: 'ERR_CANVAS_DISCONNECTED', requestId, status: response.status,
+        safeMessage: 'Canvas 未连接或状态尚未同步，请打开当前任务画布。',
+      });
+    }
+    throw Object.assign(new Error(requestId
+      ? `Canvas 工具请求失败（HTTP ${response.status}，诊断编号 ${requestId}）`
+      : `${name}: ${body.error || response.status}`), {
+      code: 'ERR_CANVAS_TOOL_FAILED', requestId, status: response.status,
+      safeMessage: requestId ? `Canvas 工具请求失败，请核对画布日志（诊断编号 ${requestId}）` : 'Canvas 工具请求失败，请核对画布状态。',
+    });
+  }
   return body.result;
 }
 export async function recoverImage(nodeId, destination, config, { signal } = {}) {

@@ -1,6 +1,8 @@
 # Creative Agent Studio 公司版
 
-基于已独立复验的 P5 桌面工作台，提供对话创作、公司历史素材参考、图文制作、文件处理、审核与素材包导出。Web／DSH 与 Codex 共用任务核心；Canvas 只执行绘图和图片工具。
+内测更新使用最新公司分支源码，见[员工源码更新提示词](docs/员工源码更新提示词.md)和[代理宿主使用](docs/代理宿主使用.md)。下列历史候选包不包含 2026-10-23 返修；新版验证通过后删除员工端旧程序及旧入口，保留独立的配置与任务。
+
+基于已独立复验的 P5 桌面工作台，提供对话创作、公司历史素材参考、图文制作、文件处理、审核与素材包导出。Web／DSH 与 代理宿主 共用任务核心；Canvas 只执行绘图和图片工具。
 
 公司版预配公司 Teedy 地址，Canvas 与个人版一样在本机运行。每位同事首次使用填写自己的素材库账号密码；对话来源与生图配置分别选择，Kilo 对话无需个人 API 密钥；模型配置保存本机。素材访问继续受 Teedy 账号及 ACL 控制，包内没有共享账号、密码或模型钥匙。
 
@@ -15,7 +17,7 @@
 | Apple 芯片 Mac | company-p5.1.4 | [Mac artifact 12330321033](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478/artifacts/12330321033) | 026704ab119b41d105a8c8b4f0a544ec4da5b6559f8cfd2774d366014c8babf0 | 2026-11-04 15:59:52 |
 | Windows 64 位 | company-p5.1.4 | [Windows artifact 12329329237](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478/artifacts/12329329237) | d98b7daeedd319ff70595a2fbef383138fef60cfc72b97746fee336b60ca30ce | 2026-11-04 16:02:51 |
 
-两平台均为本地 Canvas 版。Mac 尚无 Developer ID 签名与公证，Windows 尚无 Authenticode 签名；原报错 Mac 与员工 Windows 设备、真实 Teedy 账号与 ACL、付费图片生成仍待分别验证。旧 company-p5.1.3 包保留作历史记录，不再作为当前下载入口。
+两平台均为本地 Canvas 版。Mac 尚无 Developer ID 签名与公证，Windows 尚无 Authenticode 签名；原报错 Mac 与员工 Windows 设备、真实 Teedy 账号与 ACL、付费图片生成仍待分别验证。历史版本仅在Git保留记录，员工端不保留可启动旧版本。
 
 ## 普通同事使用
 
@@ -34,7 +36,7 @@
 
 公司分支为 `codex/company-edition`。公司部署 JSON 从源码外注入运行包，不写公开仓库；只含 Teedy 地址，不允许员工接口改写。配置格式、构建与验证边界见 [公司版接入](docs/公司版接入.md)。本地 Canvas 与个人版共用实现，无需更新远端画布；旧 Teedy 挂靠、服务器与 ACL 保持原样。
 
-源码开发入口仍为 `Start.command`／`Start.cmd`，与普通同事成品包入口分开。Codex 使用 [项目 Skill](.agents/skills/creative-studio/SKILL.md) 和 [共享 CLI](docs/Codex使用.md)，不启动 DSH；公司素材搜索用 `node scripts/company.mjs search @payload.json`。
+源码开发入口仍为 `Start.command`／`Start.cmd`，与普通同事成品包入口分开。代理宿主 使用 [项目 Skill](.agents/skills/creative-studio/SKILL.md) 和 [共享 CLI](docs/代理宿主使用.md)，不启动 DSH；公司素材搜索用 `node scripts/company.mjs search @payload.json`。
 
 P5 通用版基线通过范围见 [最终独立复验](docs/P5最终独立复验.md)。公司新增范围的进度与证据见 [工程进度](docs/工程进度.md)和[公司版自检](docs/公司版自检.md)，不把通用版通过冒充公司现网或员工设备验证。未签名提示与普通设备双击体验按实际证据记录。
 

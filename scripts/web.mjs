@@ -2,8 +2,9 @@ import {readFile,writeFile,mkdir,open,rm} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import path from 'node:path';
-import {alive,readJson} from '../src/launcher/control.mjs';
+import {alive,readJson,runtimeStatus} from '../src/launcher/control.mjs';
 import {serveControl} from '../src/launcher/control.mjs';
+import {runtimeIdentityMismatchError,runtimeSourceIdentity} from '../src/launcher/identity.mjs';
 import {dataRoot} from '../src/canvas/client.mjs';
 import {ensureModelPlugin,stopModelPlugin} from '../src/web/model-plugin.mjs';
 import {readConfig} from '../src/web/config.mjs';
@@ -19,11 +20,17 @@ for(let i=0;i<args.length;i++){
   if(args[i]==='--port'){port=Number(args[++i]);if(!Number.isInteger(port)||port<0||port>65535)throw new Error('端口必须为 0—65535 的整数。');}
 }
 const root=dataRoot();
+const sourceDirectory=path.resolve(import.meta.dirname,'..');
+const releaseBundle=process.env.STUDIO_RELEASE_BUNDLE==='1';
+const sourceIdentity=await runtimeSourceIdentity(sourceDirectory,{releaseBundle});
 await mkdir(path.join(root,'web'),{recursive:true,mode:0o700});
 const lockPath=path.join(root,'web','instance.lock');
 let lock;
 try{lock=await open(lockPath,'wx',0o600);}catch(error){
   if(error.code!=='EEXIST')throw error;
+  const current=await runtimeStatus(root,sourceIdentity).catch(()=>null);
+  if(current?.running&&!current.identityMatches)throw runtimeIdentityMismatchError(current);
+  if(current?.running)throw new Error('此数据目录已有相同源码工作台运行；请使用启动入口的 status 或 stop 命令。');
   const owner=JSON.parse(await readFile(lockPath,'utf8'));
   let alive=true;try{process.kill(owner.pid,0);}catch(e){if(e.code==='ESRCH')alive=false;else throw e;}
   if(alive)throw new Error('此数据目录已有工作台运行；请使用已打开的网页或停止原进程。');
@@ -31,7 +38,7 @@ try{lock=await open(lockPath,'wx',0o600);}catch(error){
 }
 const instanceId=randomUUID();
 const sourceRuntime=path.resolve(import.meta.dirname,'../.studio-runtime');
-const sourceMarker=process.env.STUDIO_RELEASE_BUNDLE==='1'?null:path.join(sourceRuntime,'servers',`${instanceId}.json`);
+const sourceMarker=releaseBundle?null:path.join(sourceRuntime,'servers',`${instanceId}.json`);
 await lock.writeFile(JSON.stringify({pid:process.pid,instanceId}));
 const getConfig=()=>readConfig({root});
 const canvas=createCanvasManager({root,readConfig:getConfig});
@@ -61,7 +68,7 @@ try{
   await ensureModelPlugin({root});
   app=await listenStudioServer({root,agent,canvas,readConfig:getConfig,port,host:'127.0.0.1'});
   const url=`http://127.0.0.1:${app.address.port}`;
-  controlClose=await serveControl({root,instanceId,url,stop});
+  controlClose=await serveControl({root,instanceId,url,stop,sourceIdentity});
   console.log(`Creative Agent Studio Web UI：${url}`);
   console.log('按 Ctrl+C 或使用启动入口的 stop 命令停止工作台与本产品 Canvas 和模型插件。');
   if(!args.includes('--no-open')){
@@ -71,6 +78,10 @@ try{
   }
 }catch(error){
   await stop();
-  console.error(error?.code==='EADDRINUSE'?'端口已占用；使用 --port 指定其他端口。':'工作台启动未完成；请先安装固定依赖并运行 npm run web:build。');
+  console.error(error?.code==='ERR_RUNTIME_IDENTITY_MISMATCH'
+    ?error.message
+    :error?.code==='EADDRINUSE'
+      ?'端口已占用；使用 --port 指定其他端口。'
+      :'工作台启动未完成；请先安装固定依赖并运行 npm run web:build。');
   process.exitCode=1;
 }

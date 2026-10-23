@@ -79,6 +79,7 @@ export function Workbench({
   onLoadModels,
   onOpenCanvas,
   onCancelJob,
+  onRetryCleanup,
   onRetryChat,
 }) {
   const [objectCollapsed, setObjectCollapsed] = useState(false);
@@ -215,7 +216,7 @@ export function Workbench({
               images: deliveryImages,
             })}>{actionBusy ? '正在准备交付…' : '确认交付并下载'}</button>}
           </section>}
-          {job && <JobActivity job={job} onCancel={onCancelJob} />}
+          {job && <JobActivity job={job} onCancel={onCancelJob} onRetryCleanup={onRetryCleanup} />}
           {!chat.length && !job && <div className="conversation-empty"><WhaleCharacter pose="idle" /><div><strong>对话已准备好</strong><p>描述目标、内容或风格要求，也可以在看到方案后直接说出要修改的地方。</p></div></div>}
           {operations.length > 0 && <details className="operation-history"><summary>查看任务操作记录（{operations.length}）</summary><ol>{operations.map((operation) => <li key={operation.id}><time>{new Date(operation.at).toLocaleString('zh-CN')}</time><strong>{operation.stage}</strong><span>{operation.message}</span></li>)}</ol></details>}
         </div>
@@ -466,8 +467,9 @@ export function ChatComposer({ onSend, disabled = false, sendDisabled = false, i
   </div>;
 }
 
-function JobActivity({ job, onCancel }) {
-  if (job.status === 'succeeded') return null;
+function JobActivity({ job, onCancel, onRetryCleanup }) {
+  const cleanupFailed = job.cleanup?.status === 'failed';
+  if (job.status === 'succeeded' && !cleanupFailed) return null;
   const events = Array.isArray(job.events) ? job.events : [];
   const active = job.status === 'queued' || job.status === 'running';
   const failed = job.status === 'failed';
@@ -475,10 +477,14 @@ function JobActivity({ job, onCancel }) {
   const details = events.length > 0 || job.model || job.result?.message;
   return <div className={`job-activity ${active ? 'active' : job.status}`}>
     <div className="job-activity-head"><span className="activity-mark">{active ? <i /> : failed ? '!' : 'Ⅱ'}</span><div>
-      <strong>{active ? `${jobLabel(job.kind)}中` : failed ? `${jobLabel(job.kind)}失败` : `${jobLabel(job.kind)}已停止`}</strong>
-      <span>{active ? compactText(latestProgress || '正在处理…', 180) : failed ? compactText(job.error?.message || job.result?.message || '操作失败', 240) : '操作已停止。你可以在对话中调整后继续。'}</span>
+      <strong>{active ? `${jobLabel(job.kind)}中` : failed ? `${jobLabel(job.kind)}失败` : job.status === 'succeeded' ? `${jobLabel(job.kind)}已完成` : `${jobLabel(job.kind)}已停止`}</strong>
+      <span>{active ? compactText(latestProgress || '正在处理…', 180) : failed ? compactText(job.error?.message || job.result?.message || '操作失败', 240) : job.status === 'succeeded' ? '操作结果已保留。' : '操作已停止。你可以在对话中调整后继续。'}</span>
     </div></div>
     {active && <button className="text-button danger-text" onClick={onCancel}>请求停止</button>}
+    {cleanupFailed && <div className="job-cleanup-warning" role="status">
+      <span>{compactText(job.cleanup.error?.message || '任务入口清理未能确认；请重试清理后继续操作。', 240)}</span>
+      {job.cleanup.retryId && <button type="button" className="text-button" onClick={onRetryCleanup}>重试清理</button>}
+    </div>}
     {details && <details><summary>查看操作详情</summary>
       {job.model && <p className="job-model">本次模型 · {job.model}</p>}
       {events.length > 0 && <ul>{events.slice(-5).map((event) => <li key={event.seq}><span className="activity-line" /><span>{compactText(event.message, 180)}</span></li>)}</ul>}

@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { dataRoot, root as repo } from '../src/canvas/client.mjs';
 import { alive, readJson, runtimeStatus, stopRuntime } from '../src/launcher/control.mjs';
+import { runtimeIdentityMismatchError, runtimeSourceIdentity } from '../src/launcher/identity.mjs';
 import { auxiliaryStatus, stopAuxiliary } from '../src/launcher/services.mjs';
 import { assertOffline, backupData, restoreData } from '../src/launcher/backup.mjs';
 
@@ -29,11 +30,23 @@ async function prepare(force=false){
   return prepareWorkspace({root:repo,force,onProgress:event=>console.error(event.message||event)});
 }
 async function start(){
-  const current=await runtimeStatus(root);
-  if(current.running){if(!options.noOpen)openBrowser(current.url);return {...current,reused:true};}
+  const currentIdentity=await runtimeSourceIdentity(repo);
+  const current=await runtimeStatus(root,currentIdentity);
+  if(current.running){
+    if(!current.identityMatches)throw runtimeIdentityMismatchError(current);
+    if(!options.noOpen)openBrowser(current.url);
+    return {...current,reused:true};
+  }
   const old=await readJson(path.join(root,'web','instance.lock'));
-  if(old&&alive(old.pid))throw new Error('此数据目录已有旧入口工作台运行，请使用原窗口停止；不会重启或接管。');
+  if(old&&alive(old.pid))throw new Error('此数据目录已有工作台进程，但无法确认其源码身份。请先确认没有在途作业，再从本项目运行 `node scripts/launcher.mjs stop` 正常停止后继续；不会接管或强制结束进程。');
   await prepare();
+  const preparedIdentity=await runtimeSourceIdentity(repo);
+  const afterPrepare=await runtimeStatus(root,preparedIdentity);
+  if(afterPrepare.running){
+    if(!afterPrepare.identityMatches)throw runtimeIdentityMismatchError(afterPrepare);
+    if(!options.noOpen)openBrowser(afterPrepare.url);
+    return {...afterPrepare,reused:true};
+  }
   const port=Number(options.port);
   if(!Number.isInteger(port)||port<0||port>65535)throw new Error('端口必须为 0—65535 整数。');
   await fs.mkdir(path.join(root,'web'),{recursive:true,mode:0o700});
@@ -42,8 +55,12 @@ async function start(){
   let failed=false;child.once('error',()=>{failed=true;});child.unref();await log.close();
   const deadline=Date.now()+45_000;
   while(Date.now()<deadline&&!failed){
-    const current=await runtimeStatus(root).catch(()=>({running:false}));
-    if(current.running){if(!options.noOpen)openBrowser(current.url);return {...current,reused:false};}
+    const current=await runtimeStatus(root,preparedIdentity).catch(()=>({running:false}));
+    if(current.running){
+      if(!current.identityMatches)throw runtimeIdentityMismatchError(current);
+      if(!options.noOpen)openBrowser(current.url);
+      return {...current,reused:false};
+    }
     if(child.exitCode!==null)break;
     await pause(150);
   }
@@ -55,14 +72,15 @@ async function stopServices(){
   return {...result,...auxiliary};
 }
 async function doctor(){
-  const current=await runtimeStatus(root).catch(e=>({running:false,error:e.message}));
+  const sourceIdentity=await runtimeSourceIdentity(repo);
+  const current=await runtimeStatus(root,sourceIdentity).catch(e=>({running:false,error:e.message,currentIdentity:sourceIdentity}));
   const config=await fs.access(path.join(root,'config','company.json')).then(()=>true).catch(()=>false);
   const checks=[];
   for(const relative of ['node_modules','adapters/dsh/node_modules','third_party/canvas/web/dist/index.html','third_party/canvas/canvas-agent/dist/index.js','web/dist/index.html'])checks.push({path:relative,exists:await fs.access(path.join(repo,relative)).then(()=>true).catch(()=>false)});
-  return {node:process.version,platform:process.platform,architecture:process.arch,source:repo,dataDirectory:root,workbench:current,services:await auxiliaryStatus(root),checks,companyConfigPresent:config,help:'首次配置在网页设置完成；网络/依赖错误运行 prepare；更新前 stop，再 update；详细说明见 docs/本地Web交付.md。'};
+  return {node:process.version,platform:process.platform,architecture:process.arch,source:repo,sourceIdentity,dataDirectory:root,workbench:current,services:await auxiliaryStatus(root),checks,companyConfigPresent:config,help:'先确认工作台无在途作业，再用本项目 stop 停止；保护本地修改并更新源码，运行 prepare 构建，再用 status 核对运行身份。详细说明见 docs/源码更新与运行核验.md。'};
 }
 async function run(){
-  if(command==='status')return runtimeStatus(root);
+  if(command==='status')return runtimeStatus(root,await runtimeSourceIdentity(repo));
   if(command==='doctor')return doctor();
   if(!['start','stop','prepare','backup','restore','update'].includes(command))throw new Error('用法：start|stop|status|prepare|doctor|backup [--destination 目录]|restore --from 备份目录|update [--no-open]');
   // One short-lived maintenance owner per data directory; never lock real tasks.

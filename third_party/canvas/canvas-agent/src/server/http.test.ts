@@ -8,7 +8,9 @@ import type { Server } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createHttpApp, startHttpServer } from "./http.js";
+import { bridgeDiagnostic, createHttpApp, startHttpServer } from "./http.js";
+
+import { CanvasSession } from "../canvas/session.js";
 
 const config = {
     port: 0,
@@ -234,3 +236,36 @@ async function readEvent(reader: ReadableStreamDefaultReader<Uint8Array>, type: 
         }
     }
 }
+
+
+test("unexpected bridge failures expose a correlation ID without leaking payloads or credentials", async (t) => {
+    const lines: string[] = [];
+    t.mock.method(console, "error", (line: string) => lines.push(line));
+    t.mock.method(CanvasSession.prototype, "callTool", async () => {
+        const error = new RangeError("Maximum call stack size exceeded");
+        error.stack = "RangeError: secret-token private-prompt\n    at secretFunction (/Users/employee/project/session.ts:144:23)";
+        throw error;
+    });
+    const { server, baseUrl } = await startApp();
+    t.after(() => closeServer(server));
+    const response = await fetch(`${baseUrl}/api/tools?token=secret-query`, {
+        method: "POST", headers: headers(),
+        body: JSON.stringify({ name: "canvas_get_state", input: { private: "private-prompt" } }),
+    });
+    assert.equal(response.status, 500);
+    const body = await response.json() as { requestId: string; error: string };
+    assert.equal(body.requestId, response.headers.get("x-canvas-request-id"));
+    const diagnostic = JSON.parse(lines[0]);
+    assert.equal(diagnostic.requestId, body.requestId);
+    assert.equal(diagnostic.reason, "stack_overflow");
+    assert.equal(diagnostic.tool, "canvas_get_state");
+    assert.deepEqual(diagnostic.frames, ["session.ts:144:23"]);
+    assert.doesNotMatch(JSON.stringify({ body, diagnostic }), /secret|private-prompt|employee/);
+    assert.equal((await fetch(`${baseUrl}/health`)).status, 200);
+});
+
+test("diagnostics omit unknown routes and arbitrary error messages", () => {
+    const result = bridgeDiagnostic(new Error("API key and user image"), {path: "/secret-token", method: "GET", body: {}}, "test", 500);
+    assert.equal(result.route, "other");
+    assert.doesNotMatch(JSON.stringify(result), /secret-token|API key|user image/);
+});

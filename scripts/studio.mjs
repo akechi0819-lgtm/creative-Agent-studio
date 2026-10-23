@@ -614,6 +614,9 @@ function errorMessage(error) {
     case 'ERR_STUDIO_UNLOCK': return '未清理任务锁；请核实锁文件中的 PID 与进程状态。';
     case 'ERR_STUDIO_ABORTED': return '已停止等待；已提交到 Canvas 的生成不保证撤销。';
     case 'ERR_CANVAS_OPERATION_UNKNOWN': return 'Canvas 操作结果未知；请先运行 canvas-state 核对，不要重试。';
+    case 'ERR_CANVAS_TOOL_FAILED': return /^[0-9a-f-]{36}$/i.test(error.requestId || '')
+      ? `Canvas 工具调用失败；诊断编号 ${error.requestId}，请核对画布日志，不要重复生成。`
+      : 'Canvas 工具调用失败，请核对画布状态，不要重复生成。';
     case 'ERR_CANVAS_DISCONNECTED': return '当前任务 Canvas 未连接；先运行 canvas-open TASK_ID，再重试当前步骤。';
     case 'ERR_CANVAS_AMBIGUOUS': return '当前任务连接了多个 Canvas 页面；请只保留一个任务画布后重试。';
     case 'ERR_CANVAS_OPEN_BROWSER': return '任务 Canvas 已准备，但系统浏览器未能打开；请在本机浏览器打开公开 webUrl。';

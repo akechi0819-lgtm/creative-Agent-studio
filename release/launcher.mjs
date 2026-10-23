@@ -8,6 +8,7 @@ import { dataRoot } from '../src/canvas/client.mjs';
 import { pathWithin } from '../src/launcher/distribution.mjs';
 import { auxiliaryStatus, stopAuxiliary } from '../src/launcher/services.mjs';
 import { alive, readJson, runtimeStatus, stopRuntime } from '../src/launcher/control.mjs';
+import { runtimeIdentityMismatchError, runtimeSourceIdentity } from '../src/launcher/identity.mjs';
 
 const bundleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const nodePath = process.execPath;
@@ -241,21 +242,25 @@ async function start() {
   const manifest = await verifyBundle();
   const companyProfile = manifest.profile === 'company';
   const root = dataRoot();
-  const existing = await runtimeStatus(root);
+  const currentIdentity = await runtimeSourceIdentity(bundleRoot, { releaseBundle: true });
+  const existing = await runtimeStatus(root, currentIdentity);
   if (existing.running) {
+    if (!existing.identityMatches) throw runtimeIdentityMismatchError(existing, { stopInstruction: '使用当前运行包入口选择“停止工作台”（Windows 可打开 Start.vbs，macOS 可在 App 菜单中选择）正常停止旧服务' });
     await openBrowser(existing.url);
     return { running: true, reused: true, url: existing.url, message: '工作台已在运行，已打开本机页面。' };
   }
   const releaseStartLock = await acquireStartLock(root);
   try {
-    const afterLock = await runtimeStatus(root);
+    const afterLock = await runtimeStatus(root, currentIdentity);
     if (afterLock.running) {
+      if (!afterLock.identityMatches) throw runtimeIdentityMismatchError(afterLock, { stopInstruction: '使用当前运行包入口选择“停止工作台”（Windows 可打开 Start.vbs，macOS 可在 App 菜单中选择）正常停止旧服务' });
       await openBrowser(afterLock.url);
       return { running: true, reused: true, url: afterLock.url, message: '工作台已在运行，已打开本机页面。' };
     }
     const pythonRuntime = await preparePythonRuntime(root);
-    const afterPreparation = await runtimeStatus(root);
+    const afterPreparation = await runtimeStatus(root, currentIdentity);
     if (afterPreparation.running) {
+      if (!afterPreparation.identityMatches) throw runtimeIdentityMismatchError(afterPreparation, { stopInstruction: '使用当前运行包入口选择“停止工作台”（Windows 可打开 Start.vbs，macOS 可在 App 菜单中选择）正常停止旧服务' });
       await openBrowser(afterPreparation.url);
       return { running: true, reused: true, url: afterPreparation.url, message: '本机运行环境已就绪，工作台已在运行并打开页面。' };
     }
@@ -277,8 +282,9 @@ async function start() {
 
     const deadline = Date.now() + 45_000;
     while (Date.now() < deadline && !childError && exited === null) {
-      const current = await runtimeStatus(root).catch(() => ({ running: false }));
+      const current = await runtimeStatus(root, currentIdentity).catch(() => ({ running: false }));
       if (current.running) {
+        if (!current.identityMatches) throw runtimeIdentityMismatchError(current, { stopInstruction: '使用当前运行包入口选择“停止工作台”（Windows 可打开 Start.vbs，macOS 可在 App 菜单中选择）正常停止旧服务' });
         await openBrowser(current.url);
         return { running: true, reused: false, url: current.url, message: '工作台已启动，正在默认浏览器打开。' };
       }
@@ -302,13 +308,15 @@ async function stop() {
 async function status() {
   await verifyBundle();
   const root = dataRoot();
-  return { workbench: await runtimeStatus(root), auxiliary: await auxiliaryStatus(root) };
+  const currentIdentity = await runtimeSourceIdentity(bundleRoot, { releaseBundle: true });
+  return { currentIdentity, workbench: await runtimeStatus(root, currentIdentity), auxiliary: await auxiliaryStatus(root) };
 }
 
 async function doctor() {
   const manifest = await verifyBundle();
   const root = dataRoot();
-  const current = await runtimeStatus(root).catch(error => ({ running: false, error: error.message }));
+  const currentIdentity = await runtimeSourceIdentity(bundleRoot, { releaseBundle: true });
+  const current = await runtimeStatus(root, currentIdentity).catch(error => ({ running: false, error: error.message, currentIdentity }));
   let pythonPrepared = false;
   try {
     const [pythonState, dependencyState, modelState] = await Promise.all([
@@ -320,6 +328,7 @@ async function doctor() {
   } catch { /* First-start preparation has not completed yet. */ }
   return {
     package: { target: manifest.target, version: manifest.version, pythonRuntime: manifest.pythonRuntime, nodeVersion: manifest.nodeVersion },
+    currentIdentity,
     workbench: current,
     services: await auxiliaryStatus(root),
     checks: { node: await access(nodePath).then(() => true), pythonPrepared },
@@ -337,10 +346,12 @@ function output(value) {
       process.stdout.write(`运行包：${value.package.target} ${value.package.version}\nNode.js ${value.package.nodeVersion}\n`);
       process.stdout.write(`Python/OCR：${value.checks.pythonPrepared ? '已准备' : '首次启动时准备'}\n`);
       process.stdout.write(current.running ? `工作台：运行中 ${current.url}\n` : '工作台：未运行\n');
+      if (current.identityMatches !== undefined) process.stdout.write(`运行身份：${current.identityMatches ? '匹配' : '不匹配，请确认无在途作业后正常停止旧服务'}\n`);
       process.stdout.write(`包内 Node 检查：${value.checks.node ? '通过' : '失败'}\n`);
       return;
     }
     process.stdout.write(current.running ? `工作台正在运行：${current.url}\n` : '工作台当前未运行。\n');
+    if (current.identityMatches !== undefined) process.stdout.write(`运行身份：${current.identityMatches ? '匹配' : '不匹配，请确认无在途作业后正常停止旧服务'}\n`);
     if (value.auxiliary) process.stdout.write(`模型插件：${value.auxiliary.modelPluginRunning ? '运行中' : '未运行'}；Canvas 实例：${value.auxiliary.canvasInstances}\n`);
     return;
   }

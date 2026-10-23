@@ -31,5 +31,5 @@ export function compactNode(node: CanvasNode) {
 /** 计算新节点在当前画布右侧的默认横坐标。 */
 export function nextCanvasX(state: CanvasSnapshot | null) {
     const nodes = state?.nodes || [];
-    return nodes.length ? Math.max(...nodes.map((node) => node.position.x + node.width)) + 80 : 0;
+    return nodes.length ? nodes.reduce((right, node) => Math.max(right, node.position.x + node.width), -Infinity) + 80 : 0;
 }
