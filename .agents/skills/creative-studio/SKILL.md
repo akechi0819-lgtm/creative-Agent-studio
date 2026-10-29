@@ -1,40 +1,48 @@
 ---
 name: creative-studio
-description: 在 Company Lite 中由 WorkBuddy 对话线程主持创作，使用现有 Teedy MCP 和跨线程共享的本机 Canvas/MCP。
+description: 在 Company Lite 源码目录中主持当前宿主对话线程的创作，使用现有 Teedy MCP 和跨线程共享的本机 Canvas/MCP。
 ---
 
-# 使用边界
+# 入口与宿主边界
 
-先阅读能力包根目录的 `README.md`、`AGENTS.md`、`docs/代理宿主使用.md` 和 `docs/工程进度.md`。命令从当前 WorkBuddy 任务明确选定的 Company Lite 根目录运行。
+从用户打开的 Company Lite Git 仓库根目录读取 `README.md`、`AGENTS.md`、`docs/代理宿主使用.md`、`docs/工程进度.md` 和本 Skill。不要假定宿主自动发现 `.agents/skills`；首次使用时从打开的仓库目录显式读取。所有命令都从此源码根目录运行，不从 Skill 文件位置猜项目根目录。
 
-WorkBuddy 对话线程是本次工作的唯一上下文，负责需求、材料用途、品牌要求、文案、制作单、确认、读图和批准。Canvas 是跨线程共享的通用工具，保留历史项目、生成图片、排版状态、图片 API 配置和绘图连接；可按当前用户意图找回或继续项目，但不能自动继承旧线程的要求或批准。不建立任务 ID、任务账本或独立审批系统。
+完整流程要求宿主能读取项目规则、从仓库根执行本地命令、使用 stdio MCP、实际查看 MCP 返回的图片，并在当前对话线程保留需求、确认和批准。先按实际能力验证；缺少能力时说明具体缺项并暂停相关步骤，不承诺任意宿主自动兼容。
 
-# 安装状态与凭据
+宿主当前对话线程承载本次需求、材料用途、品牌要求、文案、制作单、确认、读图与批准。本机 Canvas 是跨线程共享工作空间，可依用户当前意图查找、打开或继续历史项目；其他线程的要求、素材来源与批准不自动沿用。不建立任务 ID、任务账本或独立审批系统。
 
-员工包用 `Start.cmd status`／`./Start.command status` 查看状态（包内 Node）；源码开发可运行 `node scripts/setup.mjs status`。只在首次安装、配置或故障修复时简洁展示五项：能力包、本机 Canvas 组件及 MCP 实际连通、WorkBuddy 对现有 Teedy 只读 MCP 的实际探测报告、图片 API 配置及连接检查、总体就绪。日常创作不重复安装清单；宿主报告不是安装包独立验证。
+# 源码准备与状态
 
-若 Canvas MCP 尚未接通，运行 `Studio.cmd mcp-config`／`./Studio.command mcp-config`，将无密钥的 stdio 配置通过 WorkBuddy 官方界面“插件 → MCP 服务器 → 配置 MCP”添加；再实际调用 `canvas_status`。该调用自动保存不含密钥的检查记录，无需额外确认。不猜测或写入 WorkBuddy 配置路径。
+执行 Node 脚本前，先检查 Git、Node.js 22.19+（22.x）或 24+ 和 npm。可运行 `git --version`、`node --version` 与 `npm --version`；PowerShell 中如 `npm` 命令被策略阻止，用 `npm.cmd --version` 检查，不要求更改执行策略。缺少基础工具时说明缺项，按当前系统官方安装说明协助用户，不改系统策略、权限或 PATH。无需 Python、Office 或系统编译器。
 
-Teedy 状态只在 WorkBuddy 实际调用公司现有只读工具后记录：`Start.cmd report-workbuddy connected <工具名>` 或 `failed [工具名]`。不得从 Teedy 搜索摘要推断原件已下载。
+从源码根运行 `node scripts/prepare.mjs`，按锁文件安装固定依赖并构建 Canvas；`npm run prepare:dev` 是等价开发别名。随后使用 `node scripts/setup.mjs status` 查看实际缺项与下一步。宿主自动完成依赖检查和 Canvas 准备；仅在本人登录、私密凭据输入或必要审批时等待。
 
-图片 API Key 用剪贴板路径：先等员工本人从服务页面复制 Key 并在当前对话明确说“已复制”；随后准备只含 `expectedRevision`、`image.baseUrl`、`image.model` 的 JSON，再运行 `Start.cmd configure-image @image-config.json --key-from-clipboard`（macOS 使用 `./Start.command`）。此命令只读取一次本机剪贴板，禁止自行读取或回显 Key。Windows 剪贴板能力待设备验证。已有本机私有配置可用 `configure-image @私有JSON文件`；不得将 Key 放入聊天、命令参数、仓库或日志。最后运行 `Start check-image`；它不发出图片生成请求。
+只在首次准备、配置或故障修复时简洁显示五步状态：环境与依赖 → 本地 Canvas/MCP → 素材库 Teedy MCP → 图片 API → 完成。日常创作不重复安装清单。状态必须来自实际检查或当前宿主工具调用；阻塞时只告诉员工需要做的下一步。
 
-# WorkBuddy 线程内的创作
+新宿主或首次进入新会话时，确认当前实际提供的 Canvas MCP 并调用 `canvas_status`。保存的检查只代表上次调用，不代表当前会话接通。Teedy 也需按当前宿主现有 MCP 实际探测。Teedy 探测后运行 `node scripts/setup.mjs report-host connected <工具名>` 或 `failed [工具名]` 留存宿主报告；该记录不是 CLI 独立验证，不建立宿主注册、迁移或适配系统。
 
-1. 在当前对话收集目标、受众、规格、品牌要求和文案边界；对会改变产出的关键缺口提问，不从其他线程推断。
-2. 需要 Teedy 参考时，使用现有云端只读 MCP 搜索并展示候选。用户选择后用 MCP 实际下载原件，将来源、用途和事实边界留在当前对话；不得修改 Teedy 内容、标签或 ACL。
-3. 在当前对话整理文案和制作单，展示准确版本并取得用户明确确认。影响文案、来源或版式的修改需重新确认。
-4. 制作单已确认且需要绘图时，用 `canvas_open` 按用户意图选择 `recent`、`new`、`choose` 或一个指定历史 `projectId`。只有已实际下载的 Teedy 原件才可用 `canvas_import_file` 加入当前画布。
-5. 用户明确授权收费出图后调用 `canvas_run_generation`。它应快速返回 `{submitted, nodeId}`，实际生成异步继续；用 `generation_get_status` 查询该节点的进度和最终状态。状态未知时先查询，不重复提交收费请求；失败后只有用户在当前对话再次明确授权，才重试。
-6. 用 `canvas_read_image` 返回的实际图片内容读图，核对文字、移动端可读性、品牌表达和修改位置。用户要求局部修改时只改指定内容并重新读图。缩略图或生成状态不算读图。
-7. 用户在当前 WorkBuddy 对话查看并明确批准最终成品后，才调用 `canvas_save_image` 导出。
+若需添加 Canvas MCP，从源码根运行 `node scripts/studio.mjs mcp-config`。按当前宿主实际接受的格式配置输出中的 `command` 和 `args`；JSON 外层 `mcpServers` 是交换示例，不是通用客户端配置。添加后实际调用 `canvas_status`。本机 MCP SDK stdio 测试不代表各宿主客户端已验收。
 
-Canvas MCP 还提供创建与修改节点，以及裁切、分割、重采样、拼贴导入、拼接、组合等像素操作；使用现有功能，不把它们说成新能力。Canvas 中的历史记录不代表当前线程的素材来源、确认或批准。
+# 账号与密钥
 
-# 当前验证边界
+setup 状态会显示公司提供的素材 MCP URL、登录地址或缺失信息。Teedy 使用员工本人公司账号和只读权限；服务要求的 API Key、URL 或其他凭据按公司／服务方说明，在当前宿主支持的安全入口配置。不要猜测传输方式、认证字段或权限；缺少连接信息时向管理员索取。不要将个人凭据放入普通对话、源码、普通参数或日志。Teedy 配置后需实际调用一个只读工具，再报告连接结果。
 
-一次本地 Canvas MCP 真实图片生成已成功：上游 API HTTP 200，单次请求 20.198 秒，本地完整保存 25.892 秒，准备画布 1.051 秒；主代理已实际打开检查验收图，确认图像正确且没有生成文字。这只是一个样本，不承诺普遍 20 秒时延，也不代表 WorkBuddy 员工设备验收。未知状态时先查状态，不重提收费请求。WorkBuddy 登录、Teedy 公司账号、员工包、Windows 剪贴板和目标设备体验待验证。
+图片 API 地址、模型、Key 和 `expectedRevision` 由宿主读取当前 setup 状态后生成参数模板，员工无需创建或理解 JSON。员工复制 Key 并在当前对话明确说“已复制”后，才可运行 `node scripts/setup.mjs configure-image @image-config.json --key-from-clipboard`。命令仅读取一次本机剪贴板，把 Key 写入本机私有配置，不回显或写日志。剪贴板不可用时按宿主使用说明使用仓库外私有 JSON：宿主生成模板并限制为本人可读写，员工只在本机编辑器填写 Key，之后由 CLI 导入并删除临时文件。不得自行读取剪贴板，也不得要求用户将 Key 粘贴到对话或普通命令参数。随后运行 `node scripts/setup.mjs check-image`；该命令只检查 API 连接，不发生图像生成。
 
-# WorkBuddy 工作目录和 Skill
+# 当前对话创作
 
-WorkBuddy 本地任务先选择 Company Lite 根目录，并通过首次提示词显式读取本 Skill 与项目说明。官方[本地任务说明](https://intl.cloud.tencent.com/zh/document/product/1316/84504)把工作目录和 Skill 选择分列；官方[技能说明](https://intl.cloud.tencent.com/zh/document/product/1316/84503)支持上传本地 Skill，也提及项目专属 Skill，但没有公开项目目录精确名称。因此不假设 `.agents/skills` 自动发现，也不复制到未经证实的路径。即使从 Skills 页面上传 Skill，命令仍须从用户选定的 Company Lite 工作目录执行，不能从 Skill 安装路径猜包根。
+1. 在当前对话收集目标、受众、规格、文案和品牌要求；关键缺口由智能体直接向用户询问，不从其他线程推断。
+2. 需要远端参考时，用当前宿主的 Teedy 只读 MCP 搜索并展示候选。用户选定后实际下载原件，把来源、用途和事实边界留在当前对话。搜索摘要或 URL 不是原件；不得修改 Teedy 内容、标签或 ACL。
+3. 在当前对话整理并展示准确文案与制作单，取得用户确认。影响文案、来源或版式的修改需重新确认。
+4. 确认制作单后，按用户意图调用 `canvas_open` 新建、打开最近项目、选择项目或指定历史 `projectId`。只有已实际下载的原件才可用 `canvas_import_file` 导入。
+5. 在用户授权范围内调用 `canvas_run_generation`。用 `generation_get_status` 查询 `{submitted, nodeId}` 的异步结果；明确失败且仍在原授权与费用范围内时可继续处理，超范围或授权不明时先询问。状态未知先查询，不重复提交收费请求。
+6. 用 `canvas_read_image` 返回的实际图片内容读图；缩略图、生成状态或文本描述不能代替读图。局部修改后重新读图。宿主不能实际查看图片时，不得声称完成图像审核。
+7. 用户在当前对话明确批准成品后，才用 `canvas_save_image` 导出。
+
+Canvas 保留共享历史、手动绘图和现有像素操作，包括导入、拼贴、拼接、组合、裁切、分割、重采样、移动和缩放。历史作品不会自动成为当前线程的需求、素材来源或批准。
+
+# 验证边界
+
+源码根回归 38/38、Canvas bridge 23/23 通过，0 失败、0 跳过；Canvas web typecheck/build 通过。Mac 本机全新浅克隆初始无依赖和构建产物，`node scripts/prepare.mjs` 完成三个依赖组安装与 Canvas Agent/Web 构建；克隆目录共享 Canvas 集成 1/1 通过（4.6 秒），覆盖多项目、裁切拼接、历史重启恢复和 MCP stdio 图片读写，未请求生图。setup 报告本地源码与 Canvas 就绪、等待当前宿主 MCP。
+
+隔离临时配置下图片服务 `GET /v1/models` 返回 HTTP 200 并列出配置模型；未生图，源配置未改，临时 Key 目录已删除。另一次真实 Canvas MCP 单张生成样本上游 HTTP 200、用时 20.198 秒，本机完整保存 25.892 秒，准备画布 1.051 秒；主代理已实际打开检查验收图。这只是单次样本，不是普遍时延或具体宿主验收承诺。Windows/Linux 源码 CI 已定义但未运行。具体宿主命令、MCP 图片读取及 Teedy 账号权限仍需目标环境验证。
