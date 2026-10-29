@@ -7,7 +7,7 @@ import test from 'node:test';
 import {
   getSetupStatus,
   recordCanvasMcpCheck,
-  reportWorkBuddyProbe,
+  reportHostProbe,
   saveAndVerifyImageConfig,
   verifyImageApi,
 } from '../src/lite/setup.mjs';
@@ -33,11 +33,19 @@ async function createPackageFixture(repoRoot, { canvas = true } = {}) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, 'fixture');
   }
-  await fs.writeFile(path.join(repoRoot, 'package.json'), JSON.stringify({ dependencies: { fflate: '0.8.3' } }));
-  const studioDependency = path.join(repoRoot, 'node_modules/fflate');
-  await fs.mkdir(studioDependency, { recursive: true });
-  await fs.writeFile(path.join(studioDependency, 'package.json'), JSON.stringify({ name: 'fflate', main: 'index.js' }));
-  await fs.writeFile(path.join(studioDependency, 'index.js'), 'module.exports = {};');
+  const studioDependencies = { '@modelcontextprotocol/sdk': '1.32.2', zod: '3.25.76' };
+  await fs.writeFile(path.join(repoRoot, 'package.json'), JSON.stringify({ dependencies: studioDependencies }));
+  for (const [name, version] of Object.entries(studioDependencies)) {
+    const packageDirectory = path.join(repoRoot, 'node_modules', name);
+    await fs.mkdir(packageDirectory, { recursive: true });
+    await fs.writeFile(path.join(packageDirectory, 'package.json'), JSON.stringify({ name, version, main: 'index.js' }));
+    await fs.writeFile(path.join(packageDirectory, 'index.js'), 'module.exports = {};');
+    if (name === '@modelcontextprotocol/sdk') {
+      const serverDirectory = path.join(packageDirectory, 'server');
+      await fs.mkdir(serverDirectory, { recursive: true });
+      await fs.writeFile(path.join(serverDirectory, 'mcp.js'), 'module.exports = {};');
+    }
+  }
   if (!canvas) return;
   const webIndex = path.join(repoRoot, 'third_party/canvas/web/dist/index.html');
   const agentIndex = path.join(repoRoot, 'third_party/canvas/canvas-agent/dist/index.js');
@@ -53,6 +61,27 @@ async function createPackageFixture(repoRoot, { canvas = true } = {}) {
     await fs.writeFile(path.join(packageDirectory, 'package.json'), JSON.stringify({ name, main: 'index.js' }));
     await fs.writeFile(path.join(packageDirectory, 'index.js'), 'module.exports = {};');
   }
+}
+
+async function createFreshSourceCliFixture(repoRoot) {
+  const sourceRoot = path.resolve(import.meta.dirname, '..');
+  for (const relative of [
+    'scripts/setup.mjs',
+    'scripts/studio.mjs',
+    'src/lite/setup.mjs',
+    'src/lite/config.mjs',
+    'src/lite/clipboard.mjs',
+    'src/canvas/client.mjs',
+    'src/canvas/runtime.mjs',
+  ]) {
+    const destination = path.join(repoRoot, relative);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.copyFile(path.join(sourceRoot, relative), destination);
+  }
+  await fs.writeFile(path.join(repoRoot, 'package.json'), JSON.stringify({
+    type: 'module',
+    dependencies: { '@modelcontextprotocol/sdk': '1.32.2', zod: '3.25.76' },
+  }));
 }
 
 const image = { baseUrl: 'https://images.example/v1', model: 'image-v2', apiKey: 'image-secret-never-public' };
@@ -90,7 +119,7 @@ function runSetupCli(args, { root, defaultsFile }) {
   });
 }
 
-test('derives package and Canvas readiness from bundled files without requiring Python', async () => {
+test('derives source and Canvas readiness from project files and dependencies without requiring Python', async () => {
   await withTemp(async (directory) => {
     const repoRoot = path.join(directory, 'app');
     const dataRoot = path.join(directory, 'data');
@@ -99,14 +128,17 @@ test('derives package and Canvas readiness from bundled files without requiring 
     assert.equal(status.steps.find((step) => step.id === 'package').complete, true);
     assert.equal(status.steps.find((step) => step.id === 'canvas').componentsReady, true);
     assert.equal(status.steps.find((step) => step.id === 'canvas').complete, false);
-    assert.match(status.steps.find((step) => step.id === 'canvas').summary, /等待 WorkBuddy 接通/);
+    assert.match(status.steps.find((step) => step.id === 'canvas').summary, /等待宿主智能体连接/);
     assert.equal(status.steps.find((step) => step.id === 'materials').status, 'waiting');
     assert.equal(status.complete, false);
     assert.equal(status.current, 'canvas');
     assert.match(status.steps.find((step) => step.id === 'materials').summary, /等待公司提供素材库连接/);
-    assert.match(status.steps.find((step) => step.id === 'materials').hostInstruction, /Start\.command/);
-    assert.match(status.steps.find((step) => step.id === 'materials').hostInstruction, /Start\.cmd/);
-    assert.doesNotMatch(status.steps.find((step) => step.id === 'materials').nextAction, /node scripts/);
+    assert.match(status.steps.find((step) => step.id === 'materials').hostInstruction, /宿主自己的 MCP 配置功能/);
+    assert.match(status.steps.find((step) => step.id === 'canvas').nextAction, /command\/args/);
+    assert.match(status.steps.find((step) => step.id === 'canvas').nextAction, /node scripts\/studio\.mjs mcp-config/);
+    assert.match(status.steps.find((step) => step.id === 'materials').hostInstruction, /node scripts\/setup\.mjs report-host connected/);
+    assert.equal(Object.hasOwn(status, 'guide'), false);
+    assert.equal(Object.hasOwn(status.steps.find((step) => step.id === 'materials'), 'provider'), false);
     assert.equal(JSON.stringify(status).toLowerCase().includes('python'), false);
   });
 });
@@ -119,7 +151,7 @@ test('missing Canvas dist or runtime dependency blocks the Canvas step and names
     const canvasStep = status.steps.find((step) => step.id === 'canvas');
     assert.equal(canvasStep.complete, false);
     assert.match(canvasStep.error.message, /third_party\/canvas\/web\/dist\/index.html/);
-    assert.match(canvasStep.nextAction, /prepare:dev/);
+    assert.match(canvasStep.nextAction, /node scripts\/prepare\.mjs/);
   });
 });
 
@@ -127,15 +159,17 @@ test('missing Studio dependency or invalid Canvas manifest is an explicit packag
   await withTemp(async (directory) => {
     const repoRoot = path.join(directory, 'app');
     await createPackageFixture(repoRoot);
-    await fs.rm(path.join(repoRoot, 'node_modules/fflate'), { recursive: true, force: true });
+    await fs.rm(path.join(repoRoot, 'node_modules/zod'), { recursive: true, force: true });
     await fs.writeFile(path.join(repoRoot, 'third_party/canvas/canvas-agent/package.json'), '{bad json');
     const status = await getSetupStatus({ root: path.join(directory, 'data'), repoRoot, nodeVersion: 'v24.1.0', env: {} });
     const packageStep = status.steps.find((step) => step.id === 'package');
     const canvasStep = status.steps.find((step) => step.id === 'canvas');
     assert.equal(packageStep.complete, false);
-    assert.match(packageStep.error.message, /fflate/);
+    assert.match(packageStep.error.message, /zod/);
+    assert.match(packageStep.nextAction, /node scripts\/prepare\.mjs/);
     assert.equal(canvasStep.complete, false);
     assert.match(canvasStep.error.message, /package\.json 格式无效/);
+    assert.match(canvasStep.nextAction, /node scripts\/prepare\.mjs/);
   });
 });
 
@@ -169,7 +203,7 @@ test('a saved image API is reused on reopen and a successful /models GET stays s
   });
 });
 
-test('reports image API HTTP failures and never completes until WorkBuddy supplies a host report', async () => {
+test('reports image API HTTP failures and never completes until the host supplies a read-only probe report', async () => {
   await withTemp(async (directory) => {
     const repoRoot = path.join(directory, 'app');
     const root = path.join(directory, 'data');
@@ -184,17 +218,24 @@ test('reports image API HTTP failures and never completes until WorkBuddy suppli
     assert.equal(failed.steps.find((step) => step.id === 'materials').status, 'waiting');
     assert.equal(failed.complete, false);
 
-    const report = await reportWorkBuddyProbe({ status: 'connected', toolName: 'search_documents' }, { root });
+    const report = await reportHostProbe({ status: 'connected', toolName: 'search_documents' }, { root });
     await recordCanvasMcpCheck({root});
-    assert.equal(report.source, 'WorkBuddy 宿主报告');
+    assert.equal(report.source, '宿主报告');
     assert.equal(report.independentlyVerified, false);
+    assert.equal(await fs.stat(path.join(root, 'setup', 'host-report.json')).then((info) => info.isFile()), true);
     const status = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
     const materialStep = status.steps.find((step) => step.id === 'materials');
     assert.equal(materialStep.status, 'host_reported');
     assert.equal(materialStep.independentlyVerified, false);
-    assert.equal(materialStep.source, 'WorkBuddy 宿主报告');
+    assert.equal(materialStep.source, '宿主报告');
+    assert.match(materialStep.checks[0].detail, /上次探测.*新宿主或新会话请实际调用只读工具确认/);
+    assert.match(status.steps.find((step) => step.id === 'canvas').checks.find((check) => check.name === '宿主调用本地 Canvas MCP').detail, /上次探测.*新宿主或新会话请实际调用 canvas_status/);
     assert.equal(status.complete, false, 'the failed image connection must keep final setup incomplete');
     assert.equal(status.current, 'image');
+
+    await reportHostProbe({ status: 'failed', toolName: 'search_documents' }, { root });
+    const failedHostStatus = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
+    assert.equal(failedHostStatus.steps.find((step) => step.id === 'materials').error.code, 'ERR_HOST_PROBE');
   });
 });
 
@@ -225,13 +266,13 @@ test('a 200 HTML response or a model list without the configured ID does not pas
   });
 });
 
-test('final setup stays blocked until the current image revision and WorkBuddy host report both pass', async () => {
+test('final setup stays blocked until the current image revision and host probe report both pass', async () => {
   await withTemp(async (directory) => {
     const repoRoot = path.join(directory, 'app');
     const root = path.join(directory, 'data');
     await createPackageFixture(repoRoot);
     await saveConfig({ expectedRevision: 1, image }, { root });
-    await reportWorkBuddyProbe({ status: 'connected', toolName: 'list_materials' }, { root });
+    await reportHostProbe({ status: 'connected', toolName: 'list_materials' }, { root });
     const beforeImageCheck = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
     assert.equal(beforeImageCheck.current, 'canvas');
     assert.equal(beforeImageCheck.steps.find((step) => step.id === 'finish').complete, false);
@@ -248,8 +289,8 @@ test('final setup stays blocked until the current image revision and WorkBuddy h
     assert.equal(finalStatus.current, 'finish');
     assert.equal(finalStatus.steps.find((step) => step.id === 'finish').status, 'complete');
     await assert.rejects(
-      reportWorkBuddyProbe({ status: 'connected' }, { root }),
-      (error) => error.code === 'ERR_WORKBUDDY_REPORT',
+      reportHostProbe({ status: 'connected' }, { root }),
+      (error) => error.code === 'ERR_HOST_REPORT',
     );
   });
 });
@@ -309,20 +350,43 @@ test('default and status CLI commands return the same read-only JSON without sta
   });
 });
 
-test('WorkBuddy CLI reports return full status JSON and require a real tool name for connected', async () => {
+test('setup status runs from a fresh source clone without node_modules or Canvas build and gives one prepare command', async () => {
+  await withTemp(async (directory) => {
+    const repoRoot = path.join(directory, 'source');
+    const dataRoot = path.join(directory, 'data');
+    await fs.mkdir(repoRoot, { recursive: true });
+    await createFreshSourceCliFixture(repoRoot);
+    const result = spawnSync(process.execPath, [path.join(repoRoot, 'scripts/setup.mjs'), 'status'], {
+      cwd: repoRoot,
+      env: { ...process.env, STUDIO_DATA_DIR: dataRoot, COMPANY_LITE_DEFAULTS_FILE: '' },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const status = JSON.parse(result.stdout);
+    assert.equal(status.steps.find((step) => step.id === 'package').complete, false);
+    assert.equal(status.steps.find((step) => step.id === 'canvas').complete, false);
+    assert.equal(status.current, 'package');
+    assert.match(status.nextAction, /^源码文件或运行依赖缺失时运行 node scripts\/prepare\.mjs/);
+    assert.match(status.steps.find((step) => step.id === 'package').error.message, /@modelcontextprotocol\/sdk.*zod|zod.*@modelcontextprotocol\/sdk/);
+    assert.match(status.steps.find((step) => step.id === 'canvas').nextAction, /node scripts\/prepare\.mjs/);
+    assert.equal(await fs.lstat(path.join(repoRoot, 'node_modules')).then(() => true, (error) => error.code === 'ENOENT'), true);
+  });
+});
+
+test('host CLI reports return full status JSON and require a real tool name for connected', async () => {
   await withTemp(async (directory) => {
     const root = path.join(directory, 'data');
     const defaultsFile = await createCliDefaults(directory);
-    const report = runSetupCli(['report-workbuddy', 'connected', 'search_materials'], { root, defaultsFile });
+    const report = runSetupCli(['report-host', 'connected', 'search_materials'], { root, defaultsFile });
     assert.equal(report.status, 0, report.stderr);
     const status = JSON.parse(report.stdout);
     const materials = status.steps.find((step) => step.id === 'materials');
     assert.equal(materials.status, 'host_reported');
     assert.equal(materials.independentlyVerified, false);
-    assert.match(materials.summary, /WorkBuddy 已报告连接可用/);
+    assert.match(materials.summary, /上次宿主探测已报告素材 MCP 可用/);
     assert.equal(JSON.stringify(status).includes(image.apiKey), false);
 
-    const missingTool = runSetupCli(['report-workbuddy', 'connected'], { root, defaultsFile });
+    const missingTool = runSetupCli(['report-host', 'connected'], { root, defaultsFile });
     assert.equal(missingTool.status, 1);
     assert.match(missingTool.stderr, /实际只读工具名/);
   });

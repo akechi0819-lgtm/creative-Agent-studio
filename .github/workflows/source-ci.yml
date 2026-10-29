@@ -1,0 +1,42 @@
+name: Company Lite source CI
+
+on:
+  push:
+    branches: [codex/company-lite]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: Prepare and test on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      STUDIO_DATA_DIR: ${{ runner.temp }}/company-lite-ci-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            third_party/canvas/canvas-agent/package-lock.json
+            third_party/canvas/web/package-lock.json
+      - name: Install source dependencies and build Canvas
+        run: node scripts/prepare.mjs
+      - name: Install test browser on Linux
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+      - name: Install test browser on macOS and Windows
+        if: runner.os != 'Linux'
+        run: npx playwright install chromium
+      - name: Run source tests
+        run: npm test

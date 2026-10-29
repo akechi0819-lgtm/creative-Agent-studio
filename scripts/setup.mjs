@@ -4,7 +4,7 @@ import path from 'node:path';
 import { readImageKeyFromClipboard } from '../src/lite/clipboard.mjs';
 import {
   getSetupStatus,
-  reportWorkBuddyProbe,
+  reportHostProbe,
   saveAndVerifyImageConfig,
   verifyImageApi,
 } from '../src/lite/setup.mjs';
@@ -17,7 +17,7 @@ function output(value) {
 }
 
 function usage() {
-  return '用法：setup.mjs [status|report-workbuddy connected <工具名>|failed [工具名]|configure-image @JSON文件 [--key-from-clipboard]|check-image]';
+  return '用法：node scripts/setup.mjs [status|report-host connected <工具名>|failed [工具名]|configure-image @JSON文件 [--key-from-clipboard]|check-image]';
 }
 
 async function readPrivatePayload(argument, publicFieldsOnly = false) {
@@ -54,9 +54,9 @@ async function run() {
     await emitStatus();
     return;
   }
-  if (command === 'report-workbuddy') {
+  if (command === 'report-host') {
     if (args.length < 1 || args.length > 2 || !['connected', 'failed'].includes(args[0])) throw new Error(usage());
-    await reportWorkBuddyProbe({ status: args[0], toolName: args[1] || '' }, { root });
+    await reportHostProbe({ status: args[0], toolName: args[1] || '' }, { root });
     await emitStatus();
     return;
   }

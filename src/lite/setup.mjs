@@ -6,6 +6,7 @@ import { publicConfig, readConfigRecord, saveConfig, validateCompanyDefaults } f
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const DEFAULTS_ENV = 'COMPANY_LITE_DEFAULTS_FILE';
+const REQUIRED_SETUP_DEPENDENCIES = ['@modelcontextprotocol/sdk', 'zod'];
 
 const SETUP_FILES = [
   'package.json',
@@ -20,8 +21,6 @@ const CANVAS_FILES = [
   'third_party/canvas/web/dist/index.html',
   'third_party/canvas/canvas-agent/dist/index.js',
 ];
-
-const WORKBUDDY_MCP_GUIDE = 'https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide';
 
 function setupError(code, message) {
   const error = new Error(message);
@@ -72,7 +71,8 @@ async function checkPackage(repoRoot, nodeVersion) {
       throw new Error('package.json 缺少运行依赖清单');
     }
     dependencyNames = Object.keys(manifest.dependencies);
-    if (!dependencyNames.includes('fflate')) throw new Error('package.json 缺少 Studio CLI 核心依赖 fflate');
+    const missingRequired = REQUIRED_SETUP_DEPENDENCIES.filter((name) => !dependencyNames.includes(name));
+    if (missingRequired.length) throw new Error(`package.json 缺少 Studio CLI 核心依赖：${missingRequired.join('、')}`);
   } catch (error) {
     manifestError = error.code === 'ENOENT' ? 'package.json 不存在' : error instanceof SyntaxError ? 'package.json 格式无效' : error.message || 'package.json 无法读取';
   }
@@ -84,18 +84,22 @@ async function checkPackage(repoRoot, nodeVersion) {
   const missingDependencies = dependencies.filter((item) => !item.exists).map((item) => item.name);
   const issues = [];
   if (!nodeOk) issues.push(`需要 Node.js 22.19+ 或 24+，当前为 ${nodeVersion}`);
-  if (missing.length) issues.push(`安装包缺少文件：${missing.join('、')}`);
+  if (missing.length) issues.push(`源码工作区缺少文件：${missing.join('、')}`);
   if (manifestError) issues.push(`Studio CLI 运行依赖清单无效：${manifestError}`);
   if (missingDependencies.length) issues.push(`Studio CLI 运行依赖缺少：${missingDependencies.join('、')}`);
   const ready = nodeOk && missing.length === 0 && !manifestError && missingDependencies.length === 0;
   return {
     id: 'package',
-    title: '检查安装包',
+    title: '检查源码与运行依赖',
     status: ready ? 'ready' : 'needs_action',
     complete: ready,
     actionNeeded: !ready,
-    summary: ready ? `Node.js ${nodeVersion}、Studio CLI 和运行依赖已就绪` : issues.join('；'),
-    nextAction: ready ? '继续检查本地 Canvas 组件。' : '请使用完整公司 Lite 安装包；源码目录先运行 prepare:dev。',
+    summary: ready ? `Node.js ${nodeVersion}、源码入口和运行依赖已就绪` : issues.join('；'),
+    nextAction: ready
+      ? '继续检查本地 Canvas 组件。'
+      : !nodeOk
+        ? '安装或切换到项目要求的 Node.js 版本，再运行 node scripts/prepare.mjs。'
+        : '源码文件或运行依赖缺失时运行 node scripts/prepare.mjs，并按输出修复未完成步骤。',
     error: issues.length ? { code: 'ERR_SETUP_PACKAGE', message: issues.join('；') } : null,
     checks: [
       { name: 'Node.js', ok: nodeOk, detail: nodeVersion },
@@ -143,7 +147,9 @@ async function checkCanvasComponent(repoRoot) {
     complete: ready,
     actionNeeded: !ready,
     summary: ready ? '本地画布组件已就绪，创作时打开共享画布。' : issues.join('；'),
-    nextAction: ready ? '继续在 WorkBuddy 确认公司只读素材 MCP。' : '请使用包含 Canvas 预构建文件和运行依赖的完整安装包；源码目录先运行 prepare:dev。',
+    nextAction: ready
+      ? '运行 node scripts/studio.mjs mcp-config 取得 command/args，再按所用宿主实际配置格式添加本机 stdio MCP，并实际调用 canvas_status。'
+      : 'Canvas 预构建文件或运行依赖缺失时运行 node scripts/prepare.mjs，并按输出修复未完成步骤。',
     error: issues.length ? { code: 'ERR_SETUP_CANVAS_PACKAGE', message: issues.join('；') } : null,
     checks: [
       ...files.map((file) => ({ name: file.path, ok: file.exists, detail: file.exists ? `${file.size} bytes` : file.error })),
@@ -166,20 +172,20 @@ async function readJsonFile(file, label) {
   }
 }
 
-async function readWorkBuddyReport(root) {
-  const value = await readJsonFile(path.join(root, 'setup', 'workbuddy-report.json'), 'WorkBuddy 宿主报告');
+async function readHostReport(root) {
+  const value = await readJsonFile(path.join(root, 'setup', 'host-report.json'), '宿主报告');
   if (value === null) return null;
   if (value.schemaVersion !== 1 || !['connected', 'failed'].includes(value.status)
     || typeof value.checkedAt !== 'string'
     || (value.toolName !== null && (typeof value.toolName !== 'string' || !/^[\w.-]{1,120}$/.test(value.toolName)))
     || (value.status === 'connected' && !value.toolName)) {
-    throw setupError('ERR_SETUP_STATE', 'WorkBuddy 宿主报告格式无效');
+    throw setupError('ERR_SETUP_STATE', '宿主报告格式无效');
   }
   return {
     status: value.status,
     checkedAt: safeTimestamp(value.checkedAt),
     toolName: value.toolName,
-    source: 'WorkBuddy 宿主报告',
+    source: '宿主报告',
     independentlyVerified: false,
   };
 }
@@ -229,8 +235,8 @@ function stageLogs(steps, hostReport, imageCheck, defaultsError) {
       at: hostReport.checkedAt,
       source: hostReport.source,
       message: hostReport.status === 'connected'
-        ? `WorkBuddy 宿主报告：连接可用（只读工具：${hostReport.toolName}；independentlyVerified=false）。`
-        : `WorkBuddy 宿主报告：连接检查未通过（${hostReport.toolName || '未提供工具名'}；independentlyVerified=false）。`,
+        ? `宿主报告：只读连接探测已报告成功（工具：${hostReport.toolName}；independentlyVerified=false）。`
+        : `宿主报告：只读连接探测未通过（${hostReport.toolName || '未提供工具名'}；independentlyVerified=false）。`,
     });
   }
   if (imageCheck) logs.push({ level: imageCheck.ok ? 'info' : 'error', stage: 'image', at: imageCheck.checkedAt, message: imageCheck.message });
@@ -246,7 +252,7 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     checkPackage(resolvedRepo, nodeVersion),
     checkCanvasComponent(resolvedRepo),
     readConfigRecord({ root: resolvedRoot }),
-    readWorkBuddyReport(resolvedRoot),
+    readHostReport(resolvedRoot),
     readImageCheck(resolvedRoot),
     loadDefaults(resolvedRepo, env),
     readJsonFile(path.join(resolvedRoot, 'setup', 'canvas-mcp-check.json'), '本地 Canvas MCP 检查'),
@@ -255,25 +261,32 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
   const mcpReady = canvasMcpCheck?.service === 'company-lite-canvas' && Boolean(safeTimestamp(canvasMcpCheck.checkedAt));
   canvasStep.componentsReady = componentsReady;
   canvasStep.mcpConnected = mcpReady;
-  canvasStep.checks.push({name:'宿主调用本地 Canvas MCP',ok:mcpReady,detail:mcpReady ? canvasMcpCheck.checkedAt : '等待宿主实际调用 canvas_status'});
+  canvasStep.checks.push({
+    name: '宿主调用本地 Canvas MCP',
+    ok: mcpReady,
+    detail: mcpReady
+      ? `上次探测：${canvasMcpCheck.checkedAt}；新宿主或新会话请实际调用 canvas_status。`
+      : '等待宿主实际调用 canvas_status',
+  });
   if (componentsReady && !mcpReady) {
     Object.assign(canvasStep, {complete:false,status:'waiting',actionNeeded:true,
-      summary:'画布组件已就绪，等待 WorkBuddy 接通本地 Canvas MCP。',
-      nextAction:'运行 Studio mcp-config，把返回的本机命令配置为 WorkBuddy MCP 服务，再实际调用 canvas_status。无需打开画布或生成图片。'});
+      summary:'画布组件已就绪，等待宿主智能体连接本地 Canvas MCP。',
+      nextAction:'运行 node scripts/studio.mjs mcp-config 取得 command/args，再按所用宿主实际配置格式添加本机 stdio MCP，并实际调用 canvas_status。无需打开画布或生成图片。'});
   }
 
   const materialReady = hostReport?.status === 'connected';
   const materialMcpUrl = defaults.materials?.mcpUrl || '';
   const materialLoginUrl = defaults.materials?.loginUrl || '';
   const hostInstruction = [
-    '请在当前电脑的 WorkBuddy 中，使用本人公司账号完成以下操作。',
+    '请使用本人公司素材库（Teedy）账号验证只读访问；所用宿主智能体可使用当前已登录的个人或公司账号。',
     materialMcpUrl
-      ? `公司提供的只读 MCP 地址：${materialMcpUrl}。请先检查 WorkBuddy 中是否已有该服务；没有时按 WorkBuddy 官方 MCP 界面合同添加这个服务。不要猜测传输类型、认证字段或额外权限；如果缺少服务方要求的信息，先联系管理员补齐。`
-      : '公司尚未提供素材 MCP 地址。请检查 WorkBuddy 中是否已有公司只读素材 MCP；如果没有，请暂停并等待管理员提供连接信息，不要猜测地址或配置协议。',
-    materialLoginUrl ? `本人登录入口：${materialLoginUrl}。请由员工本人完成 WorkBuddy/公司登录。` : '请由员工本人在 WorkBuddy 完成登录；本能力包不读取或复制 WorkBuddy 凭据。',
-    '在 WorkBuddy 的「插件」→「MCP 服务器」确认该服务显示连接成功，并实际调用一个只读素材工具确认返回成功。只记录工具名和成功/失败，不保存素材内容或凭据到安装记录。',
-    '探测成功后，在 Company Lite 安装目录按系统调用包装入口：macOS `./Start.command report-workbuddy connected 实际工具名`；Windows `Start.cmd report-workbuddy connected 实际工具名`。若失败，把 connected 改成 failed。不要用系统 Node。',
-    `WorkBuddy 官方 MCP 指引：${WORKBUDDY_MCP_GUIDE}`,
+      ? `公司提供的只读素材 MCP 地址：${materialMcpUrl}。请先检查当前宿主是否已有该服务；没有时使用宿主自己的 MCP 配置功能添加。按宿主和服务方的官方说明配置，不要猜测传输类型、认证字段或额外权限；缺少信息时请联系管理员。`
+      : '公司尚未提供素材 MCP 地址。请检查当前宿主是否已有公司只读素材 MCP；如果没有，请等待管理员提供连接信息。收到后使用宿主自己的 MCP 配置功能添加，并遵循宿主和服务方的官方说明，不要猜测地址或配置协议。',
+    materialLoginUrl
+      ? `本人素材库登录入口：${materialLoginUrl}。请由员工本人完成公司素材库登录；凭据按宿主和服务方提供的流程处理。`
+      : '请由员工本人通过公司素材库要求的登录流程完成身份验证；所用宿主自身的登录账号与素材库账号可以不同。',
+    '确认素材服务可用后，实际调用一个只读素材工具并检查返回成功。只记录工具名和成功/失败，不保存素材内容或凭据到安装记录。',
+    '探测后，在源码目录运行 `node scripts/setup.mjs report-host connected 实际工具名` 报告结果；检查失败时将 connected 改为 failed。',
   ].join('\n\n');
   const materialsStep = {
     id: 'materials',
@@ -282,16 +295,16 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     complete: materialReady,
     actionNeeded: !materialReady,
     summary: materialReady
-      ? `WorkBuddy 已报告连接可用（${hostReport.toolName}）`
+      ? `上次宿主探测已报告素材 MCP 可用（${hostReport.toolName}）`
       : hostReport?.status === 'failed'
-        ? 'WorkBuddy 尚未报告连接成功，请重新完成检查。'
+        ? '宿主报告连接检查未通过，请在宿主中重新完成探测。'
         : materialMcpUrl
-          ? '等待 WorkBuddy 完成连接检查。'
+          ? '等待宿主智能体完成素材 MCP 连接检查。'
           : '等待公司提供素材库连接。',
     nextAction: materialReady
-      ? '继续配置图片服务。'
-      : '在 WorkBuddy 中完成本人登录并执行只读素材检查，然后报告检查结果。',
-    error: hostReport?.status === 'failed' ? { code: 'ERR_WORKBUDDY_HOST_PROBE', message: 'WorkBuddy 宿主报告的只读 MCP 探测未通过' } : null,
+      ? '新宿主或新会话使用前，请实际调用素材只读工具确认连接；继续配置图片服务。'
+      : '在所用宿主中完成本人登录并实际执行只读素材检查，然后报告检查结果。',
+    error: hostReport?.status === 'failed' ? { code: 'ERR_HOST_PROBE', message: '宿主报告的只读素材 MCP 探测未通过' } : null,
     checkedAt: hostReport?.checkedAt || null,
     source: hostReport?.source || null,
     independentlyVerified: false,
@@ -299,11 +312,11 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     loginUrl: materialLoginUrl || null,
     hostInstruction,
     checks: [{
-      name: 'WorkBuddy 连接状态',
+      name: '宿主智能体素材 MCP 状态',
       ok: materialReady,
       detail: materialReady
-        ? `WorkBuddy 已报告连接可用：${hostReport.toolName}（${hostReport.checkedAt || '时间未知'}）`
-        : hostReport?.status === 'failed' ? 'WorkBuddy 尚未报告连接成功' : '等待 WorkBuddy 完成检查',
+        ? `上次探测：${hostReport.toolName}（${hostReport.checkedAt || '时间未知'}）；新宿主或新会话请实际调用只读工具确认。`
+        : hostReport?.status === 'failed' ? '宿主报告的探测未通过' : '等待宿主智能体完成检查',
     }],
   };
 
@@ -353,10 +366,10 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     status: allReady ? 'complete' : 'blocked',
     complete: allReady,
     actionNeeded: !allReady,
-    summary: allReady ? '本地安装配置检查完成；创作时由 WorkBuddy 打开共享画布，历史作品持续保留。' : '仍有步骤未完成，检查结果不会提前标为成功。',
-    nextAction: allReady ? '可在 WorkBuddy 开始创作；以后复用已保存的连接和图片配置。' : '由宿主继续处理当前未完成的一步。',
+    summary: allReady ? '本地安装配置检查完成；创作时由当前宿主智能体连接共享画布，历史作品持续保留。' : '仍有步骤未完成，检查结果不会提前标为成功。',
+    nextAction: allReady ? '可在当前宿主智能体中开始创作；以后复用已保存的连接和图片配置。' : '由宿主继续处理当前未完成的一步。',
     error: null,
-    checks: [{ name: '全部必需步骤', ok: allReady, detail: allReady ? '4 / 4 已就绪' : '需完成安装包、Canvas、WorkBuddy 宿主报告和图片 API 检查' }],
+    checks: [{ name: '全部必需步骤', ok: allReady, detail: allReady ? '4 / 4 已就绪' : '需完成源码依赖、Canvas、宿主报告和图片 API 检查' }],
   };
   steps.push(finishStep);
   const currentStep = steps.find((step) => !step.complete) || finishStep;
@@ -370,13 +383,6 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     steps,
     logs,
     config: publicConfig(record),
-    guide: {
-      provider: 'WorkBuddy',
-      url: WORKBUDDY_MCP_GUIDE,
-      path: 'WorkBuddy「插件」→右上角「MCP 服务器」',
-      account: '请在 WorkBuddy 本人账号中完成登录；Company Lite 只记录检查结果，不读取或复制 WorkBuddy 凭据。',
-      note: '公司只读素材库继续使用现有 WorkBuddy MCP；Company Lite 不连接或替代 Teedy。如果公司服务未出现，请联系管理员确认应有的服务名称和只读权限；不要从其他应用复制凭据。没有实际宿主探测报告时，状态保持“等待 WorkBuddy 验证”。',
-    },
   };
 }
 
@@ -475,21 +481,21 @@ export async function saveAndVerifyImageConfig(input, { root, repoRoot, env, fet
   return getSetupStatus({ root, repoRoot, env });
 }
 
-/** Record a sanitized result supplied by the WorkBuddy host after a real read-only MCP call. */
-export async function reportWorkBuddyProbe({ status, toolName = '' } = {}, { root, now = () => new Date() } = {}) {
-  if (!['connected', 'failed'].includes(status)) throw setupError('ERR_WORKBUDDY_REPORT', 'WorkBuddy 报告状态只能是 connected 或 failed');
+/** Record a sanitized host result only after its agent actually calls a read-only material MCP tool. */
+export async function reportHostProbe({ status, toolName = '' } = {}, { root, now = () => new Date() } = {}) {
+  if (!['connected', 'failed'].includes(status)) throw setupError('ERR_HOST_REPORT', '宿主报告状态只能是 connected 或 failed');
   const normalizedTool = typeof toolName === 'string' ? toolName.trim() : '';
-  if (status === 'connected' && !normalizedTool) throw setupError('ERR_WORKBUDDY_REPORT', '成功的 WorkBuddy 宿主报告必须提供实际只读工具名');
-  if (normalizedTool && !/^[\w.-]{1,120}$/.test(normalizedTool)) throw setupError('ERR_WORKBUDDY_REPORT', 'WorkBuddy 工具名只能包含字母、数字、点、下划线或连字符');
+  if (status === 'connected' && !normalizedTool) throw setupError('ERR_HOST_REPORT', '成功的宿主报告必须提供实际只读工具名');
+  if (normalizedTool && !/^[\w.-]{1,120}$/.test(normalizedTool)) throw setupError('ERR_HOST_REPORT', '宿主报告的工具名只能包含字母、数字、点、下划线或连字符');
   const report = {
     schemaVersion: 1,
     status,
     toolName: normalizedTool || null,
     checkedAt: now().toISOString(),
-    source: 'WorkBuddy 宿主报告',
+    source: '宿主报告',
     independentlyVerified: false,
   };
-  await writePrivateJson(root, 'workbuddy-report.json', report);
+  await writePrivateJson(root, 'host-report.json', report);
   return {
     source: report.source,
     status: report.status,

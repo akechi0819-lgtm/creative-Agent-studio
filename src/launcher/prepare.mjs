@@ -32,6 +32,14 @@ function prependPath(nodePath) {
   return { ...process.env, PATH: [directory, current].filter(Boolean).join(path.delimiter) };
 }
 
+function runNode(nodePath, args, cwd, env) {
+  const result = spawnSync(nodePath, args, { cwd, env, stdio: 'inherit', windowsHide: true });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Node 命令失败（退出码 ${result.status ?? 1}）：${args.join(' ')}`);
+  }
+}
+
 function runNpm(nodePath, npmCli, args, cwd, env) {
   if (npmCli) {
     runNode(nodePath, [npmCli, ...args], cwd, env);

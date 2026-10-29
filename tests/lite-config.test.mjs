@@ -85,7 +85,7 @@ test('rejects embedded credentials, query strings, and unknown fields in image s
       (error) => error.code === 'ERR_CONFIG_INVALID',
     );
     await assert.rejects(
-      saveConfig({ expectedRevision: 1, image: { model: 'm', source: 'workbuddy' } }, { root }),
+      saveConfig({ expectedRevision: 1, image: { model: 'm', source: 'host' } }, { root }),
       (error) => error.code === 'ERR_CONFIG_INVALID',
     );
   });
