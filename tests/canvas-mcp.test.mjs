@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createCompanyCanvasMcp } from '../src/canvas/mcp.mjs';
+
+test('MCP exposes shared drawing tools, preserves explicit targets, and reports actual image bytes',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'company-lite-mcp-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const calls=[];
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64');
+  const runtime={status:async()=>({running:false,targets:[]}),open:async args=>({opened:args}),call:async(name,input,target)=>{
+    calls.push({name,input,target});
+    if(name==='canvas_read_image')return {nodeId:input.nodeId,dataUrl:`data:image/png;base64,${png.toString('base64')}`,width:1,height:1};
+    return {ok:true};
+  }};
+  const server=createCompanyCanvasMcp({root,runtime});
+  const client=new Client({name:'fixture-host',version:'1'});
+  const [a,b]=InMemoryTransport.createLinkedPair();
+  await server.connect(a);await client.connect(b);
+  t.after(()=>client.close());t.after(()=>server.close());
+  const names=(await client.listTools()).tools.map(tool=>tool.name);
+  assert.ok(names.includes('canvas_open') && names.includes('canvas_list_projects') && names.includes('canvas_crop_image'));
+  assert.ok(!names.some(name=>/task|confirm_sheet|workbench_video|assets_add/.test(name)));
+  const check=await client.callTool({name:'canvas_status',arguments:{}});
+  assert.equal(JSON.parse(check.content[0].text).running,false);
+  assert.equal(JSON.parse(await fs.readFile(path.join(root,'setup/canvas-mcp-check.json'),'utf8')).service,'company-lite-canvas');
+  const result=await client.callTool({name:'canvas_read_image',arguments:{nodeId:'image-1',projectId:'project-1',clientId:'client-1'}});
+  assert.deepEqual(calls.at(-1).target,{projectId:'project-1',clientId:'client-1'});
+  assert.equal(result.content[0].type,'image');
+  assert.deepEqual(Buffer.from(result.content[0].data,'base64'),png);
+  const saved=await client.callTool({name:'canvas_save_image',arguments:{nodeId:'image-1'}});
+  assert.deepEqual(await fs.readFile(JSON.parse(saved.content[0].text).path),png);
+  const before=calls.length;
+  const invalid=await client.callTool({name:'site_navigate',arguments:{path:'/config'}});
+  assert.equal(invalid.isError,true);assert.equal(calls.length,before);
+});

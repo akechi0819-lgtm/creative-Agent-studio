@@ -2,9 +2,11 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
-NODE="$("$ROOT/scripts/bootstrap-node.sh" "$ROOT")"
+NODE="$ROOT/.studio-runtime/node/node-v22.23.3-darwin-arm64/bin/node"
 
-if [ "$#" -eq 0 ]; then
-  exec "$NODE" "$ROOT/scripts/launcher.mjs" menu
+if [ ! -x "$NODE" ]; then
+  printf '%s\n' '成品包内的 Node.js 缺失或不可执行，请重新解压完整成品包。' >&2
+  exit 1
 fi
-exec "$NODE" "$ROOT/scripts/launcher.mjs" "$@"
+
+exec "$NODE" "$ROOT/scripts/setup.mjs" "$@"

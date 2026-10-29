@@ -16,19 +16,20 @@ const config = {
     port: 0,
     url: "http://127.0.0.1:0",
     token: "test-token",
-    projectId: "project-1",
     instanceId: "instance-1",
     dataDir: path.resolve(os.tmpdir(), "canvas-bridge-test"),
     origin: "http://localhost:3000",
 };
 
-test("HTTP API guards tokens and rejects a different project", async (t) => {
+test("HTTP API guards tokens and config is not pinned to a project", async (t) => {
     const { server, baseUrl } = await startApp();
     t.after(() => closeServer(server));
 
     const health = await fetch(`${baseUrl}/health`).then((response) => response.json()) as Record<string, unknown>;
     assert.equal(health.instanceId, "instance-1");
-    assert.equal(health.projectId, "project-1");
+    assert.equal(Object.hasOwn(health, "projectId"), false);
+    const bridgeConfig = await fetch(`${baseUrl}/config`).then((response) => response.json()) as Record<string, unknown>;
+    assert.equal(Object.hasOwn(bridgeConfig, "projectId"), false);
 
     const blockedOrigin = await fetch(`${baseUrl}/health`, { headers: { Origin: "http://other.local" } });
     assert.equal(blockedOrigin.status, 403);
@@ -36,24 +37,20 @@ test("HTTP API guards tokens and rejects a different project", async (t) => {
     const unauthorized = await fetch(`${baseUrl}/canvas/activate?projectId=project-1&clientId=client-1`);
     assert.equal(unauthorized.status, 401);
 
-    const wrongProject = await fetch(`${baseUrl}/canvas/activate?projectId=project-2&clientId=client-1`, { method: "POST", headers: headers() });
-    assert.equal(wrongProject.status, 403);
+    const unconnectedTarget = await fetch(`${baseUrl}/canvas/activate?projectId=project-2&clientId=client-1`, { method: "POST", headers: headers() });
+    assert.equal(unconnectedTarget.status, 409);
 });
 
-test("canvas tool requests use explicit project and client IDs and return browser results", async (t) => {
+test("multiple actual projects register independently and tool results must match the original pair", async (t) => {
     const { server, baseUrl } = await startApp();
     t.after(() => closeServer(server));
-    const controller = new AbortController();
-    t.after(() => controller.abort());
-
-    const eventsResponse = await fetch(`${baseUrl}/events?token=test-token&projectId=project-1&clientId=client-1`, {
-        headers: { Origin: config.origin },
-        signal: controller.signal,
-    });
-    assert.equal(eventsResponse.status, 200);
-    const reader = eventsResponse.body!.getReader();
-    const hello = await readEvent(reader, "hello");
-    assert.equal(hello.clientId, "client-1");
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    t.after(() => { firstController.abort(); secondController.abort(); });
+    const firstConnection = await connectEvents(baseUrl, "project-1", "client-1", firstController.signal);
+    const secondConnection = await connectEvents(baseUrl, "project-2", "client-2", secondController.signal);
+    assert.equal(firstConnection.hello.projectId, "project-1");
+    assert.equal(secondConnection.hello.projectId, "project-2");
 
     const stateResponse = await fetch(`${baseUrl}/canvas/state?projectId=project-1&clientId=client-1`, {
         method: "POST",
@@ -62,23 +59,52 @@ test("canvas tool requests use explicit project and client IDs and return browse
     });
     assert.equal(stateResponse.status, 200);
 
+    const secondState = await fetch(`${baseUrl}/canvas/state?projectId=project-2&clientId=client-2`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ projectId: "project-2", clientId: "client-2", nodes: [], connections: [], selectedNodeIds: [] }),
+    });
+    assert.equal(secondState.status, 200);
+    const mismatchedState = await fetch(`${baseUrl}/canvas/state?projectId=project-1&clientId=client-1`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ projectId: "project-2", clientId: "client-1", nodes: [] }),
+    });
+    assert.equal(mismatchedState.status, 403);
+
     const activated = await fetch(`${baseUrl}/canvas/activate?projectId=project-1&clientId=client-1`, {
         method: "POST",
         headers: headers(),
     });
     assert.equal(activated.status, 200);
     const health = await fetch(`${baseUrl}/health`).then((response) => response.json()) as { targets: Array<Record<string, unknown>> };
-    assert.deepEqual(health.targets, [{ clientId: "client-1", projectId: "project-1", hasCanvas: true, active: true }]);
+    assert.deepEqual(health.targets, [
+        { clientId: "client-1", projectId: "project-1", hasCanvas: true, active: true },
+        { clientId: "client-2", projectId: "project-2", hasCanvas: true, active: false },
+    ]);
 
     const requestPromise = fetch(`${baseUrl}/api/tools`, {
         method: "POST",
         headers: headers(),
         body: JSON.stringify({ name: "canvas_read_image", input: { nodeId: "image-1" }, projectId: "project-1", clientId: "client-1" }),
     });
-    const call = await readEvent(reader, "tool_call");
+    const call = await readEvent(firstConnection.reader, "tool_call");
     assert.equal(call.name, "canvas_read_image");
     assert.deepEqual(call.input, { nodeId: "image-1" });
 
+    const wrongTargetCall = await fetch(`${baseUrl}/api/tools`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ name: "canvas_read_image", input: { nodeId: "image-1" }, projectId: "project-2", clientId: "client-1" }),
+    });
+    assert.equal(wrongTargetCall.status, 409);
+
+    const wrongResult = await fetch(`${baseUrl}/canvas/result?projectId=project-2&clientId=client-1`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ requestId: call.requestId, result: { wrong: true } }),
+    });
+    assert.equal(wrongResult.status, 409);
     const result = await fetch(`${baseUrl}/canvas/result?projectId=project-1&clientId=client-1`, {
         method: "POST",
         headers: headers(),
@@ -89,13 +115,38 @@ test("canvas tool requests use explicit project and client IDs and return browse
         ok: true,
         result: { dataUrl: "data:image/png;base64,aW1hZ2U=", naturalWidth: 900, naturalHeight: 600 },
     });
+});
 
-    const wrongProject = await fetch(`${baseUrl}/canvas/state?projectId=project-2&clientId=client-1`, {
+test("library connection works without canvas state only for navigation and project listing", async (t) => {
+    const { server, baseUrl } = await startApp();
+    t.after(() => closeServer(server));
+    const controller = new AbortController();
+    t.after(() => controller.abort());
+    const { reader } = await connectEvents(baseUrl, "library", "library", controller.signal);
+    const before = await fetch(`${baseUrl}/health`).then((response) => response.json()) as { hasCanvas: boolean; targets: Array<Record<string, unknown>> };
+    assert.equal(before.hasCanvas, false);
+    assert.deepEqual(before.targets, [{ clientId: "library", projectId: "library", hasCanvas: false, active: false }]);
+
+    for (const [name, input] of [["site_navigate", { path: "/canvas" }], ["canvas_list_projects", {}]] as const) {
+        const request = fetch(`${baseUrl}/api/tools`, {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({ name, input, projectId: "library", clientId: "library" }),
+        });
+        const call = await readEvent(reader, "tool_call");
+        assert.equal(call.name, name);
+        const result = await fetch(`${baseUrl}/canvas/result?projectId=library&clientId=library`, {
+            method: "POST", headers: headers(), body: JSON.stringify({ requestId: call.requestId, result: { ok: true } }),
+        });
+        assert.equal(result.status, 200);
+        assert.deepEqual(await request.then((response) => response.json()), { ok: true, result: { ok: true } });
+    }
+    const blocked = await fetch(`${baseUrl}/api/tools`, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ projectId: "project-2", nodes: [] }),
+        body: JSON.stringify({ name: "canvas_read_image", input: { nodeId: "image-1" }, projectId: "library", clientId: "library" }),
     });
-    assert.equal(wrongProject.status, 403);
+    assert.equal(blocked.status, 409);
 });
 
 test("launcher data directory rejects a second live service instance", async (t) => {
@@ -128,7 +179,6 @@ test("SIGTERM closes active SSE connections and releases the instance lock", {
             ...process.env,
             PORT: String(port),
             CANVAS_AGENT_TOKEN: "signal-test-token",
-            CANVAS_AGENT_PROJECT_ID: "signal-test-project",
             CANVAS_AGENT_INSTANCE_ID: "signal-test-instance",
             CANVAS_AGENT_DATA_DIR: dataDir,
             CANVAS_AGENT_ORIGIN: "http://localhost:3000",
@@ -176,6 +226,15 @@ test("SIGTERM closes active SSE connections and releases the instance lock", {
 
 function headers() {
     return { "content-type": "application/json", "x-canvas-agent-token": config.token, Origin: config.origin };
+}
+
+async function connectEvents(baseUrl: string, projectId: string, clientId: string, signal: AbortSignal) {
+    const query = new URLSearchParams({ token: config.token, projectId, clientId });
+    const response = await fetch(`${baseUrl}/events?${query}`, { headers: { Origin: config.origin }, signal });
+    assert.equal(response.status, 200);
+    const reader = response.body!.getReader();
+    const hello = await readEvent(reader, "hello");
+    return { reader, hello };
 }
 
 async function startApp() {

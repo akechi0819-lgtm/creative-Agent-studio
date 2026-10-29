@@ -1,37 +1,14 @@
 # 第三方组件与模型 NOTICE
 
-本文件记录随包实际存在的重点许可证义务和定位路径，不构成法律意见或“全部许可已获批准”的结论。逐包版本、声明许可证、安装路径及识别到的许可证文件见包内 `THIRD-PARTY-LICENSES.json`。打包器会保留包内 `LICENSE`、`NOTICE` 与 `licenses/` 文件，并要求本文件列出的静态许可文本存在；缺失时阻止生成正式 Release 归档。
+本文件与包内 `THIRD-PARTY-LICENSES.json` 一起记录 Company Lite 成品中可检查的组件许可证信息和定位路径，不构成法律意见。运行依赖的包名、版本、许可证声明、安装路径及许可证文件由打包器从成品 `node_modules` 清点。
 
-## MPL-2.0
+## Node.js 与 Canvas
 
-- `@deepseek-ai/libreoffice-kit@0.1.5` 与对应原生 `@deepseek-ai/libreoffice-kit-<平台>@0.1.5` 声明 MPL-2.0。保留包内 `LICENSE`、`NOTICE`、原生包 `licenses/LibreOffice-MPL-2.0.txt`、`licenses/LibreOffice-third-party.html`，以及嵌入式 LibreOffice 的 `program/LibreOfficeDev.app/Contents/Resources/LICENSE` 和 `NOTICE`（这些在归档内原路径）。
-- 上游源代码入口：[DeepSeek LibreOffice Kit](https://github.com/deepseek-ai/dsh-libreoffice-kit)，具体 npm 版本为 0.1.5。静态 MPL 文本另见 `release/licenses/MPL-2.0.txt`。
-- Windows 依赖准备会对固定 `@deepseek-ai/libreoffice-kit@0.1.5` 的 `lib/index.js` 与 `lib/cli.js` 应用精确校验补丁：始终启用上游已有的独立 profile 短路径机制，避免深层安装目录追加资源路径后无法加载。修改后的可读 JavaScript 源码随包保留在上述文件原路径；补丁实现位于随项目源码及运行包提供的 `src/launcher/prepare.mjs`。原生引擎二进制不修改，原始 MPL 文本、版权与 NOTICE 继续保留。
-- 若生产依赖清理后仍包含 `lightningcss@1.32.0`，其自身 `LICENSE` 也随包保留；其为前端构建依赖，通常在 `npm prune --omit=dev` 后不会进入运行包。
+- 成品使用 Node.js v22.23.3 官方平台归档，并保留解压后的 `LICENSE`。上游：[Node.js v22.23.3](https://nodejs.org/dist/v22.23.3/)。
+- Canvas Agent 来源于 `third_party/canvas`；保留其 `LICENSE` 和运行时依赖各自随包带入的许可材料。
 
-## LGPL-3.0-or-later：sharp/libvips
+## 运行边界
 
-- `@img/sharp-libvips-<平台>@1.3.4` 声明 LGPL-3.0-or-later；随包保留其 `README.md`、`versions.json` 和 `lib/` 中的本平台动态库。`README.md` 列出其依赖组件和许可证，`versions.json` 记录实际组件版本。macOS 包中的 `lib/libvips-cpp.8.18.7.dylib` 以独立文件保留，未静态合并或改写；Windows 包使用对应 runner 产出的动态库。用户可替换相同 ABI 的动态库文件。打包器会拒绝缺少动态库、README 或版本清单的目标包。
-- 入口：[sharp-libvips 源码与构建仓库](https://github.com/lovell/sharp-libvips)、[sharp 安装说明](https://sharp.pixelplumbing.com/install/)。随包 `README.md` 的许可证表、`versions.json` 及 `THIRD-PARTY-LICENSES.json` 的包路径共同给出确切版本；具体 LGPL 组件以每个平台自身清单为准。LGPL-3.0 文本随包位于 `release/licenses/LGPL-3.0.txt`。
-- 如果未来改为静态链接、合并动态库、修改库代码，或无法提供上述相应版本的源代码获取入口，应暂停正式发布并重新核对义务。
-
-## CC-BY-4.0：caniuse-lite
-
-- `caniuse-lite@1.0.30001791` 的数据采用 CC BY 4.0。随包保留其原始 `LICENSE`（当该包进入最终依赖时），并在此注明：数据来源为 **Can I Use / caniuse.com**，上游项目要求将来源标为 caniuse.com。静态许可证文本为 `release/licenses/CC-BY-4.0.txt`。
-- 上游说明：[browserslist/caniuse-lite README](https://github.com/browserslist/caniuse-lite#license)。若生产依赖裁剪后该包不在归档内，本条仍保留作构建依赖来源记录。
-
-## Node.js 与首次启动准备的 Python/OCR
-
-- Node.js v22.23.3 是各平台官方归档，保留解压后的 Node 根目录 `LICENSE`；路径写入 `THIRD-PARTY-LICENSES.json` 和 `release-manifest.json`。上游：[Node.js v22.23.3](https://nodejs.org/dist/v22.23.3/)。
-- Python、Python 依赖和 RapidOCR ONNX 模型不包含在主 ZIP 中。首次启动时，共享准备器在用户数据目录建立应用私有环境并写入模型缓存；可复用兼容的本机 Python 3.12，缺少时使用项目锁定运行时，不修改系统 Python 或其他项目。依赖版本和 SHA-256 由 `scripts/requirements-cleaner-ocr.lock.txt`、`scripts/requirements-workspace.lock.txt` 固定。
-- 首次准备安装的 Python 分发包保留在用户数据目录的 `.venv-ocr/`，其 `*.dist-info/METADATA`、`licenses/` 和上游许可证随本机环境保存；包内 `THIRD-PARTY-LICENSES.json` 只清点实际随 ZIP 分发的文件，不声称已扫描首次准备后才下载的 Python 组件。
-
-## RapidOCR / PaddleOCR 模型
-
-- 首次启动准备的 RapidOCR ONNX 模型写入用户数据目录的 `.studio-runtime/rapidocr-models/`，不会进入 Release ZIP。模型来源、版权归属和上游许可入口见 `release/NOTICE-rapidocr-models.md`；具体文件由运行时准备器从上游获取。
-- RapidOCR Python 包及其依赖使用上述 SHA-256 锁文件安装。首次安装后可从用户数据目录的环境元数据查阅每个分发包的许可证文件；包内 `THIRD-PARTY-LICENSES.json` 不把这些未随包分发的内容列为已包含材料。
-
-## Tesseract.js 语言模型
-
-- 随 Node 包的 `@tesseract.js-data/eng@1.0.0` 和 `@tesseract.js-data/chi_sim@1.0.0` 的 npm 元数据声明 MIT；包内原始 `package.json` 会保留该声明。数据仓库说明 `4.0.0_best_int` 语言模型来自 `naptha/tessdata`，其上游提供 Apache-2.0 许可证；因此随包提供 `release/licenses/Apache-2.0.txt`。这两个数据包只包含 README、包元数据和模型文件，没有单独的 MIT 许可证文本；这里不把 npm 元数据声明误当作模型上游许可证，也不与 `tesseract.js` 引擎许可证混为一谈。模型文件位于包内相应 `node_modules/@tesseract.js-data/*/4.0.0_best_int/`。
-- 来源：[naptha/tessdata 模型说明](https://github.com/naptha/tessdata/blob/gh-pages/README.md)、[naptha/tessdata Apache-2.0 LICENSE](https://github.com/naptha/tessdata/blob/gh-pages/LICENSE)、[Tesseract tessdata 上游](https://github.com/tesseract-ocr/tessdata)。引擎本身使用其 npm 包声明的许可证，路径列于 JSON 清单。
+- 成品以解压后的能力包根目录作为 WorkBuddy 工作目录，包含固定版本 Node、轻量配置 CLI、Canvas 控制 CLI、本地 Canvas 和对应平台的薄启动包装器；包装器只调用包内 Node，不修改系统 PATH，也不要求员工安装 Node/npm。
+- 成品不包含 DSH、独立设置网页、完整 Studio Web 对话、Python/OCR/Office 运行环境或用户配置与任务数据。图像显示与绘制由本地 Canvas 处理，不安装 Python。
+- 本清单列明随包文件的可见证据。许可条款、上游组件或分发方式变化时，应重新检查相应材料。

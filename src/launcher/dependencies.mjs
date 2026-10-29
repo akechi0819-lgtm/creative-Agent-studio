@@ -4,7 +4,16 @@ import path from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
 
 const moduleRequire = createRequire(import.meta.url);
-const NATIVE_RUNTIME_PROBES = new Set(['@napi-rs/canvas', 'canvas', 'sharp', 'esbuild']);
+const NATIVE_RUNTIME_PROBES = new Set(['esbuild']);
+const PACKAGE_RUNTIME_CONTRACTS = new Map([
+  ['@modelcontextprotocol/sdk', {
+    specifiers: ['@modelcontextprotocol/sdk/server/mcp.js'],
+    assets: [
+      'dist/esm/server/mcp.js', 'dist/esm/server/mcp.d.ts',
+      'dist/cjs/server/mcp.js', 'dist/cjs/server/mcp.d.ts',
+    ],
+  }],
+]);
 
 function ready(reason = 'locked dependency tree is ready') {
   return { ready: true, reason };
@@ -151,6 +160,9 @@ function hasRuntimeCondition(value) {
 }
 
 function runtimeSpecifiers(packageName, packageJson) {
+  const runtimeContract = PACKAGE_RUNTIME_CONTRACTS.get(packageName);
+  if (runtimeContract) return runtimeContract.specifiers;
+
   const exportsField = packageJson.exports;
   if (exportsField !== undefined) {
     if (typeof exportsField === 'string' || Array.isArray(exportsField)) {
@@ -195,6 +207,16 @@ function exportedAssets(exportsField, conditionName) {
 }
 
 async function verifyDeclaredAssets(packageRoot, packageJson, packageName) {
+  const runtimeContract = PACKAGE_RUNTIME_CONTRACTS.get(packageName);
+  if (runtimeContract) {
+    for (const target of runtimeContract.assets) {
+      if (!await hasPackageAsset(packageRoot, target)) {
+        return `${packageName} is missing its public runtime entry asset ${target}`;
+      }
+    }
+    return null;
+  }
+
   const declared = [];
   for (const field of ['types', 'typings', 'style']) {
     if (typeof packageJson[field] === 'string') declared.push({ field, target: packageJson[field] });
@@ -321,13 +343,6 @@ import { pathToFileURL } from 'node:url';
 const entries = JSON.parse(process.env.STUDIO_DEPENDENCY_NATIVE_ENTRIES || '[]');
 for (const entry of entries) {
   const module = await import(pathToFileURL(entry.entry).href);
-  if (entry.name === '@napi-rs/canvas') {
-    const createCanvas = module.createCanvas ?? module.default?.createCanvas;
-    if (typeof createCanvas !== 'function') throw new Error('canvas API unavailable');
-    const context = createCanvas(1, 1).getContext('2d');
-    context.fillRect(0, 0, 1, 1);
-    context.getImageData(0, 0, 1, 1);
-  }
   if (entry.name === 'esbuild') {
     const transformSync = module.transformSync ?? module.default?.transformSync;
     if (typeof transformSync !== 'function') throw new Error('esbuild transformSync API unavailable');

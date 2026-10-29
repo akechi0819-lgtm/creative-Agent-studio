@@ -1,14 +1,18 @@
-import { Check, Download, Pencil, Trash2, X } from "lucide-react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { Check, Download, Image as ImageIcon, Pencil, Trash2, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Button, Input } from "antd";
+import { App, Button, Input } from "antd";
 import { useTranslation } from "react-i18next";
 
-import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStore, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { hasAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
+import { ensureImagePreview, previewUrlFor, resolveImageUrl, subscribeImagePreviews } from "@/services/image-storage";
+import { CanvasNodeType } from "@/types/canvas";
 
 export function CanvasProjectCard({ project }: { project: CanvasProject }) {
+    const { message } = App.useApp();
     const { i18n, t } = useTranslation();
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
@@ -23,9 +27,34 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const editing = editingId === project.id;
     const selected = selectedIds.includes(project.id);
+    const previewSource = project.nodes.reduce<{ storageKey?: string; content: string } | undefined>((source, node) => {
+        if (source || node.type !== CanvasNodeType.Image) return source;
+        const generatedImage = node.metadata?.images?.find((image) => image.status === "success" && (image.storageKey || image.content));
+        if (generatedImage) return { storageKey: generatedImage.storageKey, content: generatedImage.content };
+        if (node.metadata?.status === "success" && (node.metadata.storageKey || node.metadata.content)) {
+            return { storageKey: node.metadata.storageKey, content: node.metadata.content || "" };
+        }
+        return undefined;
+    }, undefined);
+    const previewStorageKey = previewSource?.storageKey;
+    const previewUrl = useSyncExternalStore(subscribeImagePreviews, () => previewUrlFor(previewStorageKey), () => undefined);
+    const [originalUrl, setOriginalUrl] = useState<string>();
+    useEffect(() => {
+        let active = true;
+        setOriginalUrl(undefined);
+        if (previewSource) {
+            void resolveImageUrl(previewSource.storageKey, previewSource.content).then((url) => {
+                if (active) setOriginalUrl(url || undefined);
+            });
+            if (previewSource.storageKey) void ensureImagePreview(previewSource.storageKey);
+        }
+        return () => { active = false; };
+    }, [previewSource?.content, previewSource?.storageKey]);
+    const imageUrl = previewUrl || originalUrl;
     const open = () => {
         const agentHash = hasAgentUrlBootstrap(window.location.hash) ? window.location.hash : "";
-        navigate(`/canvas/${project.id}${searchParams.toString() ? `?${searchParams.toString()}` : ""}${agentHash}`, { replace: Boolean(agentHash) });
+        const path = `/canvas/${project.id}${searchParams.toString() ? `?${searchParams.toString()}` : ""}${agentHash}`;
+        void flushCanvasStore().then(() => navigate(path, { replace: Boolean(agentHash) })).catch(() => message.error("无法保存画布历史状态，请稍后重试。"));
     };
     const saveTitle = () => {
         renameProject(project.id, editingTitle);
@@ -34,6 +63,9 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
 
     return (
         <article className="group flex min-h-44 cursor-pointer flex-col justify-between rounded-2xl bg-[#f1eee8] p-5 transition hover:bg-[#ebe6dc] dark:bg-white/5 dark:hover:bg-white/10" onClick={() => !editing && open()}>
+            <div className="mb-4 flex h-36 items-center justify-center overflow-hidden rounded-xl bg-white/60 dark:bg-black/20">
+                {imageUrl ? <img src={imageUrl} alt="" loading="lazy" decoding="async" className="size-full object-cover" /> : <ImageIcon className="size-6 text-stone-400" aria-hidden="true" />}
+            </div>
             <div className="flex items-start gap-3">
                 <input
                     type="checkbox"

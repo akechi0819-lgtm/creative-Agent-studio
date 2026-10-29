@@ -5,15 +5,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { preparePython } from './python.mjs';
 import { checkDependencyGroup } from './dependencies.mjs';
 import { buildTargets, captureBuildInputs, inspectBuildOutputs, canAdoptBuild } from './builds.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const npmTargets = ['.', 'third_party/canvas/canvas-agent', 'third_party/canvas/web', 'adapters/dsh'];
-const libreOfficeKitEntrypoints = ['lib/index.js', 'lib/cli.js'];
-const libreOfficeKitPathGuard = 'if (process.platform !== "win32" || engine.executable.length < 260 && engine.programDirectory.length < 260) return run(engine);';
-const libreOfficeKitWindowsPathGuard = 'if (process.platform !== "win32") return run(engine);';
+const npmTargets = ['.', 'third_party/canvas/canvas-agent', 'third_party/canvas/web'];
 
 function resolveNpmCli(nodePath) {
   const executableDirs = new Set([path.dirname(nodePath), path.dirname(process.execPath)]);
@@ -36,20 +32,6 @@ function prependPath(nodePath) {
   return { ...process.env, PATH: [directory, current].filter(Boolean).join(path.delimiter) };
 }
 
-function runNode(nodePath, args, cwd, env) {
-  const result = spawnSync(nodePath, args, {
-    cwd,
-    env,
-    stdio: 'inherit',
-    windowsHide: true,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const code = result.status ?? 1;
-    throw new Error(`命令失败（退出码 ${code}）：${path.relative(projectRoot, cwd) || '.'} / ${args.join(' ')}`);
-  }
-}
-
 function runNpm(nodePath, npmCli, args, cwd, env) {
   if (npmCli) {
     runNode(nodePath, [npmCli, ...args], cwd, env);
@@ -67,30 +49,6 @@ function runNpm(nodePath, npmCli, args, cwd, env) {
   if (result.status !== 0) {
     throw new Error(`npm 命令失败（退出码 ${result.status ?? 1}）：${args.join(' ')}`);
   }
-}
-
-/** Keep LibreOfficeKit's existing profile-owned junction active on Windows, whose resources can exceed MAX_PATH even when its executable does not. */
-export async function ensureLibreOfficeKitWindowsPathFix(root, {platform = process.platform, beforeChange = async () => {}} = {}) {
-  if (platform !== 'win32') return false;
-  const packageRoot = path.join(root, 'adapters/dsh/node_modules/@deepseek-ai/libreoffice-kit');
-  const packageJson = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-  if (packageJson.name !== '@deepseek-ai/libreoffice-kit' || packageJson.version !== '0.1.5') {
-    throw new Error('Windows LibreOfficeKit 长路径修正只支持已核对的 @deepseek-ai/libreoffice-kit@0.1.5。');
-  }
-  const replacements = [];
-  for (const entrypoint of libreOfficeKitEntrypoints) {
-    const file = path.join(packageRoot, entrypoint);
-    const source = await readFile(file, 'utf8');
-    if (source.includes(libreOfficeKitWindowsPathGuard)) continue;
-    if (!source.includes(libreOfficeKitPathGuard)) {
-      throw new Error(`Windows LibreOfficeKit 长路径修正无法识别固定 0.1.5 源码：${entrypoint}`);
-    }
-    replacements.push([file, source.replace(libreOfficeKitPathGuard, libreOfficeKitWindowsPathGuard)]);
-  }
-  if (!replacements.length) return false;
-  await beforeChange();
-  for (const [file, source] of replacements) await writeFile(file, source, 'utf8');
-  return true;
 }
 
 async function writeState(statePath, state) {
@@ -191,13 +149,12 @@ async function dependencyFingerprint(cwd) {
 const outputManifest = outputs => outputs.files.map(({path, sha256, size}) => ({path, sha256, size}));
 const sameOutputs = (saved, current) => JSON.stringify(saved) === JSON.stringify(outputManifest(current));
 
-/** Validate each installed group independently. force rebuilds outputs, never healthy dependencies. */
+/** Prepare root and Canvas dependencies, then build the two Canvas runtime outputs. */
 export async function prepareWorkspace({
   root = projectRoot,
   nodePath = process.execPath,
   npmPath,
   force = false,
-  includePython = true,
   onProgress = () => {},
   operations = {},
 } = {}) {
@@ -208,8 +165,6 @@ export async function prepareWorkspace({
   const env = prependPath(nodePath);
   const checkDependencies = operations.checkDependencies || checkDependencyGroup;
   const npm = operations.npm || ((args, cwd) => runNpm(nodePath, npmCli, args, cwd, env));
-  const node = operations.node || ((args, cwd) => runNode(nodePath, args, cwd, env));
-  const python = operations.python || preparePython;
   const releaseLock = await acquirePrepareLock(root, onProgress);
   let state;
   let activeStep;
@@ -222,8 +177,8 @@ export async function prepareWorkspace({
     let saved;
     try { saved = JSON.parse(await readFile(statePath, 'utf8')); } catch { /* No trusted preparation ledger: inspect actual files. */ }
     const record = value => value && typeof value === 'object' && !Array.isArray(value);
-    state = saved?.schemaVersion === 2 && record(saved.dependencies) && record(saved.builds)
-      ? saved : {schemaVersion: 2, dependencies: {}, builds: {}};
+    state = saved?.schemaVersion === 3 && record(saved.dependencies) && record(saved.builds)
+      ? saved : {schemaVersion: 3, dependencies: {}, builds: {}};
     state.status = 'preparing';
     state.startedAt = new Date().toISOString();
     state.nodeVersion = process.versions.node;
@@ -250,12 +205,6 @@ export async function prepareWorkspace({
         actions.dependenciesReused.push(target);
         onProgress({phase: 'reuse', target, message: `验证并复用固定依赖：${target}`});
       }
-      if (target === 'adapters/dsh' && await ensureLibreOfficeKitWindowsPathFix(root, {
-        platform: operations.platform ?? process.platform,
-        beforeChange: ensureOffline,
-      })) {
-        onProgress({phase: 'repair', target, message: '修正 LibreOfficeKit Windows 原生资源长路径启动。'});
-      }
       state.dependencies[target] = {status: 'ready', fingerprint: input, verifiedAt: new Date().toISOString()};
       activeStep = null;
       await writeState(statePath, state);
@@ -277,8 +226,7 @@ export async function prepareWorkspace({
         state.builds[target.id] = {status: 'building', fingerprint: inputs.fingerprint};
         await writeState(statePath, state);
         onProgress({phase: 'build', target: target.id, message: `构建：${target.id}`});
-        if (target.nodeScript) await node([path.join(root, target.nodeScript)], path.join(root, target.cwd));
-        else await npm(target.npmArgs, path.join(root, target.cwd));
+        await npm(target.npmArgs, path.join(root, target.cwd));
         const finishedInputs = await captureBuildInputs(root, target);
         outputs = await inspectBuildOutputs(root, target);
         if (!outputs.ready) throw new Error(`${target.id} 构建产物不完整：${outputs.reason}`);
@@ -295,14 +243,6 @@ export async function prepareWorkspace({
       await writeState(statePath, state);
     }
 
-    let pythonResult = null;
-    if (includePython) {
-      pythonResult = await python({root, nodePath, onProgress, beforeChange: ensureOffline});
-      state.python = {fingerprint: pythonResult.fingerprint, pythonExecutable: pythonResult.pythonExecutable, status: 'ready'};
-    } else {
-      state.python = {status: 'deferred', reason: 'release-first-start'};
-      onProgress({phase: 'deferred', message: 'Python/OCR 将在运行包首次启动时准备。'});
-    }
     for (const target of npmTargets) {
       if (await dependencyFingerprint(path.join(root, target)) !== state.dependencies[target].fingerprint) {
         throw new Error(`${target} 依赖清单在准备期间变化；未将过期检查标记为就绪。`);
@@ -318,15 +258,12 @@ export async function prepareWorkspace({
     state.fingerprint = createHash('sha256').update(JSON.stringify({
       dependencies: Object.fromEntries(Object.entries(state.dependencies).map(([id, value]) => [id, value.fingerprint])),
       builds: Object.fromEntries(Object.entries(state.builds).map(([id, value]) => [id, value.fingerprint])),
-      python: pythonResult?.fingerprint ?? 'deferred',
     })).digest('hex');
     await writeState(statePath, state);
-    const skipped = !actions.dependenciesInstalled.length && !actions.buildsRun.length && (!includePython || pythonResult.skipped);
-    const message = includePython
-      ? (skipped ? '依赖、构建与 OCR 已验证复用，无需安装。' : '必要准备已完成，其余环境保持复用。')
-      : 'Node 依赖与构建已完成；Python/OCR 将在首次启动时准备。';
+    const skipped = !actions.dependenciesInstalled.length && !actions.buildsRun.length;
+    const message = skipped ? '根依赖与 Canvas 构建已验证复用，无需安装。' : '根依赖、Canvas Agent 与 Canvas Web 已准备完成。';
     onProgress({phase: skipped ? 'skip' : 'ready', message});
-    return {root, nodePath, npmPath: npmCli, fingerprint: state.fingerprint, skipped, ...actions, python: pythonResult, pythonDeferred: !includePython};
+    return {root, nodePath, npmPath: npmCli, fingerprint: state.fingerprint, skipped, ...actions};
   } catch (error) {
     if (state && activeStep) {
       const entry = state[activeStep.section][activeStep.id];

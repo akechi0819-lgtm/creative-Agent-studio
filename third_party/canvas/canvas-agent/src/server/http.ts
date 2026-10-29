@@ -8,10 +8,10 @@ import { CanvasSession, BridgeError, PROTOCOL_VERSION } from "../canvas/session.
 import { isToolName } from "../canvas/tools.js";
 import { loadConfig, type BridgeConfig } from "../config.js";
 
-/** 创建仅供当前项目网页使用的绘图桥接 HTTP API。 */
+/** 创建供共享工作空间网页连接使用的绘图桥接 HTTP API。 */
 export function createHttpApp(config: BridgeConfig) {
     const app = express();
-    const session = new CanvasSession(config.projectId, config.instanceId);
+    const session = new CanvasSession(config.instanceId);
     app.disable("x-powered-by");
     app.use((_req, res, next) => {
         res.locals.requestId = randomUUID();
@@ -30,7 +30,6 @@ export function createHttpApp(config: BridgeConfig) {
         ok: true,
         protocolVersion: PROTOCOL_VERSION,
         url: config.url,
-        projectId: config.projectId,
         instanceId: config.instanceId,
         hasToken: true,
     }));
@@ -73,13 +72,12 @@ export function createHttpApp(config: BridgeConfig) {
     return app;
 }
 
-/** 启动本机单实例绘图桥接服务，并持有 launcher 指定的数据目录锁。 */
+/** 启动本机共享画布桥接服务，并持有 launcher 指定的数据目录锁。 */
 export function startHttpServer(config: BridgeConfig = loadConfig()): Server {
     const releaseLock = acquireInstanceLock(config);
     const server = createHttpApp(config).listen(config.port, "127.0.0.1", () => {
         console.log(`Canvas bridge ready: ${config.url}`);
         console.log(`Instance: ${config.instanceId}`);
-        console.log(`Project: ${config.projectId}`);
     });
     server.once("error", (error) => {
         releaseLock();

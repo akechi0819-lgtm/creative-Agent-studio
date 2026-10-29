@@ -1,4 +1,0 @@
-rapidocr==3.10.0
-onnxruntime==1.31.0
-opencv-python-headless==5.0.0.93
-pypdfium2==5.14.0

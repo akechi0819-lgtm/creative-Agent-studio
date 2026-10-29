@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { chmod, copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { chmod, copyFile, lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
@@ -19,54 +20,36 @@ export const RELEASE_TARGETS = Object.freeze({
 });
 
 const ALLOWED_FILES = new Set([
+  'AGENTS.md', 'README.md', 'Creative_Agent_Studio_PRD.md', '开发与施工计划.md',
   'package.json', 'package-lock.json',
-  'scripts/assets.mjs', 'scripts/bootstrap-node.ps1', 'scripts/bootstrap-node.sh',
-  'scripts/build-web.mjs', 'scripts/build-workbuddy-plugin.mjs', 'scripts/canvas-supervisor.mjs',
-  'scripts/canvas.mjs', 'scripts/dsh-p0-build-client.mjs', 'scripts/launcher.mjs',
-  'scripts/model-plugin.mjs', 'scripts/ocr_materials.py', 'scripts/prepare.mjs',
-  'scripts/requirements-cleaner-ocr.txt', 'scripts/requirements-cleaner-ocr.lock.txt',
-  'scripts/requirements-workspace.txt', 'scripts/requirements-workspace.lock.txt',
-  'scripts/studio.mjs', 'scripts/web.mjs',
-  'web/index.html',
-  'third_party/canvas/LICENSE', 'third_party/canvas/VERSION', 'third_party/canvas/CHANGELOG.md',
-  'third_party/canvas/web/package.json', 'third_party/canvas/web/package-lock.json',
-  'third_party/canvas/web/index.html', 'third_party/canvas/web/vite.config.ts',
-  'third_party/canvas/web/tsconfig.json', 'third_party/canvas/web/postcss.config.mjs',
-  'third_party/canvas/canvas-agent/package.json', 'third_party/canvas/canvas-agent/package-lock.json',
+  'Start.command', 'Start.cmd', 'Studio.command', 'Studio.cmd',
+  'scripts/studio.mjs', 'scripts/setup.mjs', 'scripts/canvas-supervisor.mjs',
+  'scripts/canvas-mcp.mjs',
+  'docs/README.md', 'docs/代理宿主使用.md', 'docs/工程进度.md',
+  'third_party/canvas/LICENSE', 'third_party/canvas/VERSION',
+  'third_party/canvas/canvas-agent/package.json',
+  'third_party/canvas/canvas-agent/package-lock.json',
   'third_party/canvas/canvas-agent/tsconfig.json',
-  'third_party/our-free-model/LICENSE', 'third_party/our-free-model/UPSTREAM.json',
-  'third_party/our-free-model/package.json', 'third_party/workbench/LICENSE',
-  'web/public/brand/characters/LICENSE', 'web/public/brand/characters/ATTRIBUTION.md',
-  'web/public/brand/characters/ASSET_LICENSE.md',
-  'docs/上游来源.md', 'docs/清洗脚本来源.md', 'docs/模型来源与裁剪.md', 'docs/固定依赖清单.json',
-  'release/NOTICE-rapidocr-models.md',
+  'third_party/canvas/canvas-agent/README.md',
   'release/NOTICE-third-party.md',
-  'release/licenses/Apache-2.0.txt', 'release/licenses/CC-BY-4.0.txt',
-  'release/licenses/LGPL-3.0.txt', 'release/licenses/MPL-2.0.txt',
-  'release/launcher.mjs', 'release/prepare-python.mjs', 'release/macos-launcher.applescript',
-  'release/windows-start.vbs', 'release/windows-start.ps1',
 ]);
 
 const ALLOWED_PREFIXES = Object.freeze([
-  'src/assets/', 'src/canvas/', 'src/creative/', 'src/dna/', 'src/launcher/', 'src/web/',
-  'src/workspace/',
-  'web/src/', 'web/public/',
-  'adapters/dsh/', 'adapters/free-model/',
-  'third_party/canvas/web/src/', 'third_party/canvas/web/public/',
-  'third_party/canvas/canvas-agent/src/',
-  'third_party/our-free-model/src/', 'third_party/our-free-model/workbuddy/',
+  '.agents/skills/creative-studio/',
+  'src/canvas/', 'src/lite/',
+  'licenses/',
+  'third_party/canvas/canvas-agent/dist/',
+  'third_party/canvas/web/dist/',
 ]);
 
-const FORBIDDEN_SOURCE_PATH = /(?:^|\/)(?:\.git|\.p0-state|\.studio-runtime|\.venv-ocr|node_modules|company|browser-profile|evidence)(?:\/|$)/i;
-const FORBIDDEN_BUNDLE_PATH = /(?:^|\/)(?:\.git|\.p0-state|company|browser-profile|evidence|user-data|\.venv-ocr|rapidocr-models|python-venv-stage|python-venv-backups|python-runtime-state\.json)(?:\/|$)/i;
-const FORBIDDEN_BUNDLE_ROOTS = new Set(['config', 'tasks', 'materials', 'exports', 'history', 'logs']);
-const SESSION_PATH = /(?:^|\/)sessions(?:\/|$)/i;
-const LOCKED_DEPENDENCY_ROOTS = Object.freeze([
-  'node_modules/', 'adapters/dsh/node_modules/',
-  'third_party/canvas/web/node_modules/', 'third_party/canvas/canvas-agent/node_modules/',
+const FORBIDDEN_SOURCE_PATH = /(?:^|\/)(?:\.git|\.p0-state|\.studio-runtime|\.venv-ocr|node_modules|config|tasks|company|browser-profile|evidence|user-data|employee-data)(?:\/|$)/i;
+const FORBIDDEN_BUNDLE_PATH = /(?:^|\/)(?:\.git|\.p0-state|\.venv-ocr|rapidocr-models|python-venv-stage|python-venv-backups|python-runtime-state\.json|employee-data|browser-profile|evidence)(?:\/|$)/i;
+const FORBIDDEN_BUNDLE_ROOTS = new Set([
+  'config', 'tasks', 'materials', 'exports', 'history', 'logs', 'data', 'user-data',
 ]);
 const NODE_VERSION = '22.23.3';
-const PYTHON_VERSION = '3.12.15';
+
+const toPosix = value => value.split(path.sep).join('/');
 
 export function normalizeTargetId(value) {
   if (typeof value !== 'string' || !Object.hasOwn(RELEASE_TARGETS, value)) {
@@ -90,28 +73,14 @@ export function assertNativeTarget(targetId, host = {}) {
 }
 
 export function isReleasePathAllowed(relativePath) {
-  const value = String(relativePath).split(path.sep).join('/');
+  const value = toPosix(String(relativePath));
   if (!value || value.startsWith('/') || value.split('/').includes('..') || FORBIDDEN_SOURCE_PATH.test(value)) return false;
   return ALLOWED_FILES.has(value) || ALLOWED_PREFIXES.some(prefix => value.startsWith(prefix));
 }
 
-export function assertCleanStatus(status) {
-  if (String(status).trim()) {
-    const sample = String(status).trim().split(/\r?\n/).slice(0, 8).join('\n');
-    throw new Error(`拒绝从脏工作树打包。请在干净 Git checkout 中构建；检测到的改动：\n${sample}`);
-  }
-}
-
 export function trackedFiles(root) {
-  return execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' })
-    .split('\0').filter(Boolean).map(value => value.split(path.sep).join('/'));
-}
-
-export function assertCleanWorkingTree(root) {
-  const status = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules'], {
-    cwd: root, encoding: 'utf8',
-  });
-  assertCleanStatus(status);
+  return execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8' })
+    .split('\0').filter(Boolean).map(toPosix).filter(relative => existsSync(path.join(root, relative)));
 }
 
 async function regularFile(source, relativePath) {
@@ -131,95 +100,80 @@ export async function copyAllowlistedFiles(sourceRoot, destinationRoot, sourceFi
   if (destinationInfo) throw new Error('staging 目录必须不存在，避免混入上次构建内容。');
   await mkdir(destination, { recursive: true });
 
-  const selected = [...new Set(sourceFiles.map(value => value.split(path.sep).join('/')))]
-    .filter(isReleasePathAllowed).sort();
-  if (!selected.length) throw new Error('allowlist 没有匹配到任何已跟踪输入文件。');
+  const selected = [...new Set(sourceFiles.map(toPosix))].filter(isReleasePathAllowed).sort();
+  if (!selected.length) throw new Error('allowlist 没有匹配到任何输入文件。');
   for (const relative of selected) {
     const from = await regularFile(source, relative);
     const to = path.join(destination, relative);
     await mkdir(path.dirname(to), { recursive: true });
     await copyFile(from, to);
   }
-  const required = ['package.json', 'package-lock.json', 'scripts/web.mjs', 'release/launcher.mjs'];
-  const missing = required.filter(relative => !selected.includes(relative));
-  if (missing.length) throw new Error(`allowlist 缺少必要输入：${missing.join('、')}`);
   return selected;
 }
 
 export async function hashFile(file) {
   const digest = createHash('sha256');
-  const content = await readFile(file);
-  digest.update(content);
+  const { createReadStream } = await import('node:fs');
+  const stream = createReadStream(file);
+  for await (const chunk of stream) digest.update(chunk);
   return digest.digest('hex');
 }
 
-function forbiddenBundlePath(relative) {
-  const normalized = relative.split(path.sep).join('/');
-  const firstStartRuntime = /^(?:\.venv-ocr(?:\/|$)|\.studio-runtime\/(?:python|rapidocr-models)(?:\/|$))/i.test(normalized);
-  // Locked npm dependency trees contain program paths such as @anthropic-ai/sdk/lib/sessions.
-  // Keep blocking session data everywhere outside those four package-lock-backed install roots.
-  const lockedDependency = LOCKED_DEPENDENCY_ROOTS.some(root => normalized.startsWith(root));
-  const userSessionData = SESSION_PATH.test(normalized) && !lockedDependency;
-  return firstStartRuntime || FORBIDDEN_BUNDLE_PATH.test(normalized) || userSessionData
-    || FORBIDDEN_BUNDLE_ROOTS.has(normalized.split('/')[0]);
-}
-
 async function walkFiles(root, relative = '', files = []) {
-  const absolute = path.join(root, relative);
-  const entries = await readdir(absolute, { withFileTypes: true }).catch(error => {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  });
+  const directory = path.join(root, relative);
+  const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
-    const child = relative ? `${relative}/${entry.name}` : entry.name;
-    const childAbsolute = path.join(root, child);
-    const info = await lstat(childAbsolute);
-    if (info.isSymbolicLink()) throw new Error(`Release 归档前必须物化内部链接：${child}`);
-    if (info.isDirectory()) await walkFiles(root, child, files);
-    else if (info.isFile()) files.push(child);
-    else throw new Error(`Release 目录包含不支持的文件类型：${child}`);
+    if (entry.name === '.DS_Store') continue;
+    const child = path.join(relative, entry.name);
+    if (entry.isDirectory()) await walkFiles(root, child, files);
+    else if (entry.isFile()) files.push(toPosix(child));
+    else if (entry.isSymbolicLink()) throw new Error(`发布包不能包含符号链接：${toPosix(child)}`);
   }
   return files;
 }
 
-async function copyTree(source, destination, root, activeDirectories = new Set()) {
-  const sourceInfo = await stat(source);
-  if (sourceInfo.isFile()) {
-    await mkdir(path.dirname(destination), { recursive: true });
-    await copyFile(source, destination);
-    await chmod(destination, sourceInfo.mode & 0o777);
-    return;
-  }
-  if (!sourceInfo.isDirectory()) throw new Error(`Release 包含不支持的链接目标：${source}`);
-  const realSource = await realpath(source);
-  if (!pathWithin(root, realSource)) throw new Error(`Release 链接指向 staging 外部：${source}`);
-  if (activeDirectories.has(realSource)) throw new Error(`Release 包含循环目录链接：${source}`);
-  const nextActive = new Set(activeDirectories).add(realSource);
-  await mkdir(destination, { recursive: true, mode: sourceInfo.mode & 0o777 });
-  for (const entry of await readdir(source, { withFileTypes: true })) {
-    await copyEntry(path.join(source, entry.name), path.join(destination, entry.name), root, nextActive);
-  }
+function forbiddenBundlePath(relative) {
+  const value = toPosix(relative);
+  return FORBIDDEN_BUNDLE_PATH.test(value) || FORBIDDEN_BUNDLE_ROOTS.has(value.split('/')[0]);
 }
 
-async function copyEntry(source, destination, root, activeDirectories = new Set()) {
-  const info = await lstat(source);
-  if (info.isSymbolicLink()) {
-    const target = await realpath(source);
-    if (!pathWithin(root, target)) throw new Error(`Release 链接指向 staging 外部：${source}`);
-    await copyTree(target, destination, root, activeDirectories);
-    return;
-  }
-  if (info.isDirectory()) return copyTree(source, destination, root, activeDirectories);
-  if (!info.isFile()) throw new Error(`Release 包含不支持的文件类型：${source}`);
-  await mkdir(path.dirname(destination), { recursive: true });
-  await copyFile(source, destination);
-  await chmod(destination, info.mode & 0o777);
-}
-
-/** Replace contained links with copies before archiving; source checkout links are never copied. */
 export async function materializeBundleSymlinks(root) {
   const absoluteRoot = await realpath(path.resolve(root));
+  async function copyTree(source, destination, activeDirectories = new Set()) {
+    const sourceInfo = await stat(source);
+    if (sourceInfo.isFile()) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await copyFile(source, destination);
+      await chmod(destination, sourceInfo.mode & 0o777);
+      return;
+    }
+    if (!sourceInfo.isDirectory()) throw new Error(`发布包包含不支持的链接目标：${source}`);
+    const resolved = await realpath(source);
+    if (!pathWithin(absoluteRoot, resolved)) throw new Error(`发布包链接指向 staging 外部：${source}`);
+    if (activeDirectories.has(resolved)) throw new Error(`发布包包含循环目录链接：${source}`);
+    const nextActive = new Set(activeDirectories).add(resolved);
+    await mkdir(destination, { recursive: true, mode: sourceInfo.mode & 0o777 });
+    for (const entry of await readdir(source, { withFileTypes: true })) {
+      await copyEntry(path.join(source, entry.name), path.join(destination, entry.name), nextActive);
+    }
+  }
+  async function copyEntry(source, destination, activeDirectories = new Set()) {
+    const info = await lstat(source);
+    if (info.isSymbolicLink()) {
+      const resolved = await realpath(source);
+      if (!pathWithin(absoluteRoot, resolved)) throw new Error(`发布包链接指向 staging 外部：${source}`);
+      await copyTree(resolved, destination, activeDirectories);
+    } else if (info.isDirectory()) {
+      await copyTree(source, destination, activeDirectories);
+    } else if (info.isFile()) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await copyFile(source, destination);
+      await chmod(destination, info.mode & 0o777);
+    } else {
+      throw new Error(`发布包包含不支持的文件类型：${source}`);
+    }
+  }
   async function visit(relative = '') {
     for (const entry of await readdir(path.join(absoluteRoot, relative), { withFileTypes: true })) {
       const child = relative ? `${relative}/${entry.name}` : entry.name;
@@ -227,11 +181,13 @@ export async function materializeBundleSymlinks(root) {
       const info = await lstat(absolute);
       if (info.isSymbolicLink()) {
         const temporary = `${absolute}.materializing-${process.pid}`;
-        await copyEntry(absolute, temporary, absoluteRoot);
+        await copyEntry(absolute, temporary);
         await rm(absolute, { force: true });
         await rename(temporary, absolute);
         if ((await lstat(absolute)).isDirectory()) await visit(child);
-      } else if (info.isDirectory()) await visit(child);
+      } else if (info.isDirectory()) {
+        await visit(child);
+      }
     }
   }
   await visit();
@@ -249,18 +205,12 @@ export async function writeBundleManifest(root, targetId, version) {
   }
   const manifest = {
     schemaVersion: 1,
-    product: 'Creative Agent Studio',
+    product: 'Creative Agent Studio Company Lite',
     version,
     target: target.id,
     platform: target.platform,
     architecture: target.arch,
     nodeVersion: NODE_VERSION,
-    pythonRuntime: {
-      version: PYTHON_VERSION,
-      bundled: false,
-      preparedOnFirstStart: true,
-      lockFiles: ['scripts/requirements-cleaner-ocr.lock.txt', 'scripts/requirements-workspace.lock.txt'],
-    },
     files: entries,
   };
   await writeFile(path.join(root, 'release-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644, flag: 'wx' });
@@ -269,15 +219,12 @@ export async function writeBundleManifest(root, targetId, version) {
 
 export async function pruneBuildState(root) {
   const remove = [
-    '.studio-runtime/uv', '.studio-runtime/downloads', '.studio-runtime/prepare.lock',
-    '.studio-runtime/prepare-state.json', '.studio-runtime/python-state.json',
-    '.studio-runtime/python-runtime-state.json', '.studio-runtime/rapidocr-model-state.json',
-    '.studio-runtime/python-venv-stage', '.studio-runtime/python-venv-backups',
-    '.studio-runtime/servers', '.studio-runtime/ci-data', '.studio-runtime/uv-cache', '.studio-runtime/python-bin',
+    '.studio-runtime/prepare.lock', '.studio-runtime/prepare-state.json',
+    '.studio-runtime/servers', '.studio-runtime/ci-data',
+    '.studio-runtime/downloads', '.studio-runtime/uv-cache', '.studio-runtime/npm-cache',
   ];
   await Promise.all(remove.map(relative => rm(path.join(root, relative), { recursive: true, force: true })));
-  const runtime = path.join(root, '.studio-runtime');
-  await mkdir(runtime, { recursive: true });
+  await mkdir(path.join(root, '.studio-runtime'), { recursive: true });
 }
 
 export function pathWithin(root, candidate) {
@@ -285,4 +232,7 @@ export function pathWithin(root, candidate) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-export const distributionInternals = Object.freeze({ ALLOWED_FILES, ALLOWED_PREFIXES, FORBIDDEN_SOURCE_PATH, FORBIDDEN_BUNDLE_PATH, NODE_VERSION, PYTHON_VERSION });
+export const distributionInternals = Object.freeze({
+  ALLOWED_FILES, ALLOWED_PREFIXES, FORBIDDEN_SOURCE_PATH, FORBIDDEN_BUNDLE_PATH,
+  FORBIDDEN_BUNDLE_ROOTS, NODE_VERSION,
+});

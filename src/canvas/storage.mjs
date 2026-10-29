@@ -4,8 +4,37 @@ import { createHash, randomUUID } from 'node:crypto';
 
 const stores=new Set(['app_state','image_files','image_previews','image_generation_logs','video_generation_logs','media_files']);
 const maximumBytes=64*1024*1024;
-/** Private, task-scoped persistence. No model credentials or browser profile is copied. */
+const canvasStoreKey='infinite-canvas:canvas_store';
+
+/** Different open projects save independently; a stale tab must not erase newer history. */
+function mergeCanvasHistory(previous, incoming) {
+  const decode=record=>JSON.parse(Buffer.from(record.base64,'base64').toString('utf8'));
+  const next=decode(incoming);
+  const before=previous?decode(previous):{state:{projects:[],deletedProjects:[]}};
+  for(const value of [next,before]) {
+    if(!Array.isArray(value.state?.projects)||!Array.isArray(value.state?.deletedProjects))throw new Error('invalid canvas history');
+  }
+  const projects=new Map();
+  const deleted=new Map();
+  for(const value of [before,next]) {
+    for(const project of value.state.projects) {
+      if(typeof project.id!=='string'||!Number.isFinite(Date.parse(project.updatedAt)))throw new Error('invalid canvas project');
+      if(!projects.has(project.id)||project.updatedAt>=projects.get(project.id).updatedAt)projects.set(project.id,project);
+    }
+    for(const item of value.state.deletedProjects) {
+      if(typeof item.id!=='string'||!Number.isFinite(Date.parse(item.deletedAt)))throw new Error('invalid deleted project');
+      if(!deleted.has(item.id)||item.deletedAt>=deleted.get(item.id).deletedAt)deleted.set(item.id,item);
+    }
+  }
+  for(const [id,project] of projects)if(deleted.has(id)&&deleted.get(id).deletedAt>=project.updatedAt)projects.delete(id);
+  next.state.projects=[...projects.values()].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
+  next.state.deletedProjects=[...deleted.values()];
+  return {...incoming,base64:Buffer.from(JSON.stringify(next)).toString('base64')};
+}
+
+/** Private shared-workspace persistence. No model credentials or browser profile is copied. */
 export function canvasStorageHandler({data,authorize}) {
+  const writes=new Map();
   return async(req,res,url)=>{
     if(!url.pathname.startsWith('/__studio/storage/'))return false;
     res.setHeader('cache-control','no-store');
@@ -30,10 +59,19 @@ export function canvasStorageHandler({data,authorize}) {
         for await(const chunk of req){size+=chunk.length;if(size>maximumBytes)throw new Error('storage size limit');chunks.push(chunk);}
         const contentType=String(req.headers['content-type']||'application/octet-stream');
         if(contentType.length>200||/[\r\n]/.test(contentType))throw new Error('invalid content type');
-        const record={key,contentType,base64:Buffer.concat(chunks).toString('base64')};
-        await fs.mkdir(directory,{recursive:true,mode:0o700});
-        const temporary=filename+'.'+randomUUID()+'.tmp';
-        try{await fs.writeFile(temporary,JSON.stringify(record),{mode:0o600,flag:'wx'});await fs.rename(temporary,filename);}finally{await fs.rm(temporary,{force:true});}
+        let record={key,contentType,base64:Buffer.concat(chunks).toString('base64')};
+        const write=(writes.get(filename)||Promise.resolve()).then(async()=>{
+          if(store==='app_state'&&key===canvasStoreKey){
+            let before;
+            try{before=JSON.parse(await fs.readFile(filename,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+            record=mergeCanvasHistory(before,record);
+          }
+          await fs.mkdir(directory,{recursive:true,mode:0o700});
+          const temporary=filename+'.'+randomUUID()+'.tmp';
+          try{await fs.writeFile(temporary,JSON.stringify(record),{mode:0o600,flag:'wx'});await fs.rename(temporary,filename);}finally{await fs.rm(temporary,{force:true});}
+        });
+        const settled=write.catch(()=>{});writes.set(filename,settled);
+        try{await write;}finally{if(writes.get(filename)===settled)writes.delete(filename);}
         res.end('{}');
       }else if(req.method==='DELETE'&&key!==null){await fs.rm(filename,{force:true});res.end('{}');}
       else res.writeHead(405).end();

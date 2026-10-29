@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { App, Button } from "antd";
 import { Download, FileUp, Plus } from "lucide-react";
@@ -12,7 +12,6 @@ import { CanvasProjectCard } from "@/components/canvas/canvas-project-card";
 import type { CanvasExportFile } from "@/types/canvas-export";
 import { flushCanvasStore, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
-import { useCanvasToolStore } from "@/stores/use-canvas-tool-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { hasAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
 
@@ -23,10 +22,10 @@ export default function CanvasPage() {
     const [searchParams] = useSearchParams();
     const inputRef = useRef<HTMLInputElement>(null);
     const autoOpenRef = useRef(false);
+    const [historyReady, setHistoryReady] = useState(false);
     const hydrated = useCanvasStore((state) => state.hydrated);
     const projects = useCanvasStore((state) => state.projects);
     const createProject = useCanvasStore((state) => state.createProject);
-    const studioProjectTitle = useCanvasToolStore((state) => state.studioProjectTitle);
     const importProject = useCanvasStore((state) => state.importProject);
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
@@ -38,7 +37,10 @@ export default function CanvasPage() {
         const agentHash = hasAgentUrlBootstrap(window.location.hash) ? window.location.hash : "";
         navigate(`/canvas/${id}${agentQuery}${agentHash}`, { replace: Boolean(agentHash) });
     };
-    const createAndEnter = () => enterProject(createProject(t("canvas.defaultTitle", { count: projects.length + 1 })));
+    const createAndEnter = () => {
+        const projectId = createProject(t("canvas.defaultTitle", { count: projects.length + 1 }));
+        void flushCanvasStore().then(() => enterProject(projectId)).catch(() => message.error("无法保存画布状态，已留在历史列表。"));
+    };
     const importCanvas = async (file?: File) => {
         if (!file) return;
         try {
@@ -66,21 +68,34 @@ export default function CanvasPage() {
     };
 
     useEffect(() => {
-        if (!hydrated || autoOpenRef.current || (mode !== "new" && mode !== "recent")) return;
-        autoOpenRef.current = true;
-        const boundId = searchParams.get("projectId");
-        if (boundId) {
-            const projectId = projects.some(p => p.id === boundId) ? boundId : createProject(studioProjectTitle || "Creative Studio Canvas", boundId);
-            void flushCanvasStore().then(() => enterProject(projectId)).catch(() => {
-                autoOpenRef.current = false;
-                navigate("/canvas", { replace: true });
-                message.error(t("canvas.taskProjectSaveFailed"));
+        if (!hydrated) return;
+        let active = true;
+        setHistoryReady(false);
+        void flushCanvasStore()
+            .then(() => useCanvasStore.persist.rehydrate())
+            .catch(() => {
+                if (active) message.error("画布历史刷新失败，当前列表可能不是最新内容。");
+            })
+            .finally(() => {
+                if (active) setHistoryReady(true);
             });
-        }
-        else enterProject(mode === "new" ? createProject(t("canvas.defaultTitle", { count: projects.length + 1 })) : projects[0]?.id || createProject(t("canvas.defaultTitle", { count: projects.length + 1 })));
-    }, [createProject, flushCanvasStore, hydrated, message, mode, navigate, projects, searchParams, studioProjectTitle, t]);
+        return () => { active = false; };
+    }, [hydrated, message]);
 
-    if (hydrated && (mode === "new" || mode === "recent")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{t("canvas.opening")}</main>;
+    useEffect(() => {
+        if (!hydrated || !historyReady || autoOpenRef.current || (mode !== "new" && mode !== "recent")) return;
+        autoOpenRef.current = true;
+        const projectId = mode === "new" || !projects.length
+            ? createProject(t("canvas.defaultTitle", { count: projects.length + 1 }))
+            : projects[0].id;
+        void flushCanvasStore().then(() => enterProject(projectId)).catch(() => {
+            autoOpenRef.current = false;
+            navigate("/canvas", { replace: true });
+            message.error("无法保存画布状态，已留在历史列表。");
+        });
+    }, [createProject, hydrated, historyReady, message, mode, navigate, projects, searchParams, t]);
+
+    if (hydrated && historyReady && (mode === "new" || mode === "recent")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{t("canvas.opening")}</main>;
 
     return (
         <main className="h-full overflow-auto bg-background text-stone-950 dark:text-stone-100">
@@ -93,29 +108,29 @@ export default function CanvasPage() {
                     <div className="flex items-center gap-2">
                         {selectedIds.length ? (
                             <>
-                                <Button disabled={!hydrated} icon={<Download className="size-4" />} onClick={() => void exportCanvasProjects(projects.filter((project) => selectedIds.includes(project.id)), `${t("canvas.title")}-${selectedIds.length}`)}>
+                                <Button disabled={!hydrated || !historyReady} icon={<Download className="size-4" />} onClick={() => void exportCanvasProjects(projects.filter((project) => selectedIds.includes(project.id)), `${t("canvas.title")}-${selectedIds.length}`)}>
                                     {t("canvas.exportSelected")}
                                 </Button>
-                                <Button disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>
+                                <Button disabled={!hydrated || !historyReady} onClick={() => setDeleteIds(selectedIds)}>
                                     {t("canvas.deleteSelected")}
                                 </Button>
                             </>
                         ) : null}
                         {projects.length ? (
-                            <Button disabled={!hydrated} onClick={() => setDeleteIds(projects.map((project) => project.id))}>
+                            <Button disabled={!hydrated || !historyReady} onClick={() => setDeleteIds(projects.map((project) => project.id))}>
                                 {t("canvas.deleteAll")}
                             </Button>
                         ) : null}
-                        <Button disabled={!hydrated} icon={<FileUp className="size-4" />} onClick={() => inputRef.current?.click()}>
+                        <Button disabled={!hydrated || !historyReady} icon={<FileUp className="size-4" />} onClick={() => inputRef.current?.click()}>
                             {t("canvas.import")}
                         </Button>
-                        <Button disabled={!hydrated} type="primary" icon={<Plus className="size-4" />} onClick={createAndEnter}>
+                        <Button disabled={!hydrated || !historyReady} type="primary" icon={<Plus className="size-4" />} onClick={createAndEnter}>
                             {t("canvas.create")}
                         </Button>
                     </div>
                 </header>
 
-                {!hydrated ? (
+                {!hydrated || !historyReady ? (
                     <section className="flex min-h-[360px] items-center justify-center border-y border-stone-200 text-sm text-stone-500 dark:border-stone-800">{t("canvas.loading")}</section>
                 ) : projects.length ? (
                     <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">

@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useMemo, useState, type Dispatch, type Mu
 
 import i18n from "@/i18n";
 import { nanoid } from "nanoid";
+import { flushCanvasStore, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasToolStore } from "@/stores/use-canvas-tool-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { composeDataUrls, getDataUrlDimensions, stitchDataUrls, type ImageComposeLayer, type PixelImageSource } from "@/lib/canvas/canvas-image-data";
@@ -88,6 +89,13 @@ export function useAgentBridge(params: AgentBridgeParams) {
         selectedNodeIds: Array.from(selectedNodeIdsRef.current),
         viewport: viewportRef.current,
     }), [projectTitle, projectId]);
+    const persistCurrentSnapshot = useCallback(async () => {
+        const snapshot = getAgentSnapshot();
+        const store = useCanvasStore.getState();
+        if (!store.projects.some((project) => project.id === projectId)) throw new Error("当前画布项目已不在历史列表中，无法保存操作结果。");
+        store.updateProject(projectId, { nodes: snapshot.nodes, connections: snapshot.connections, viewport: snapshot.viewport });
+        await flushCanvasStore();
+    }, [getAgentSnapshot, projectId]);
     const runImageOperation = useCallback(async (request: CanvasImageOperationRequest): Promise<CanvasImageOperationResult> => {
         assertImageOperationRequest(request);
         if (request.operation === "import") return importCanvasImage(request, nodesRef, applyAgentOps);
@@ -201,9 +209,9 @@ export function useAgentBridge(params: AgentBridgeParams) {
             setAgentCanvasContext(null);
             return;
         }
-        setAgentCanvasContext({ snapshot: agentSnapshot, getSnapshot: getAgentSnapshot, applyOps: applyAgentOps, runImageOperation, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
+        setAgentCanvasContext({ snapshot: agentSnapshot, getSnapshot: getAgentSnapshot, applyOps: applyAgentOps, persistCurrentSnapshot, runImageOperation, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
         return () => setAgentCanvasContext(null);
-    }, [agentSnapshot, applyAgentOps, getAgentSnapshot, runImageOperation, agentUndoSnapshot, projectLoaded, setAgentCanvasContext, undoAgentOps]);
+    }, [agentSnapshot, applyAgentOps, getAgentSnapshot, persistCurrentSnapshot, runImageOperation, agentUndoSnapshot, projectLoaded, setAgentCanvasContext, undoAgentOps]);
 
     return { applyAgentOps };
 }

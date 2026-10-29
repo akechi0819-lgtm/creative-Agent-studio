@@ -7,7 +7,9 @@ import type { ToolName } from "./schemas.js";
 import { compactCanvasState, compactNode, isToolName, parseToolInput } from "./tools.js";
 import type { CanvasSnapshot } from "./types.js";
 
-type PendingRequest = { clientId: string; resolve: (value: unknown) => void; reject: (error: Error) => void };
+type ClientTarget = { projectId: string; clientId: string };
+type ClientConnection = ClientTarget & { response: ServerResponse };
+type PendingRequest = { targetKey: string; resolve: (value: unknown) => void; reject: (error: Error) => void };
 type ToolTarget = { projectId: unknown; clientId: unknown };
 
 export const PROTOCOL_VERSION = 1;
@@ -42,79 +44,87 @@ const DIRECT_CANVAS_TOOLS = new Set<ToolName>([
     "canvas_import_image",
 ]);
 
-/** 管理单项目网页连接、画布快照和绘图工具请求。 */
+/** 管理共享本机工作空间中的多个网页项目连接和绘图工具请求。 */
 export class CanvasSession {
-    private clients = new Map<string, ServerResponse>();
+    private clients = new Map<string, ClientConnection>();
     private canvasStates = new Map<string, CanvasSnapshot>();
     private pending = new Map<string, PendingRequest>();
-    private activeClientId = "";
+    private activeTargetKey: string | null = null;
 
-    constructor(readonly projectId: string, readonly instanceId: string) {}
+    constructor(readonly instanceId: string) {}
 
     health() {
         return {
             ok: true,
             protocolVersion: PROTOCOL_VERSION,
-            projectId: this.projectId,
             instanceId: this.instanceId,
-            hasCanvas: [...this.canvasStates.keys()].some((clientId) => this.clients.has(clientId)),
+            hasCanvas: [...this.canvasStates.keys()].some((targetKey) => this.clients.has(targetKey)),
             clients: this.clients.size,
-            targets: [...this.clients.keys()].map((clientId) => ({ clientId, projectId: this.projectId, hasCanvas: this.canvasStates.has(clientId), active: clientId === this.activeClientId })),
+            targets: [...this.clients.entries()].map(([targetKey, target]) => ({
+                clientId: target.clientId,
+                projectId: target.projectId,
+                hasCanvas: this.canvasStates.has(targetKey),
+                active: targetKey === this.activeTargetKey,
+            })),
         };
     }
 
-    /** 建立网页 SSE 连接，并发送绘图工具面板使用的初始状态。 */
+    /** 建立指定实际项目的网页 SSE 连接，并发送连接身份。 */
     openEvents(url: URL, res: ServerResponse) {
-        this.assertProject(url.searchParams.get("projectId"));
+        const projectId = this.assertProject(url.searchParams.get("projectId"));
         const clientId = url.searchParams.get("clientId")?.trim() || crypto.randomUUID();
-        const old = this.clients.get(clientId);
-        if (old && old !== res) {
-            this.removeClient(clientId, old);
-            old.end();
+        const targetKey = clientTargetKey(projectId, clientId);
+        const old = this.clients.get(targetKey);
+        if (old && old.response !== res) {
+            this.removeClient(targetKey, old.response);
+            old.response.end();
         }
 
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-        this.clients.set(clientId, res);
-        this.activeClientId ||= clientId;
+        this.clients.set(targetKey, { projectId, clientId, response: res });
         sendEvent(res, "hello", {
             ok: true,
             instanceId: this.instanceId,
-            projectId: this.projectId,
+            projectId,
             clientId,
         });
 
         const timer = setInterval(() => sendEvent(res, "ping", { time: Date.now() }), 15000);
         res.on("close", () => {
             clearInterval(timer);
-            this.removeClient(clientId, res);
+            this.removeClient(targetKey, res);
         });
         return clientId;
     }
 
-    /** 保存指定网页上报的画布状态，并强制校验实例项目归属。 */
+    /** 保存指定项目与客户端上报的状态，并校验二者都匹配连接。 */
     updateState(projectId: unknown, clientId: unknown, body: unknown) {
         const targetProjectId = this.assertProject(projectId);
         const targetClientId = this.assertClient(clientId);
+        const targetKey = clientTargetKey(targetProjectId, targetClientId);
+        if (!this.clients.has(targetKey)) throw new BridgeError("目标 projectId/clientId 未连接", 409);
         const record = objectValue(body);
-        this.assertProject(record.projectId);
+        if (this.assertProject(record.projectId) !== targetProjectId) throw new BridgeError("state projectId 与网页连接不匹配", 403);
         if (record.clientId !== undefined && record.clientId !== targetClientId) throw new BridgeError("clientId 不匹配", 403);
-        this.canvasStates.set(targetClientId, { ...record, projectId: targetProjectId, clientId: targetClientId } as CanvasSnapshot);
+        this.canvasStates.set(targetKey, { ...record, projectId: targetProjectId, clientId: targetClientId } as CanvasSnapshot);
         return { ok: true };
     }
 
     /** 将指定网页设为显式激活目标。 */
     activateClient(projectId: unknown, clientId: unknown) {
-        this.assertProject(projectId);
-        this.activeClientId = this.assertClient(clientId);
+        const targetKey = this.requireTarget(projectId, clientId);
+        this.activeTargetKey = targetKey;
         return { ok: true };
     }
 
     /** 只接受原工具请求客户端返回的结果。 */
     resolveResult(projectId: unknown, clientId: unknown, body: { requestId?: string; error?: string; result?: unknown }) {
+        const targetProjectId = this.assertProject(projectId);
         const targetClientId = this.assertClient(clientId);
-        this.assertProject(projectId);
+        const targetKey = clientTargetKey(targetProjectId, targetClientId);
+        if (!this.clients.has(targetKey)) return false;
         const item = body.requestId ? this.pending.get(body.requestId) : null;
-        if (!item || item.clientId !== targetClientId) return false;
+        if (!item || item.targetKey !== targetKey) return false;
         this.pending.delete(body.requestId!);
         body.error ? item.reject(new Error(body.error)) : item.resolve(body.result);
         return true;
@@ -122,8 +132,7 @@ export class CanvasSession {
 
     /** 校验工具参数，并将调用固定发送给请求指定的网页客户端。 */
     async callTool(name: unknown, rawInput: unknown, target: ToolTarget) {
-        this.assertProject(target.projectId);
-        const clientId = this.assertClient(target.clientId);
+        const targetKey = this.requireTarget(target.projectId, target.clientId);
         if (!isToolName(name)) throw new BridgeError(`未知工具：${String(name)}`, 400);
 
         const toolName = name;
@@ -135,12 +144,12 @@ export class CanvasSession {
             throw error;
         }
 
-        const state = this.canvasStates.get(clientId) || null;
-        if (["canvas_get_state", "canvas_get_selection", "canvas_export_snapshot"].includes(toolName) && !state) {
-            throw new BridgeError("当前网页尚未上报画布状态", 409);
+        const state = this.canvasStates.get(targetKey) || null;
+        if (!state && toolName !== "site_navigate" && toolName !== "canvas_list_projects") {
+            throw new BridgeError("目标网页尚未上报画布状态", 409);
         }
         if (SITE_TOOLS.has(toolName) || DIRECT_CANVAS_TOOLS.has(toolName)) {
-            return this.requestCanvasTool(clientId, toolName, input);
+            return this.requestCanvasTool(targetKey, toolName, input);
         }
         if (toolName === "canvas_get_state" || toolName === "canvas_export_snapshot") return compactCanvasState(state);
         if (toolName === "canvas_get_selection") {
@@ -149,50 +158,60 @@ export class CanvasSession {
         }
 
         const request = buildCanvasToolRequest(toolName, input, state);
-        return this.requestCanvasTool(clientId, request.name, request.input);
+        return this.requestCanvasTool(targetKey, request.name, request.input);
     }
 
     private assertProject(value: unknown): string {
         if (typeof value !== "string" || !value.trim()) throw new BridgeError("projectId 必填", 400);
-        if (value !== this.projectId) throw new BridgeError("projectId 与此服务实例不匹配", 403);
-        return value;
+        return value.trim();
     }
 
     private assertClient(value: unknown): string {
         if (typeof value !== "string" || !value.trim()) throw new BridgeError("clientId 必填", 400);
-        if (!this.clients.has(value)) throw new BridgeError("clientId 未连接到此服务实例", 409);
-        return value;
+        return value.trim();
     }
 
-    private removeClient(clientId: string, response: ServerResponse) {
-        if (this.clients.get(clientId) !== response) return;
-        this.clients.delete(clientId);
-        this.canvasStates.delete(clientId);
+    private requireTarget(projectId: unknown, clientId: unknown) {
+        const targetProjectId = this.assertProject(projectId);
+        const targetClientId = this.assertClient(clientId);
+        const targetKey = clientTargetKey(targetProjectId, targetClientId);
+        if (!this.clients.has(targetKey)) throw new BridgeError("目标 projectId/clientId 未连接", 409);
+        return targetKey;
+    }
+
+    private removeClient(targetKey: string, response: ServerResponse) {
+        if (this.clients.get(targetKey)?.response !== response) return;
+        this.clients.delete(targetKey);
+        this.canvasStates.delete(targetKey);
         this.pending.forEach((item, requestId) => {
-            if (item.clientId !== clientId) return;
+            if (item.targetKey !== targetKey) return;
             this.pending.delete(requestId);
             item.reject(new BridgeError("请求页面已断开", 409));
         });
-        if (this.activeClientId === clientId) this.activeClientId = this.clients.keys().next().value || "";
+        if (this.activeTargetKey === targetKey) this.activeTargetKey = null;
     }
 
-    private requestCanvasTool(clientId: string, name: ToolName, input: Record<string, unknown>) {
-        const client = this.clients.get(clientId);
-        if (!client) throw new BridgeError("clientId 未连接到此服务实例", 409);
+    private requestCanvasTool(targetKey: string, name: ToolName, input: Record<string, unknown>) {
+        const client = this.clients.get(targetKey);
+        if (!client) throw new BridgeError("目标 projectId/clientId 未连接", 409);
         const requestId = crypto.randomUUID();
-        sendEvent(client, "tool_call", { requestId, name, input });
+        sendEvent(client.response, "tool_call", { requestId, name, input });
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pending.delete(requestId);
                 reject(new BridgeError("画布操作超时", 504));
             }, 30000);
             this.pending.set(requestId, {
-                clientId,
+                targetKey,
                 resolve: (value) => (clearTimeout(timer), resolve(value)),
                 reject: (error) => (clearTimeout(timer), reject(error)),
             });
         });
     }
+}
+
+function clientTargetKey(projectId: string, clientId: string) {
+    return JSON.stringify([projectId, clientId]);
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { Tooltip } from "antd";
-import { BookOpen, Keyboard, Puzzle, Settings2 } from "lucide-react";
+import { BookOpen, Keyboard, Settings2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
@@ -16,10 +16,9 @@ type UserStatusActionsProps = {
     showConfig?: boolean;
     variant?: "default" | "canvas";
     onOpenShortcuts?: () => void;
-    onOpenPlugins?: () => void;
 };
 
-export function UserStatusActions({ showConfig = true, variant = "default", onOpenShortcuts, onOpenPlugins }: UserStatusActionsProps) {
+export function UserStatusActions({ showConfig = true, variant = "default", onOpenShortcuts }: UserStatusActionsProps) {
     const { i18n, t } = useTranslation();
     const theme = useThemeStore((state) => state.theme);
     const setTheme = useThemeStore((state) => state.setTheme);
@@ -33,13 +32,18 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
     const nextLocale = locale === "zh-CN" ? "en-US" : "zh-CN";
     const languageLabel = t("topNav.switchLanguage", { language: t(nextLocale === "zh-CN" ? "locale.zhCN" : "locale.enUS") });
 
+    if (variant === "canvas") {
+        return onOpenShortcuts ? (
+            <div className="inline-flex shrink-0 items-center gap-1">
+                <button type="button" className={naturalIconClass} style={iconStyle} onClick={onOpenShortcuts} aria-label={t("topNav.shortcuts")} title={t("topNav.shortcuts")}>
+                    <Keyboard className="size-4" />
+                </button>
+            </div>
+        ) : null;
+    }
+
     return (
         <div className="inline-flex shrink-0 items-center gap-1">
-            {onOpenPlugins ? (
-                <button type="button" className={naturalIconClass} style={iconStyle} onClick={onOpenPlugins} aria-label={t("topNav.plugins")} title={t("topNav.plugins")}>
-                    <Puzzle className="size-4" />
-                </button>
-            ) : null}
             <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className={naturalIconClass} style={iconStyle} aria-label={t("topNav.docs")} title={t("topNav.docs")}>
                 <BookOpen className="size-4" />
             </a>

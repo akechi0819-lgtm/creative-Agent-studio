@@ -1,60 +1,40 @@
 ---
 name: creative-studio
-description: 在本仓库使用共享 CLI 完成经用户确认的单张海报或多页图文任务；当前阶段与版本边界以工程进度为准；设备体验和上游模型能力按证据范围记录。
+description: 在 Company Lite 中由 WorkBuddy 对话线程主持创作，使用现有 Teedy MCP 和跨线程共享的本机 Canvas/MCP。
 ---
 
-先读 `docs/代理宿主使用.md`，阶段状态与版本差异见 `docs/工程进度.md`。P0—P5主体按各报告范围验收，后续Mac隔离启动修复及普通设备待测单独记录；不把历史测试扩张成所有模型或账号能力。首次准备从仓库根目录使用 `./Start.command prepare`（Windows PowerShell 使用 `.\Start.cmd prepare`），不启动Web UI。代理宿主提供对话与推理，本地Canvas使用项目已保存的生图API；不调用宿主内置生图，也不通过命令另启第二个代理会话。
+# 使用边界
 
-代理宿主入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过 `@payload.json` 文件提供，不要把 JSON 内嵌到 shell 命令。先用 `list` 或 `show TASK_ID` 恢复任务；确认成功后再执行状态变更。基本链路为：
+先阅读能力包根目录的 `README.md`、`AGENTS.md`、`docs/代理宿主使用.md` 和 `docs/工程进度.md`。命令从当前 WorkBuddy 任务明确选定的 Company Lite 根目录运行。
 
-1. `create` 创建任务，以 `set-brief` 和 `set-sources` 保存需求及来源决定。
-2. 用户明确确认需求和来源后，读取最新 revision，运行 `confirm-inputs`；再生成制作单、读取当前版本，由用户明确确认后运行 `confirm-sheet`。
-3. 用户授权生成后先运行 `canvas-open TASK_ID` 准备并打开任务专属 Canvas。页面连接后，以最新 revision 运行 `canvas-state TASK_ID @payload.json`；该命令成功返回才表示当前任务 Canvas 已就绪，然后运行 `execute`。`canvas-open` 若返回 `clientConnected:false`，只表示已尝试打开页面，不代表 Canvas 已就绪。`execute`、`resume`、`edit-pages` 和 `select-image` 使用该任务的固定 Canvas 实例与已保存图片配置；CLI 会在启动 Canvas 前核对 revision 和制作单授权。中断后用同一版本调用 `resume`，只查询并续接原节点；不得自动重发状态未知的收费请求。只有确认页面失败时才显式传 `retryPage`。
-4. 用实际读图工具打开当前成品，逐页检查准确文案、手机可读性、品牌一致性、主题对应和修改位置，然后运行 `record-review`。用户修改或 `select-image` 更新当前文件后，必须重新打开并审核；修改和选图会使旧审核与最终确认失效。
-5. 等用户明确确认最终成品后才运行 `approve-final`，再运行 `export`。
+WorkBuddy 对话线程是本次工作的唯一上下文，负责需求、材料用途、品牌要求、文案、制作单、确认、读图和批准。Canvas 是跨线程共享的通用工具，保留历史项目、生成图片、排版状态、图片 API 配置和绘图连接；可按当前用户意图找回或继续项目，但不能自动继承旧线程的要求或批准。不建立任务 ID、任务账本或独立审批系统。
 
-## 状态变更版本与人工确认合同
+# 安装状态与凭据
 
-### 已有图片的局部修改
+员工包用 `Start.cmd status`／`./Start.command status` 查看状态（包内 Node）；源码开发可运行 `node scripts/setup.mjs status`。只在首次安装、配置或故障修复时简洁展示五项：能力包、本机 Canvas 组件及 MCP 实际连通、WorkBuddy 对现有 Teedy 只读 MCP 的实际探测报告、图片 API 配置及连接检查、总体就绪。日常创作不重复安装清单；宿主报告不是安装包独立验证。
 
-用户明确要求修改已有图片时，使用 `edit-pages TASK_ID @payload.json`，不重写全量制作单、不重置素材决定、不要求再次完整确认。payload 为 `{expectedRevision,requestId,instruction:用户本次明确修改原话,edits:[{page,instruction,copy?,stylePages?:[page]}]}`。原图和指定风格页由共享核心实际读图校验并传入 Canvas；未改页的成品与审核保留。仅讨论方案或询问能力时不得调用。
+若 Canvas MCP 尚未接通，运行 `Studio.cmd mcp-config`／`./Studio.command mcp-config`，将无密钥的 stdio 配置通过 WorkBuddy 官方界面“插件 → MCP 服务器 → 配置 MCP”添加；再实际调用 `canvas_status`。该调用自动保存不含密钥的检查记录，无需额外确认。不猜测或写入 WorkBuddy 配置路径。
 
-上传已有图片改图时可传 `mode:'uploaded-images'`，条目为 `{page,image:{sourceId,fileOrder},instruction,styleImages?:[{sourceId,fileOrder}],copy?}`，只使用用户实际上传且未排除的本任务图片；不伪造生成历史、不自动确认来源或入库。`restore-page TASK_ID @payload.json` 接收 `{expectedRevision,page}`，恢复本页旧图与文案，不发起生图。
+Teedy 状态只在 WorkBuddy 实际调用公司现有只读工具后记录：`Start.cmd report-workbuddy connected <工具名>` 或 `failed [工具名]`。不得从 Teedy 搜索摘要推断原件已下载。
 
-这些操作保留后台派生版本和用户指令，`sheetConfirmation` 不伪造成全量人工确认；后续仍需实际查看修改后的图片、审核并由用户最终批准。完整新创作继续遵守以下确认合同。具体边界见 `docs/P3对话局部改图.md`。
+图片 API Key 用剪贴板路径：先等员工本人从服务页面复制 Key 并在当前对话明确说“已复制”；随后准备只含 `expectedRevision`、`image.baseUrl`、`image.model` 的 JSON，再运行 `Start.cmd configure-image @image-config.json --key-from-clipboard`（macOS 使用 `./Start.command`）。此命令只读取一次本机剪贴板，禁止自行读取或回显 Key。Windows 剪贴板能力待设备验证。已有本机私有配置可用 `configure-image @私有JSON文件`；不得将 Key 放入聊天、命令参数、仓库或日志。最后运行 `Start check-image`；它不发出图片生成请求。
 
-除新建任务的 `create` 外，所有修改已有任务 JSON 的公开状态命令都必须在 payload 中携带从最新 `show TASK_ID` 读取的正整数 `expectedRevision`。`confirm-inputs` 使用必填正整数 `revision` 作为同一 CAS 版本比较值；不允许省略，也不允许 CLI 自动读取最新值补全。每次修改任务 JSON 前读取完整任务快照，用该快照构造 payload。若版本过期，停止并重新 `show`，先核对 brief、sources、确认、制作单和成品状态发生的变化，再重新准备内容并在必要时取得用户确认；不能只替换 revision 后重发旧 payload。`unlock` 仅维护独立锁记录，不修改任务 JSON，是该版本 CAS 合同的例外；它只带 `deadPid`，并核对锁所有者及 PID 已退出。
+# WorkBuddy 线程内的创作
 
-`set-sheet` 除 `expectedRevision` 外还必须提供 `inputRevision`，其值等于准备制作单时快照中的 `task.inputConfirmation.revision`。需求或来源状态变化后，旧制作单 payload 必须拒绝；重新读取快照、重新准备制作单，并在需要时重新确认输入。
+1. 在当前对话收集目标、受众、规格、品牌要求和文案边界；对会改变产出的关键缺口提问，不从其他线程推断。
+2. 需要 Teedy 参考时，使用现有云端只读 MCP 搜索并展示候选。用户选择后用 MCP 实际下载原件，将来源、用途和事实边界留在当前对话；不得修改 Teedy 内容、标签或 ACL。
+3. 在当前对话整理文案和制作单，展示准确版本并取得用户明确确认。影响文案、来源或版式的修改需重新确认。
+4. 制作单已确认且需要绘图时，用 `canvas_open` 按用户意图选择 `recent`、`new`、`choose` 或一个指定历史 `projectId`。只有已实际下载的 Teedy 原件才可用 `canvas_import_file` 加入当前画布。
+5. 用户明确授权收费出图后调用 `canvas_run_generation`。它应快速返回 `{submitted, nodeId}`，实际生成异步继续；用 `generation_get_status` 查询该节点的进度和最终状态。状态未知时先查询，不重复提交收费请求；失败后只有用户在当前对话再次明确授权，才重试。
+6. 用 `canvas_read_image` 返回的实际图片内容读图，核对文字、移动端可读性、品牌表达和修改位置。用户要求局部修改时只改指定内容并重新读图。缩略图或生成状态不算读图。
+7. 用户在当前 WorkBuddy 对话查看并明确批准最终成品后，才调用 `canvas_save_image` 导出。
 
-`approve-final` 除 `expectedRevision`、确认版本和人工确认信息外，还必须提交 `images` 数组，例如 `[ {"page":1,"sha256":"<第1页 SHA-256>"}, {"page":2,"sha256":"<第2页 SHA-256>"} ]`。哈希必须逐页对应用户当时实际查看的全部成品；批准清单作为持久批准对象记录。页面变化、选图、改图或其他 revision 变化后，旧批准 payload 必须拒绝。
+Canvas MCP 还提供创建与修改节点，以及裁切、分割、重采样、拼贴导入、拼接、组合等像素操作；使用现有功能，不把它们说成新能力。Canvas 中的历史记录不代表当前线程的素材来源、确认或批准。
 
-需求与来源确认、制作单确认、最终确认都必须在用户直接表达同意后执行。确认 payload 的 `by`、`revision` 或 `version`、`note` 都要显式填写；本对话用户直接确认时 `by` 可写 `用户`。CLI 是本地可信入口，不是用户身份认证系统；宿主必须核对用户直接表达的确认，不得仅凭 payload 中的 `by` 字段认定授权。不得代其他人签名，也不得把助手的建议、制作单草稿、Canvas 已生成或审核通过当成人工批准。已完成的 P1 样例授权只覆盖对应任务，不沿用于任何新任务。图片读图审核只能在实际打开当前图片后记录，不能只根据节点存在或生成状态填 `pass`。
+# 当前验证边界
 
-执行会通过 Canvas 本地图片导入入口保存参考图，并回读校验 SHA-256 后再生成；不要把参考图 data URL 写入任务或日志。收到 SIGINT／SIGTERM 时停止等待；不要声称上游生成已撤销。恢复时先检查原任务和 Canvas 状态。只有 Canvas 明确报告页面失败才允许 `retryPage`，其他未知状态不重放。
+一次本地 Canvas MCP 真实图片生成已成功：上游 API HTTP 200，单次请求 20.198 秒，本地完整保存 25.892 秒，准备画布 1.051 秒；主代理已实际打开检查验收图，确认图像正确且没有生成文字。这只是一个样本，不承诺普遍 20 秒时延，也不代表 WorkBuddy 员工设备验收。未知状态时先查状态，不重提收费请求。WorkBuddy 登录、Teedy 公司账号、员工包、Windows 剪贴板和目标设备体验待验证。
 
-任务锁异常时先运行 `lock-status TASK_ID`，人工核实显示的锁所有者 PID 已退出后，才可用仅含同一 `deadPid` 的 payload 调用 `unlock`；CLI 会再次验证锁记录与 PID。进程仍运行或状态不明时不清锁。
+# WorkBuddy 工作目录和 Skill
 
-`scripts/canvas.mjs` 只用于 P0 技术诊断。当前任务的图片生成、读取、编辑或恢复失败时，应先按该任务的 CLI 状态检查与恢复规则处理；不得改用其他任务的 Canvas、任务外图片脚本、宿主内置生图或诊断画布代替当前任务链路，也不得借此绕过需求／来源、制作单、读图和最终成品确认。普通资料与一般文件任务仍可使用宿主提供的文件读取、Python／JavaScript和批处理工具；这些操作不替代任务Canvas成品，也不产生任务执行、审核或批准记录。不要输出凭据、实例 token、锁 token 或浏览器个人数据；出现错误只传达 CLI 的固定提示，不展示异常对象、cause 或配置。
-
-## 代理宿主任务 Canvas 机械命令
-
-使用 `canvas-state TASK_ID @payload.json` 读取节点清单，payload 为 `{"expectedRevision":当前任务revision}`。节点状态仅返回 `idle/loading/success/error` 枚举，缺失或非法值为 `null`；不会返回原始错误详情、配置或节点元数据。`canvas-read-image` 使用 `{"nodeId":"当前任务图片节点ID","expectedRevision":当前任务revision}`，返回带 SHA-256 的本机临时 `filePath`；用宿主读图工具打开真实图片，不打印 base64。`canvas-detect-regions` 接收同样字段，可选 `kinds:["text","barcode","rectangle"]`，结果中的来源 SHA 要随操作一起核对。
-
-`canvas-operation TASK_ID @payload.json` 只接受共享 Canvas manager 的 `import`、`stitch`、`compose`、`crop`、`split`、`resample`、`move`、`resize` 枚举字段。除操作参数外必须带当前 `expectedRevision`、三个新的 UUID（`operationId`、`requestId`、`callId`）和用户本次原话 `userText`；用区域检测结果进行像素操作时附带 `expectedSourceHashes`。源图变化、跨任务节点、旧 revision 或未知结果会被拒绝。未知结果先重新读取状态，不要自动重提或另建 ID 重放。
-
-这些命令调用 `src/web/canvas.mjs` 的任务隔离实现；不经 `scripts/canvas.mjs` 透传低层工具。机械操作不会调用生图，也不自动替换成品、复审或批准。读状态／读图／检测虽不改任务 JSON，仍要使用最新 revision。`canvas-open` 输出不包含一次性浏览器连接地址或实例 token。
-
-## P2 素材与 DNA
-
-素材使用 `scripts/assets.mjs`，操作格式见 `docs/素材库使用.md`。只把人工确认入库的素材作为正式候选；AI 清洗产生自由标签，待用户微调确认，不复制旧业务标签或凭据。不把素材库入库确认当作某项创作的保留决定。任务来源引用通过 `studio set-asset-sources` 保存版本与原件，仍需逐项保留／排除和需求确认。
-
-DNA 见 `docs/DNA使用.md`，默认关闭，不自动编辑／保存。任务 `show` 中的 `dna` 是本次有效内容；据它整理需求、制作单和读图审核。全局新版不会影响旧任务。用户明确要求后才用 `apply-dna`，再确认输入并准备新制作单。与本次需求矛盾时先说明冲突，由用户决定。DNA 不参与素材事实清洗。
-
-## Web UI 与代理宿主共用合同
-
-Web UI 与代理宿主共用来源、版本、真实用户确认和实际读图合同。Web UI左侧讨论需求、参考用途和制作／交付确认，右侧主要预览；明确文字确认或按钮由宿主绑定实际展示版本处理，模型不能替用户批准。
-
-Web UI保留任务workspace中的Word／PDF／Excel／图片读取、Python／JavaScript、批处理及文件交付工具；普通资料任务不强制套海报制作单。它们按当前系统用户权限执行受信任务，不宣称OS沙箱，不新增同意图重复确认。机械图片任务优先用已有Canvas像素工具。Web UI与代理宿主的聊天历史不承诺互通，同一任务同时只由一个入口推进。
-
-代理宿主会话中收到的文件附件不会自动成为任务来源。用户明确要把附件用于当前任务时，先通过 `attach-files TASK_ID @payload.json` 将其加入任务，再实际读取原件并按来源确认合同处理；不能只凭附件在宿主界面可见就声称它已进入任务。日常文档、表格和一般文件处理可继续使用宿主正常的文件与脚本工具。
+WorkBuddy 本地任务先选择 Company Lite 根目录，并通过首次提示词显式读取本 Skill 与项目说明。官方[本地任务说明](https://intl.cloud.tencent.com/zh/document/product/1316/84504)把工作目录和 Skill 选择分列；官方[技能说明](https://intl.cloud.tencent.com/zh/document/product/1316/84503)支持上传本地 Skill，也提及项目专属 Skill，但没有公开项目目录精确名称。因此不假设 `.agents/skills` 自动发现，也不复制到未经证实的路径。即使从 Skills 页面上传 Skill，命令仍须从用户选定的 Company Lite 工作目录执行，不能从 Skill 安装路径猜包根。

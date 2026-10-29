@@ -1,35 +1,30 @@
-import { createBrowserRouter, Outlet } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router-dom";
 
-import { AnalyticsTracker } from "@/components/layout/analytics-tracker";
 import UserLayout from "@/layouts/user-layout";
-import AssetsPage from "@/pages/assets";
 import CanvasPage from "@/pages/canvas";
 import CanvasProjectPage from "@/pages/canvas/project";
-import ConfigPage from "@/pages/config";
-import HomePage from "@/pages/home";
-import ImagePage from "@/pages/image";
-import NotFound from "@/pages/not-found";
-import PromptsPage from "@/pages/prompts";
-import VideoPage from "@/pages/video";
+
+function WorkBuddyCanvasNotice() {
+    return <main className="grid h-dvh place-items-center bg-background px-6 text-center text-sm text-foreground">请回到 WorkBuddy 打开本地 Canvas</main>;
+}
 
 export const router = createBrowserRouter([
+    { path: "/", element: <Navigate to="/canvas" replace /> },
     {
+        path: "/canvas",
         element: (
             <UserLayout>
-                <AnalyticsTracker />
-                <Outlet />
+                <CanvasPage />
             </UserLayout>
         ),
-        children: [
-            { path: "/", element: <HomePage /> },
-            { path: "/image", element: <ImagePage /> },
-            { path: "/video", element: <VideoPage /> },
-            { path: "/assets", element: <AssetsPage /> },
-            { path: "/prompts", element: <PromptsPage /> },
-            { path: "/canvas", element: <CanvasPage /> },
-            { path: "/canvas/:id", element: <CanvasProjectPage /> },
-            { path: "/config", element: <ConfigPage /> },
-        ],
     },
-    { path: "*", element: <NotFound /> },
+    {
+        path: "/canvas/:id",
+        element: (
+            <UserLayout>
+                <CanvasProjectPage />
+            </UserLayout>
+        ),
+    },
+    { path: "*", element: <WorkBuddyCanvasNotice /> },
 ]);

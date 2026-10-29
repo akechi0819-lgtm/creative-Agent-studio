@@ -2,24 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
-const rootInputs = ['package.json', 'package-lock.json'];
-
 export const buildTargets = Object.freeze([
-  {
-    id: 'StudioWeb',
-    cwd: '.',
-    dependency: '.',
-    npmArgs: ['run', 'web:build'],
-    inputFiles: [...rootInputs, 'scripts/build-web.mjs', 'web/index.html'],
-    inputDirs: [{ path: 'web/src' }, { path: 'web/public' }],
-    output: {
-      directory: 'web/dist',
-      requiredFiles: ['web/dist/index.html', 'web/dist/assets/app.js'],
-      primaryFiles: ['web/dist/index.html', 'web/dist/assets/app.js'],
-      htmlEntry: 'web/dist/index.html',
-      primaryAssetPrefix: 'assets/',
-    },
-  },
   {
     id: 'CanvasAgent',
     cwd: 'third_party/canvas/canvas-agent',
@@ -71,40 +54,6 @@ export const buildTargets = Object.freeze([
       htmlEntry: 'third_party/canvas/web/dist/index.html',
       requireScriptUnder: 'assets/',
       primaryAssetPrefix: 'assets/',
-    },
-  },
-  {
-    id: 'DSH',
-    cwd: 'adapters/dsh',
-    dependency: 'adapters/dsh',
-    npmArgs: ['run', 'p0:client:build'],
-    inputFiles: [
-      'adapters/dsh/package.json',
-      'adapters/dsh/package-lock.json',
-      'scripts/dsh-p0-build-client.mjs',
-    ],
-    inputDirs: [{ path: 'adapters/dsh/client' }],
-    output: {
-      files: ['adapters/dsh/lib/client.js'],
-      requiredFiles: ['adapters/dsh/lib/client.js'],
-      primaryFiles: ['adapters/dsh/lib/client.js'],
-    },
-  },
-  {
-    id: 'WorkBuddy',
-    cwd: '.',
-    dependency: '.',
-    nodeScript: 'scripts/build-workbuddy-plugin.mjs',
-    inputFiles: [
-      ...rootInputs,
-      'scripts/build-workbuddy-plugin.mjs',
-      'third_party/our-free-model/workbuddy/upstream-business.mjs',
-    ],
-    inputDirs: [],
-    output: {
-      files: ['third_party/our-free-model/workbuddy/runtime.mjs'],
-      requiredFiles: ['third_party/our-free-model/workbuddy/runtime.mjs'],
-      primaryFiles: ['third_party/our-free-model/workbuddy/runtime.mjs'],
     },
   },
 ]);

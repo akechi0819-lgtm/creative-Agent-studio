@@ -5,9 +5,9 @@ import os from 'node:os';
 export const root = path.resolve(import.meta.dirname, '../..');
 export function dataRoot() {
   if (process.env.STUDIO_DATA_DIR) return path.resolve(process.env.STUDIO_DATA_DIR);
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library/Application Support/Creative Agent Studio');
-  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || os.homedir(), 'Creative Agent Studio');
-  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'creative-agent-studio');
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library/Application Support/Creative Agent Studio CompanyLite');
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || os.homedir(), 'Creative Agent Studio CompanyLite');
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'creative-agent-studio-company-lite');
 }
 export async function connection() { return JSON.parse(await readFile(path.join(dataRoot(), 'canvas-instance.json'), 'utf8')); }
 export async function health(config, { signal } = {}) {
@@ -23,13 +23,15 @@ export async function callCanvasTool(name, input = {}, config, { signal } = {}) 
   signal?.throwIfAborted();
   config ||= await connection();
   const current = await health(config, { signal });
-  const targets=(current.targets || []).filter(t => t.hasCanvas && t.projectId === config.projectId);
-  if (!config.clientId && targets.length > 1) throw new Error("多个目标编辑页已连接，请显式选择 clientId");
-  const clientId = config.clientId || targets[0]?.clientId;
-  if (!clientId) throw new Error('目标 Canvas 编辑页尚未连接');
+  const siteTool = ['site_navigate','canvas_list_projects'].includes(name);
+  const targets=(current.targets || []).filter(t => (siteTool || t.hasCanvas) && (!config.projectId || t.projectId === config.projectId));
+  if (!config.clientId && targets.length > 1) throw new Error('多个画布页已连接，请指定本对话使用的 projectId 和 clientId');
+  const target = config.clientId ? targets.find(t => t.clientId === config.clientId) : targets[0];
+  if (!target) throw new Error('目标 Canvas 页面尚未连接；请先打开画布并查看连接状态');
+  const {clientId,projectId} = target;
   const response = await fetch(`${config.bridgeUrl}/api/tools`, {
     method:'POST', headers:{'content-type':'application/json','x-canvas-agent-token':config.token},
-    body:JSON.stringify({name,input,projectId:config.projectId,clientId}),
+    body:JSON.stringify({name,input,projectId,clientId}),
     signal,
   });
   const body = await response.json();

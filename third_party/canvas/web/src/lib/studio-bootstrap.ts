@@ -3,22 +3,17 @@ import { useCanvasToolStore } from "@/stores/use-canvas-tool-store";
 
 type StudioSession = {
     ok?: boolean;
-    projectId?: string;
-    projectTitle?: string;
+    workspaceId?: string;
+    instanceId?: string;
     configRevision?: number;
     bridgeUrl?: string;
     bridgeToken?: string;
     imageConfig?: { baseUrl?: string; model?: string; apiKey?: string; apiFormat?: "openai" | "gemini" } | null;
 };
 
-let studioProjectId: string | null = null;
+let studioSessionIdentity: string | null = null;
 let appliedConfigRevision = 0;
 let refreshListenersInstalled = false;
-
-function taskProjectId() {
-    const routeId = /^\/canvas\/([^/]+)\/?$/.exec(window.location.pathname)?.[1];
-    return routeId || new URLSearchParams(window.location.search).get("projectId");
-}
 
 function imageAiConfig(image: StudioSession["imageConfig"]) {
     const model = image?.model?.trim() || "";
@@ -78,19 +73,15 @@ function imageChannelConfig(image: StudioSession["imageConfig"]) {
 }
 
 function applyStudioSession(session: StudioSession) {
-    const projectId = taskProjectId();
-    if (!session.ok || !session.projectId || !session.bridgeUrl || !session.bridgeToken
-        || session.projectId !== projectId || !Number.isInteger(session.configRevision) || session.configRevision! < 1) return false;
-    if (studioProjectId && studioProjectId !== session.projectId) return false;
-    if (session.configRevision! > appliedConfigRevision) {
-        const current = useConfigStore.getState().config;
-        useConfigStore.setState({ config: { ...current, ...imageChannelConfig(session.imageConfig) } });
-        appliedConfigRevision = session.configRevision!;
-    }
-    if (!studioProjectId) {
+    if (session.ok !== true || session.workspaceId !== "company-lite" || !session.instanceId?.trim()
+        || !session.bridgeUrl?.trim() || !session.bridgeToken?.trim()
+        || !Number.isInteger(session.configRevision) || session.configRevision! < 1) return false;
+    const identity = `${session.workspaceId}:${session.instanceId}`;
+    const instanceChanged = studioSessionIdentity !== identity;
+    if (instanceChanged) {
         useConfigStore.setState({ config: imageAiConfig(session.imageConfig) });
-        studioProjectId = session.projectId;
         appliedConfigRevision = session.configRevision!;
+        studioSessionIdentity = identity;
         useCanvasToolStore.setState({
             url: session.bridgeUrl,
             token: session.bridgeToken,
@@ -98,8 +89,23 @@ function applyStudioSession(session: StudioSession) {
             connected: false,
             fragmentBootstrap: true,
             studioManaged: true,
-            studioProjectTitle: session.projectTitle || "Creative Studio Canvas",
-            activity: "正在连接当前任务画布",
+            activity: "正在连接共享画布",
+        });
+    } else if (session.configRevision! > appliedConfigRevision) {
+        const current = useConfigStore.getState().config;
+        useConfigStore.setState({ config: { ...current, ...imageChannelConfig(session.imageConfig) } });
+        appliedConfigRevision = session.configRevision!;
+    }
+    const toolStore = useCanvasToolStore.getState();
+    if (toolStore.url !== session.bridgeUrl || toolStore.token !== session.bridgeToken || !toolStore.studioManaged) {
+        useCanvasToolStore.setState({
+            url: session.bridgeUrl,
+            token: session.bridgeToken,
+            enabled: true,
+            connected: false,
+            fragmentBootstrap: true,
+            studioManaged: true,
+            activity: "正在连接共享画布",
         });
     }
     return true;
@@ -112,21 +118,21 @@ export async function refreshStudioCanvasConfig() {
     try {
         response = await fetch("/__studio/session", { cache: "no-store", credentials: "same-origin" });
     } catch {
-        if (studioProjectId) throw new Error("图片配置同步检查失败，本次生成已停止；请检查工作台同步状态后重试。");
+        if (studioSessionIdentity) throw new Error("图片配置同步检查失败，本次生成已停止；请检查共享画布状态后重试。");
         return false;
     }
     if (!response.ok) {
-        if (studioProjectId) throw new Error("无法确认当前图片配置，本次生成已停止；请重新连接任务画布后重试。");
+        if (studioSessionIdentity) throw new Error("无法确认当前图片配置，本次生成已停止；请检查共享画布连接后重试。");
         return false;
     }
     let session: StudioSession;
     try { session = await response.json() as StudioSession; }
     catch {
-        if (studioProjectId) throw new Error("图片配置响应无效，本次生成已停止；请重试。");
+        if (studioSessionIdentity) throw new Error("图片配置响应无效，本次生成已停止；请重试。");
         return false;
     }
     if (!applyStudioSession(session)) {
-        if (studioProjectId) throw new Error("任务画布配置不匹配，本次生成已停止；请重新打开当前任务画布。");
+        if (studioSessionIdentity) throw new Error("共享画布配置不匹配，本次生成已停止；请检查工作台连接后重试。");
         return false;
     }
     return true;

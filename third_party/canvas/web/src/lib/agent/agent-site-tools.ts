@@ -7,7 +7,8 @@ import { imageAspectOptions, imageQualityOptions, imageScaleOptions } from "@/co
 import { videoResolutionOptions, videoSecondsRange, videoSizeOptions } from "@/components/video-settings-panel";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { clampVideoSeconds } from "@/lib/media-size";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStore, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { localForageStorage } from "@/lib/localforage-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { modelOptionLabel, modelOptionName, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore } from "@/stores/use-config-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
@@ -129,9 +130,12 @@ function compactPrompt(prompt: unknown) {
     return value ? `${value.slice(0, 200)}${value.length > 200 ? "..." : ""}` : undefined;
 }
 
-function listCanvasProjects(input: SiteToolInput) {
-    const { projects, hydrated } = useCanvasStore.getState();
+async function listCanvasProjects(input: SiteToolInput) {
+    const { hydrated } = useCanvasStore.getState();
     if (!hydrated) throw new Error(siteText("canvasLoading"));
+    await flushCanvasStore();
+    const serialized = await localForageStorage.getItem("infinite-canvas:canvas_store");
+    const projects = readPersistedCanvasProjects(serialized);
     const keyword = String(input.keyword || "").trim().toLowerCase();
     const filtered = keyword ? projects.filter((project) => project.title.toLowerCase().includes(keyword)) : projects;
     const { page, pageSize, start, end } = paginate(input, filtered.length, 20);
@@ -144,6 +148,21 @@ function listCanvasProjects(input: SiteToolInput) {
         connectionCount: project.connections.length,
     }));
     return { total: filtered.length, page, pageSize, items, hint: siteText("canvasHint") };
+}
+
+function readPersistedCanvasProjects(serialized: string | null): CanvasProject[] {
+    if (serialized === null) return [];
+    let value: unknown;
+    try {
+        value = JSON.parse(serialized);
+    } catch {
+        throw new Error("本机画布历史数据无法解析，请先检查 Canvas 存储状态。");
+    }
+    if (!value || typeof value !== "object" || !("state" in value) || !value.state || typeof value.state !== "object"
+        || !("projects" in value.state) || !Array.isArray(value.state.projects)) {
+        throw new Error("本机画布历史数据结构无效，请先检查 Canvas 存储状态。");
+    }
+    return value.state.projects as CanvasProject[];
 }
 
 function getImageConfig() {

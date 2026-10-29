@@ -8,27 +8,31 @@
 - Reuse proven patterns and existing dependencies. Check library documentation and types before reimplementing functionality or adding packages.
 - For lasting changes, update the existing project source of truth, record non-obvious rationale, and remove obsolete guidance. Keep Chinese project documentation in Chinese.
 - Delegate well-defined, mechanical implementation tasks to Luna subagents at Max reasoning.
-- When the current model is unlikely to solve a problem, consult an Astra subagent at Low reasoning for focused guidance.
+- When the current model is unlikely to solve a problem, consult an Astra subagent at Low reasoning.
 
 ## 当前产品与分支
 
-- `main`：个人版／通用版，使用本机素材和本地 Canvas。普通用户下载平台成品；源码启动用于开发和代理宿主。
-- `codex/company-edition`：公司版，独立 Company 数据目录、默认4311、Teedy只读素材和任务专属本地 Canvas。公司服务地址从仓库外注入；员工使用本人账号及两类API。
-- 共享修复需在适用分支同步并验证；不得把公司默认模式、部署地址或员工数据混入个人版。不要把旧本地历史或全部标签推到公开仓库。
-- 当前状态以 `docs/工程进度.md` 为准，产品范围看 PRD，施工顺序看 `开发与施工计划.md`。历史验收按所列提交与范围解释，不能代替最新设备体验。
-- P0—P5已按报告所列范围验收；P5之后Mac自包含app／只读启动修复另见 `docs/Mac运行包隔离启动修复.md`。原报错设备、签名／公证和普通员工灰测未通过的内容不得标完成。公司新增能力的实施自检不冒充独立验收。
+- `codex/company-lite` 是公司 WorkBuddy 创作能力包。WorkBuddy 对话线程是唯一创作工作边界，负责需求、制作单、确认和审核；Company Lite 提供纯 CLI setup 与本机共享 Canvas/MCP，不创建任务账本或任务专属 Canvas 系统。
+- 当前产品说明以 [README](README.md)、[PRD](Creative_Agent_Studio_PRD.md)、[开发与施工计划](开发与施工计划.md)、[工程进度](docs/工程进度.md)、[代理宿主使用](docs/代理宿主使用.md) 和 [创作 Skill](.agents/skills/creative-studio/SKILL.md) 为准。旧 P0—P5 和其他分支文档只作历史证据，不是当前需求或员工操作指南。
+- WorkBuddy 通过公司现有云端 Teedy MCP 查询和实际下载用户选定的材料。保持 Teedy 内容、标签和 ACL 不变；出处与用途留在当前 WorkBuddy 对话上下文中。
+- WorkBuddy 真实登录、员工 Windows 使用、Teedy 实际权限和目标设备体验仍待验证。一次本机 Canvas MCP 图片请求已成功（上游 HTTP 200、20.198 秒，完整本地保存 25.892 秒）；这是单次样本，不是普遍时延承诺或员工验收。
 
 ## 运行与数据边界
 
-- 代理宿主创作读取 `.agents/skills/creative-studio/SKILL.md`，使用共享CLI与任务专属Canvas图片API；任务推理由当前宿主会话承担，不启动DSH代跑、不改用宿主内置生图。Canvas只绘图和执行图片工具，不召唤Agent。
-- Web UI与代理宿主共用来源、版本、用户确认和实际读图合同。要作为任务资料使用的宿主会话附件须通过 `attach-files` 加入相应任务；授权生成后先用 `canvas-open` 准备任务Canvas，再用 `canvas-state` 验证已连接。任务图片失败或状态不明时按任务流程检查与恢复，不得用任务外图片脚本或诊断画布兜底；普通文件读取与文件／脚本处理仍可使用。
-- Web UI保留资料读取和通用文件／脚本工具；左侧讨论与确认，右侧预览，避免同意图重复确认。保留版本／SHA／CAS、陈旧批准失效和防重复扣费机制。
-- DNA默认关闭，由用户显式填写、启用及应用；模型来源可用性按实际证据呈现，OpenCode第三方对话限制和WorkBuddy本人账号待验证不能隐去。
-- 旧RAG-Yuki、旧Canvas、全局客户端配置只读；不复制员工凭据、虚拟环境、浏览器个人数据或旧运行任务。公司Teedy标签／ACL与服务器不因本地改动而修改。
-- 凭据、实例token和用户原件不进入仓库、证据、日志或分发包；备份含本机配置，作为私有资料保存。
-- 验证使用隔离目录与夹具，不在实际用户目录重跑安装、修改旧任务或重放历史付费任务。新增真实付费测试需有明确授权及费用说明。
-- Mac成品为自包含app，程序目录可只读；任务、配置、Python/OCR与日志写稳定用户数据目录。首次Python联网准备与后续复用分别说明，不宣传完全离线。
+- WorkBuddy 主界面负责安装、配置和创作。员工包用 `Start.cmd status`／`./Start.command status`，源码开发可用 `node scripts/setup.mjs status`。仅首次安装、配置或故障修复时简洁呈现包、本机 Canvas MCP、Teedy MCP 探测报告、图片 API 和整体就绪五项状态；自动推进可执行检查，只在本人登录、WorkBuddy MCP 审批或员工输入凭据时等待，不增加逐步确认。日常创作不重复安装清单。`Start status` 返回 setup 状态，包装器不启动浏览器。
+- Canvas 是跨线程共享的持续本机工作空间，保留历史项目、生成图片和排版编辑状态；允许查找、重开并继续旧作品。绘图连接、图片 API 配置和 Canvas 项目历史跨线程共用。WorkBuddy 当前对话线程负责区分本次需求和批准；Canvas 项目不承载任务审批或跨线程确认。
+- 按 Skill 与 WorkBuddy 当前线程组织品牌规则、文案、制作单、用户确认和复审；不添加任务 ID 绑定或任务／审批账本作为主工作流。`Studio` CLI 仅管理共享 Canvas 服务及检查文案，不是任务管理入口。
+- 使用现有云端 Teedy MCP 的真实查询与下载能力；不能把搜索结果或链接本身说成已下载原件。使用 WorkBuddy 当前显示的本机 Canvas MCP 工具绘图和执行既有像素操作；不要虚构 MCP 工具名或改用任务外图片脚本、其他部署 Canvas、WorkBuddy 自带生图。
+- 需求澄清、制作单确认、失败重试和最终批准必须来自当前 WorkBuddy 对话中的用户直接表达。成品必须由 WorkBuddy 实际打开读图后才能进入审核；用户明确批准后再导出。Canvas 状态或付费请求结果不明时先查现有状态，不自动重发。
+- 独立 CompanyLite 数据根用于本机共享 Canvas 历史、共用配置和运行状态，不是另一套任务或审批系统；不导入旧版数据。
+- API Key 等个人凭据不得粘贴到 WorkBuddy 对话、普通命令参数、任务来源或日志。员工在服务页面复制 Key 并明确说“已复制”后，才能运行 `Start configure-image @JSON --key-from-clipboard`，只读取一次本机剪贴板；不得自行读剪贴板。Windows 剪贴板待实机验证。管理员已有 Key 可用本机受限权限私有 JSON。不得写入真实公司服务地址、员工账号或原件到公开仓库。
+
+## WorkBuddy 工作目录与 Skill
+
+- 先在 WorkBuddy 当前任务中显式选择 Company Lite 能力包根目录，再从该目录读取 README、AGENTS、使用说明和 Skill。打开工作目录与在 WorkBuddy Skills 页面导入／启用 Skill 是两项独立操作。
+- 官方 WorkBuddy 文档支持上传本地 Skill 包及项目内 Skill，但没有公开项目 Skill 目录的精确路径。本分支不声称 WorkBuddy 自动发现 .agents/skills，不复制到未经证实的 .workbuddy 或 .codebuddy 路径；按使用说明中的首次提示词显式读取 Skill。
+- 若使用 WorkBuddy Skills 页面导入的用户级 Skill，命令也必须在用户为当前任务选定的 Company Lite 根目录执行。不得依据已安装 Skill 的文件路径向上猜测源码根目录。
 
 ## 阶段沟通
 
-新阶段先读PRD、施工计划、工程进度、前阶段验收与代码。用自然语言说明工作和完成后能力，展示整体产品模块图，再按已有授权施工，不增设开工关卡。模块图用绿色已证据完成、橙色本阶段、蓝色下一步、灰色后续，并写文字状态；不编百分比，不将计划当授权。交付说明实际验证、限制及剩余模块，停在授权边界。
+新阶段先读当前 PRD、施工计划、工程进度、使用说明、创作 Skill 和相关代码。已有施工授权直接执行，不增加开工确认。进度图用绿色标注有历史实现证据的模块、橙色标注当前施工、蓝色标注待设备验证、灰色标注已移除范围；同时写明文字状态。历史实现证据不等于当前分支验收。交付说明实际验证、限制和剩余模块；没有证据时不宣称通过。

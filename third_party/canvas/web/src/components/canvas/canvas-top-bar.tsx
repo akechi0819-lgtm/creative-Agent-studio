@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { Bot, Download, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { DOCS_URL } from "@/constant/env";
 
 export function CanvasTopBar({
+    projectId,
     title,
     titleDraft,
     isTitleEditing,
@@ -19,19 +20,18 @@ export function CanvasTopBar({
     onCancelTitleEditing,
     canUndo,
     canRedo,
-    onHome,
     onProjects,
     onCreateProject,
-    onDeleteProject,
+    onOpenProject,
     onExportProject,
     onImportImage,
-    onOpenPlugins,
     onUndo,
     onRedo,
     agentOpen,
     compactAgentStatus,
     onToggleAgent,
 }: {
+    projectId: string;
     title: string;
     titleDraft: string;
     isTitleEditing: boolean;
@@ -41,13 +41,11 @@ export function CanvasTopBar({
     onCancelTitleEditing: () => void;
     canUndo: boolean;
     canRedo: boolean;
-    onHome: () => void;
     onProjects: () => void;
     onCreateProject: () => void;
-    onDeleteProject: () => void;
+    onOpenProject: (projectId: string) => void;
     onExportProject: () => void;
     onImportImage: () => void;
-    onOpenPlugins: () => void;
     onUndo: () => void;
     onRedo: () => void;
     agentOpen: boolean;
@@ -56,11 +54,28 @@ export function CanvasTopBar({
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
+    const projects = useCanvasStore((state) => state.projects);
     const theme = canvasThemes[colorTheme];
     const titleRef = useRef<HTMLDivElement>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const sidePanelOpen = useCanvasSidePanelStore((state) => state.panelOpen);
     const toggleSidePanel = useCanvasSidePanelStore((state) => state.togglePanel);
+    const otherProjects = projects.filter((project) => project.id !== projectId).slice(0, 8);
+    const menuItems = [
+        { key: "history", icon: <Images className="size-4" />, label: "画布历史", onClick: onProjects },
+        { key: "new", icon: <Plus className="size-4" />, label: t("canvas.create"), onClick: onCreateProject },
+        ...(otherProjects.length ? [{ type: "divider" as const }, ...otherProjects.map((project) => ({
+            key: `project:${project.id}`,
+            label: project.title,
+            onClick: () => onOpenProject(project.id),
+        }))] : []),
+        { type: "divider" as const },
+        { key: "import", icon: <Upload className="size-4" />, label: t("canvas.importAsset"), onClick: onImportImage },
+        { key: "export", icon: <Download className="size-4" />, label: t("canvas.exportCurrent"), onClick: onExportProject },
+        { type: "divider" as const },
+        { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text={t("canvas.undo")} shortcut="⌘ Z" />, onClick: onUndo },
+        { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text={t("canvas.redo")} shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
+    ];
 
     useEffect(() => {
         if (!isTitleEditing) return;
@@ -89,20 +104,7 @@ export function CanvasTopBar({
                     <Dropdown
                         trigger={["click"]}
                         menu={{
-                            items: [
-                                { key: "home", icon: <Home className="size-4" />, label: t("canvas.home"), onClick: onHome },
-                                { key: "docs", icon: <BookOpen className="size-4" />, label: t("canvas.docs"), onClick: () => window.open(DOCS_URL, "_blank", "noopener,noreferrer") },
-                                { key: "projects", icon: <Images className="size-4" />, label: t("canvas.projects"), onClick: onProjects },
-                                { type: "divider" },
-                                { key: "new", icon: <Plus className="size-4" />, label: t("canvas.create"), onClick: onCreateProject },
-                                { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: t("canvas.deleteCurrent"), onClick: onDeleteProject },
-                                { type: "divider" },
-                                { key: "import", icon: <Upload className="size-4" />, label: t("canvas.importAsset"), onClick: onImportImage },
-                                { key: "export", icon: <Download className="size-4" />, label: t("canvas.exportCurrent"), onClick: onExportProject },
-                                { type: "divider" },
-                                { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text={t("canvas.undo")} shortcut="⌘ Z" />, onClick: onUndo },
-                                { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text={t("canvas.redo")} shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
-                            ],
+                            items: menuItems,
                         }}
                     >
                         <button type="button" className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} aria-label={t("canvas.openMenu")}>
@@ -139,7 +141,7 @@ export function CanvasTopBar({
                 </div>
 
                 <div className="pointer-events-auto flex items-center gap-1.5">
-                    <UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} onOpenPlugins={onOpenPlugins} />
+                    <UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} />
                     <span className="h-6 w-px" style={{ background: theme.toolbar.border }} />
                     <Button
                         type="text"

@@ -14,8 +14,8 @@ test("compact node hashes the full original content before truncating it", () =>
     assert.equal(node.metadata?.contentSha256, createHash("sha256").update(content).digest("hex"));
 });
 
-test("hello announces the project-bound tools session", (t) => {
-    const session = new CanvasSession("project-1", "instance-1");
+test("hello announces the client-registered actual project", (t) => {
+    const session = new CanvasSession("instance-1");
     const client = connect(session, "client-1");
     t.after(() => client.close());
 
@@ -27,28 +27,86 @@ test("hello announces the project-bound tools session", (t) => {
     });
 });
 
-test("canvas state requires the configured project and connected client", (t) => {
-    const session = new CanvasSession("project-1", "instance-1");
+test("canvas state requires a matching connected project-client pair", (t) => {
+    const session = new CanvasSession("instance-1");
     const client = connect(session, "client-1");
     t.after(() => client.close());
 
-    assert.throws(() => session.updateState("project-2", "client-1", { projectId: "project-2" }), (error) => error instanceof BridgeError && error.statusCode === 403);
+    assert.throws(() => session.updateState("project-2", "client-1", { projectId: "project-2" }), (error) => error instanceof BridgeError && error.statusCode === 409);
     assert.throws(() => session.updateState("project-1", "missing", { projectId: "project-1" }), (error) => error instanceof BridgeError && error.statusCode === 409);
     assert.throws(() => session.updateState("project-1", "client-1", { projectId: "project-2" }), (error) => error instanceof BridgeError && error.statusCode === 403);
+    assert.throws(() => session.updateState("project-1", "client-1", { projectId: "project-1", clientId: "other-client" }), (error) => error instanceof BridgeError && error.statusCode === 403);
 
     session.updateState("project-1", "client-1", { projectId: "project-1", nodes: [], connections: [], selectedNodeIds: [] });
     assert.equal(session.health().hasCanvas, true);
-    assert.equal(session.health().projectId, "project-1");
+    assert.equal(Object.hasOwn(session.health(), "projectId"), false);
+    assert.deepEqual(session.health().targets, [{ clientId: "client-1", projectId: "project-1", hasCanvas: true, active: false }]);
+});
+
+test("multiple project-client pairs are independent; only navigation and project listing work without canvas state", async (t) => {
+    const session = new CanvasSession("instance-1");
+    const canvas = connect(session, "shared-client", "actual-project-1");
+    const library = connect(session, "library", "library");
+    t.after(() => { canvas.close(); library.close(); });
+    session.updateState("actual-project-1", "shared-client", { projectId: "actual-project-1", clientId: "shared-client", nodes: [], connections: [], selectedNodeIds: [] });
+
+    assert.deepEqual(session.health().targets, [
+        { clientId: "shared-client", projectId: "actual-project-1", hasCanvas: true, active: false },
+        { clientId: "library", projectId: "library", hasCanvas: false, active: false },
+    ]);
+
+    for (const [name, input] of [["site_navigate", { path: "/canvas" }], ["canvas_list_projects", {}]] as const) {
+        const result = session.callTool(name, input, { projectId: "library", clientId: "library" });
+        const call = library.events.filter((event) => event.type === "tool_call").at(-1)?.data;
+        assert.equal(call?.name, name);
+        assert.equal(canvas.event("tool_call"), undefined);
+        assert.equal(session.resolveResult("library", "library", { requestId: call?.requestId as string, result: { ok: true } }), true);
+        assert.deepEqual(await result, { ok: true });
+    }
+    const libraryToolCalls = library.events.filter((event) => event.type === "tool_call").length;
+    await assert.rejects(session.callTool("canvas_read_image", { nodeId: "image-1" }, { projectId: "library", clientId: "library" }), (error) => error instanceof BridgeError && error.statusCode === 409);
+    await assert.rejects(session.callTool("canvas_get_state", {}, { projectId: "wrong-project", clientId: "shared-client" }), (error) => error instanceof BridgeError && error.statusCode === 409);
+    assert.equal(library.events.filter((event) => event.type === "tool_call").length, libraryToolCalls, "an unconnected target never falls through to another project");
+});
+
+test("same client IDs are isolated by actual project ID", async (t) => {
+    const session = new CanvasSession("instance-1");
+    const first = connect(session, "same-client", "project-a");
+    const second = connect(session, "same-client", "project-b");
+    t.after(() => { first.close(); second.close(); });
+
+    const result = session.callTool("site_navigate", { path: "/image" }, { projectId: "project-b", clientId: "same-client" });
+    const call = second.event("tool_call");
+    assert.equal(first.event("tool_call"), undefined);
+    assert.ok(call?.requestId);
+    assert.equal(session.resolveResult("project-a", "same-client", { requestId: call?.requestId, result: { wrong: true } }), false);
+    assert.equal(session.resolveResult("project-b", "same-client", { requestId: call?.requestId, result: { ok: true } }), true);
+    assert.deepEqual(await result, { ok: true });
+    assert.deepEqual(session.health().targets.map(({ projectId }) => projectId), ["project-a", "project-b"]);
+});
+
+test("disconnecting the active target clears activation instead of selecting another project", (t) => {
+    const session = new CanvasSession("instance-1");
+    const active = connect(session, "client-a", "project-a");
+    const other = connect(session, "client-b", "project-b");
+    t.after(() => { active.close(); other.close(); });
+    session.activateClient("project-a", "client-a");
+    assert.deepEqual(session.health().targets.map((target) => target.active), [true, false]);
+
+    active.close();
+    assert.deepEqual(session.health().targets, [{ clientId: "client-b", projectId: "project-b", hasCanvas: false, active: false }]);
+    assert.throws(() => session.activateClient("project-a", "client-a"), (error) => error instanceof BridgeError && error.statusCode === 409);
 });
 
 test("tool call targets its explicit client and canvas_read_image reaches the browser unchanged", async (t) => {
-    const session = new CanvasSession("project-1", "instance-1");
+    const session = new CanvasSession("instance-1");
     const first = connect(session, "client-1");
     const second = connect(session, "client-2");
     t.after(() => {
         first.close();
         second.close();
     });
+    session.updateState("project-1", "client-2", { projectId: "project-1", clientId: "client-2", nodes: [], connections: [], selectedNodeIds: [] });
 
     const result = session.callTool("canvas_read_image", { nodeId: "image-42" }, { projectId: "project-1", clientId: "client-2" });
     const call = second.event("tool_call");
@@ -60,9 +118,10 @@ test("tool call targets its explicit client and canvas_read_image reaches the br
 });
 
 test("pixel tools validate inputs and forward only their bounded operation arguments", async (t) => {
-    const session = new CanvasSession("project-1", "instance-1");
+    const session = new CanvasSession("instance-1");
     const client = connect(session, "client-1");
     t.after(() => client.close());
+    session.updateState("project-1", "client-1", { projectId: "project-1", clientId: "client-1", nodes: [], connections: [], selectedNodeIds: [] });
 
     const calls = [
         { name: "canvas_crop_image", input: { nodeId: "image-1", crop: { x: 0.1, y: 0.2, width: 0.5, height: 0.6 } } },
@@ -108,7 +167,7 @@ test("pixel tools validate inputs and forward only their bounded operation argum
 });
 
 test("drawing tools reuse canvas operation conversion and reject wrong project targets", async (t) => {
-    const session = new CanvasSession("project-1", "instance-1");
+    const session = new CanvasSession("instance-1");
     const client = connect(session, "client-1");
     t.after(() => client.close());
     session.updateState("project-1", "client-1", { projectId: "project-1", nodes: [], connections: [], selectedNodeIds: [] });
@@ -127,12 +186,12 @@ test("drawing tools reuse canvas operation conversion and reject wrong project t
 
     await assert.rejects(
         session.callTool("canvas_get_state", {}, { projectId: "project-2", clientId: "client-1" }),
-        (error) => error instanceof BridgeError && error.statusCode === 403,
+        (error) => error instanceof BridgeError && error.statusCode === 409,
     );
 });
 
 test("tool results are accepted only from the requesting client", async (t) => {
-    const session = new CanvasSession("project-1", "instance-1");
+    const session = new CanvasSession("instance-1");
     const first = connect(session, "client-1");
     const second = connect(session, "client-2");
     t.after(() => {
@@ -148,7 +207,7 @@ test("tool results are accepted only from the requesting client", async (t) => {
 });
 
 test("replacing a same-client connection invalidates its old state and pending calls", async (t) => {
-    const session = new CanvasSession("project-1", "instance-1");
+    const session = new CanvasSession("instance-1");
     const oldClient = connect(session, "client-1");
     const target = { projectId: "project-1", clientId: "client-1" };
     session.updateState("project-1", "client-1", {
@@ -216,9 +275,10 @@ test("replacing a same-client connection invalidates its old state and pending c
     assert.equal(oldSettlements, 1, "a late old result cannot settle the rejected call a second time");
 });
 
-function connect(session: CanvasSession, clientId: string) {
+function connect(session: CanvasSession, clientId: string, projectId = "project-1") {
     const response = new FakeResponse();
-    session.openEvents(new URL(`http://localhost/events?projectId=project-1&clientId=${clientId}`), response as unknown as ServerResponse);
+    const query = new URLSearchParams({ projectId, clientId });
+    session.openEvents(new URL(`http://localhost/events?${query}`), response as unknown as ServerResponse);
     return response;
 }
 

@@ -1,76 +1,74 @@
-# Canvas 服务 P0
+# 共享本机 Canvas 桥接服务
 
-本服务把工具调用转发到一个明确项目的浏览器标签页，再把浏览器结果返回给 HTTP 调用方。Node.js 最低版本为 22。工具参数沿用 `src/canvas/schemas.ts`，常见画布动作沿用 `src/canvas/operations.ts`。
+本文是当前桥接服务合同。早期 P0 文档描述的“每个服务实例绑定一个 `CANVAS_AGENT_PROJECT_ID`”已废弃；当前服务不读取该环境变量，也不把项目 ID 写进启动配置。
 
-服务只监听 `127.0.0.1`。进程不读取或写入 `~/.infinite-canvas`，不启动 Agent/Codex/Claude，不注册全局 MCP。服务数据目录只存放单实例锁文件 `canvas-agent.lock`；收到 `SIGINT` 或 `SIGTERM` 时会关闭现有 HTTP/SSE 连接并释放本实例锁。若持锁进程已结束，下一次启动会清理过期锁。
+Canvas Agent 通过同一个本机服务连接多个实际 Canvas 项目。每个网页 SSE 连接用 `(projectId, clientId)` 标识；项目归属来自网页当前实际项目。服务只负责按目标转发工具和结果，不保存项目历史。项目、节点和图片由 Canvas 网页通过 Studio 本机存储持久化，因此多个项目共用同一个 Studio 数据目录，无需任务账本。
 
-## 启动环境
+## 启动配置
 
-项目启动器为每个画布项目传入以下环境变量：
+服务只监听 `127.0.0.1`。启动器为共享实例提供：
 
 | 环境变量 | 用途 |
 | --- | --- |
 | `PORT` | 本机监听端口，取值为 1–65535 的整数 |
-| `CANVAS_AGENT_TOKEN` | 当前实例的访问令牌，不落盘、不写入日志 |
-| `CANVAS_AGENT_PROJECT_ID` | 此实例唯一允许访问的画布项目 ID |
-| `CANVAS_AGENT_INSTANCE_ID` | 服务实例标识，用于锁和状态识别 |
-| `CANVAS_AGENT_DATA_DIR` | 此实例独立的数据目录，用于单实例锁 |
+| `CANVAS_AGENT_TOKEN` | 当前实例访问令牌，不落盘、不写入日志 |
+| `CANVAS_AGENT_INSTANCE_ID` | 服务实例标识，用于识别和诊断 |
+| `CANVAS_AGENT_DATA_DIR` | 本机实例锁目录 |
 | `CANVAS_AGENT_ORIGIN` | 唯一允许跨域访问的完整 HTTP(S) origin，不含路径 |
 
-缺少任一变量、端口无效或 origin 含路径时，服务拒绝启动。相同数据目录中的第二个活动实例会被拒绝；监听失败也会释放锁。
+缺少上述变量、端口无效或 origin 含路径时，服务拒绝启动。同一数据目录已有活动实例时，新的启动会被拒绝；收到 `SIGINT` 或 `SIGTERM` 时服务关闭 SSE 连接并释放锁。
 
 ## HTTP 接口
 
-除 `/health`、`/config` 外，接口必须携带 `x-canvas-agent-token` 请求头。SSE 的 `EventSource` 使用 `token` 查询参数。浏览器的 Origin 必须与 `CANVAS_AGENT_ORIGIN` 完全一致。请求体使用 JSON，最大 30 MB。
+`GET /health` 和 `GET /config` 不要求桥接令牌。其他接口使用 `x-canvas-agent-token`；SSE 的 `EventSource` 使用 `token` 查询参数。若请求带 `Origin`，必须与 `CANVAS_AGENT_ORIGIN` 完全一致。JSON 请求体最大 30 MB。
 
 | 方法与路径 | 用途 |
 | --- | --- |
-| `GET /health` | 查看协议版本、实例和项目 ID、连接数量及每个已连接客户端的项目、画布和激活状态 |
-| `GET /config` | 返回本机 URL、项目/实例 ID 和 `hasToken`，不返回令牌 |
-| `GET /events?projectId=…&clientId=…&token=…` | 建立 SSE 工具事件通道；未提供 clientId 时由服务生成，并通过 hello 返回 |
-| `POST /canvas/state?projectId=…&clientId=…` | 上报画布状态；JSON body 必须带相同的 `projectId` |
-| `POST /canvas/activate?projectId=…&clientId=…` | 将客户端标记为当前激活目标 |
-| `POST /canvas/result?projectId=…&clientId=…` | 返回浏览器处理的工具结果 |
-| `POST /api/tools` | 校验工具参数并向指定浏览器客户端派发调用 |
+| `GET /health` | 返回实例状态及每个已连接 `(projectId, clientId)` 的画布状态和激活状态 |
+| `GET /config` | 返回本机 URL、实例 ID 和 `hasToken`，不返回令牌或项目 ID |
+| `GET /events?projectId=…&clientId=…&token=…` | 为指定实际项目建立 SSE 工具通道；未提供 `clientId` 时服务生成并在 `hello` 中返回 |
+| `POST /canvas/state?projectId=…&clientId=…` | 更新该连接的画布快照；body 的 `projectId` 必须与查询参数一致，若 body 有 `clientId` 也必须一致 |
+| `POST /canvas/activate?projectId=…&clientId=…` | 显式激活当前连接 |
+| `POST /canvas/result?projectId=…&clientId=…` | 返回此项目和客户端的工具结果 |
+| `POST /api/tools` | 按 body 的 `projectId` 与 `clientId` 向精确的网页连接派发工具 |
 
-所有画布状态、SSE 和工具操作都会检查 projectId 是否等于 `CANVAS_AGENT_PROJECT_ID`。状态、激活、结果和工具调用还要提供当前 SSE 连接的 clientId；缺失或失效时返回错误，不会切换到其他标签页。
-
-`/api/tools` body 格式：
+`/health` 示例：
 
 ```json
 {
-  "name": "canvas_create_text_node",
-  "input": { "text": "画布内容" },
-  "projectId": "当前项目 ID",
-  "clientId": "SSE hello 返回的客户端 ID"
+  "ok": true,
+  "protocolVersion": 1,
+  "instanceId": "本机实例 ID",
+  "hasCanvas": true,
+  "clients": 2,
+  "targets": [
+    { "projectId": "project-a", "clientId": "browser-a", "hasCanvas": true, "active": false },
+    { "projectId": "project-b", "clientId": "browser-b", "hasCanvas": true, "active": true }
+  ]
 }
 ```
 
-成功时响应 `{ "ok": true, "result": ... }`。工具调用会在指定 SSE 通道发出 `tool_call` 事件，事件包含 `requestId`、`name` 和已校验的 `input`。浏览器应使用相同的 projectId/clientId 向 `/canvas/result` 回传 `{ "requestId", "result" }`；发生错误时回传 `{ "requestId", "error" }`。请求等待上限沿用上游的 30 秒。
+服务不把工具请求改派给其他项目或客户端。请求指定的二元组未连接时返回冲突；多个连接同时存在时，调用方必须明确目标。相同 `clientId` 可以出现在不同项目中，它们的状态与待处理请求彼此隔离。对同一二元组重连会关闭旧 SSE、清除旧状态并拒绝旧待处理请求；旧连接迟到的关闭或结果事件不会影响新连接。断开当前激活目标后，不会自动切换到其他项目。
 
-### 图片读取工具
+SSE 建立后发送 `hello`（包含 `ok`、`instanceId`、实际 `projectId` 与 `clientId`），并每 15 秒发送 `ping`。工具事件包含 `requestId`、`name` 与校验过的 `input`。浏览器须以相同的查询参数向 `/canvas/result` 回传 `{ "requestId", "result" }` 或 `{ "requestId", "error" }`。工具调用等待上限为 30 秒；超时不会自动重试。
 
-`canvas_read_image` 的输入为 `{ "nodeId": "图片节点 ID" }`。服务把工具名和输入原样发送给指定浏览器，浏览器从节点存储读取图片并回传实际图片 Data URL 及 `naturalWidth`、`naturalHeight`。服务只转交结果，不生成图片、不调用收费生成 API。
+只有 `site_navigate` 与 `canvas_list_projects` 可以在目标连接尚未上报画布快照时使用，例如没有当前画布状态的素材库页面。其他画布工具需要同一目标的状态快照。未连接目标、错配项目或客户端不会回退到任意活动标签页。
 
-### 像素合成与宿主图片导入
+## 图片工具边界
 
-- `canvas_stitch_images` 接收 2–20 个图片节点 ID 和横向/纵向方向，按列表顺序使用原始像素尺寸拼接，不缩放；`gap` 默认为 0，背景默认为透明。输出为一张 PNG。
-- `canvas_compose_images` 接收底图和 1–20 个贴图层。每层指定图片节点 ID 和完整落在底图内的整数像素矩形；默认 `fit=contain`、`smoothing=nearest`。可选 `clear` 先清除完整目标矩形再填充 `#RRGGBB` 或 `#RRGGBBAA`，随后按图层顺序贴图。
-- 两种合成都拒绝长边超过 16384 像素或总像素超过 32×1024×1024 的结果，不会自动缩小。浏览器在处理前后核对源节点仍存在、元数据未变且图片字节一致；只有校验通过后才上传结果、添加新节点并连回去重后的源节点。失败时清理本次上传的结果图。
-- `canvas_import_image` 接收宿主生成的 `nodeId`、标题和 PNG/JPEG/WebP base64 data URL，在浏览器本地上传并添加图片节点，不调用 AI。若 ID 已存在，只在图片字节完全一致时复用；不一致或节点类型不同则拒绝。
+`canvas_read_image` 从指定网页的图片节点读取实际数据并返回 Data URL 与尺寸。它不生成图片，也不调用模型服务。`canvas_import_image` 把宿主提供的 PNG/JPEG/WebP 数据导入本机 Canvas。
 
-合成工具回传 `operation`、`sourceNodeId`、去重后的 `sourceNodeIds` 和输出节点的 ID/像素尺寸；导入工具回传 `operation=import`、源节点 ID 和图片节点像素尺寸。结果不携带图片 URL 或令牌。
+- `canvas_crop_image`、`canvas_split_image`、`canvas_resample_image`、`canvas_stitch_images` 与 `canvas_compose_images` 由 Canvas 网页在浏览器中处理像素；服务只校验并转交参数及结果。
+- 拼图按节点给定顺序使用原始像素尺寸，不缩放；合成结果限制长边不超过 16384 像素、总像素不超过 32×1024×1024。
+- 直接像素工具不调用收费生成 API。图片生成是另一项明确工具操作，不属于这些像素工具。
 
-## SSE
-
-连接后服务发送 `hello` 事件，data 只有 `ok`、`instanceId`、`projectId`、`clientId`。之后每 15 秒发送一次 `ping`。浏览器执行工具后使用 `tool_call` 事件处理，并用 `/canvas/result` 返回结果。
-
-## 验证
+## 本地验证
 
 ```bash
-npm ci
 npm test
 npm run build
 ```
 
-测试覆盖 env 校验、项目与客户端隔离、HTTP token、画布状态及工具结果往返；不触发图像或视频生成。
+Canvas Agent 测试使用本地连接夹具，覆盖多项目隔离、精确目标派发、重连清理、空状态素材库导航/项目列表、HTTP 鉴权与直接像素工具；这些测试不触发真实图片或视频生成。
+
+仓库集成测试 `tests/shared-canvas.test.mjs` 使用临时 `STUDIO_DATA_DIR`、Playwright 本机浏览器和浏览器生成的 PNG 夹具，验证多个项目共享存储、服务重启后历史/节点/图片恢复，以及 MCP stdio 的读写工具。测试会拦截所有非本机网页 origin 的请求，不配置或调用真实图片 API。它验证源码工作区里的本机流程，不代表员工设备、打包运行环境或外部模型服务已验收。

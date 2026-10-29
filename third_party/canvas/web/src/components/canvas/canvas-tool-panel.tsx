@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Button, Checkbox, Input } from "antd";
 import { useCanvasToolStore } from "@/stores/use-canvas-tool-store";
+import { flushCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
@@ -12,8 +13,9 @@ import type { CanvasImageOperationRequest } from "@/lib/canvas/canvas-image-oper
 
 type ToolCall = { requestId: string; name: string; input?: Record<string, unknown> & { ops?: CanvasAgentOp[] } };
 export function CanvasToolPanel() {
-    const { hash } = useLocation();
+    const { hash, pathname } = useLocation();
     const navigate = useNavigate();
+    const routeParams = useParams<{ id?: string }>();
     const { panelOpen, url, token, enabled, connected, activity, studioManaged, setAgentState } = useCanvasToolStore();
     const theme = canvasThemes[useThemeStore(s => s.theme)];
     const clientIdRef = useRef<string | null>(null);
@@ -26,8 +28,8 @@ export function CanvasToolPanel() {
     const [error, setError] = useState("");
     const [connectionError, setConnectionError] = useState("");
     const projectId = useCanvasToolStore(state => state.canvasContext?.snapshot.projectId)
-        || new URLSearchParams(location.search).get("projectId")
-        || "";
+        || routeParams.id
+        || (pathname.replace(/\/$/, "") === "/canvas" ? "library" : "");
     useEffect(() => {
         const params = new URLSearchParams(hash.slice(1));
         const endpoint = params.get("agentUrl"), credential = params.get("agentToken");
@@ -65,7 +67,7 @@ export function CanvasToolPanel() {
             onConnectionRecovered: () => setConnectionError(""),
             onToolCall: event => {
                 const call = JSON.parse(event.data) as ToolCall;
-                if (confirmRef.current && ["canvas_apply_ops", "canvas_crop_image", "canvas_split_image", "canvas_resample_image", "canvas_stitch_images", "canvas_compose_images", "canvas_import_image", "workbench_image_generate"].includes(call.name)) {
+                if (confirmRef.current && ["canvas_apply_ops", "canvas_run_generation", "canvas_crop_image", "canvas_split_image", "canvas_resample_image", "canvas_stitch_images", "canvas_compose_images", "canvas_import_image", "workbench_image_generate"].includes(call.name)) {
                     if (pendingRef.current) { void post("/canvas/result", {requestId:call.requestId,error:"已有待确认操作"}).catch(() => {}); return; }
                     pendingRef.current=call; setPending(call);
                 } else void runRef.current?.(call);
@@ -75,20 +77,42 @@ export function CanvasToolPanel() {
             try {
                 if (reject) throw new Error("用户拒绝画布操作");
                 const context = useCanvasToolStore.getState().canvasContext;
-                if (!context) throw new Error("请先打开目标画布");
-                if (context.getSnapshot().projectId !== projectId) throw new Error("画布项目已切换，请重新连接绘图工具");
+                if (call.name === "site_navigate") {
+                    const path = String(call.input?.path || "");
+                    if (!/^\/canvas(?:\/[A-Za-z0-9_-]+)?(?:\?mode=(?:new|recent|choose))?$/.test(path)) throw new Error("只能在本地 Canvas 历史页和项目页之间切换");
+                    if (context) await context.persistCurrentSnapshot();
+                    await flushCanvasStore();
+                    await post("/canvas/result", {requestId:call.requestId, result:{ok:true,navigated:path}});
+                    if (!closed) window.requestAnimationFrame(() => navigate(path));
+                    return;
+                }
                 let result: unknown;
-                if (isSiteTool(call.name)) result = await runSiteTool(call.name, call.input || {}, navigate, {canvasSnapshot:context.getSnapshot()});
-                else if (call.name === "canvas_apply_ops") { context.applyOps(call.input?.ops); result = context.getSnapshot(); await connection.writeState(result as CanvasAgentSnapshot); }
-                else if (call.name === "canvas_read_image") {
-                    const node = context.getSnapshot().nodes.find(n => n.id === call.input?.nodeId);
-                    if (!node || node.type !== "image") throw new Error("图片节点不存在");
-                    const dataUrl = await imageToDataUrl({storageKey:node.metadata?.storageKey, url:node.metadata?.content});
-                    result = {nodeId:node.id, dataUrl, width:node.metadata?.naturalWidth, height:node.metadata?.naturalHeight};
-                } else if (call.name === "canvas_crop_image" || call.name === "canvas_split_image" || call.name === "canvas_resample_image" || call.name === "canvas_stitch_images" || call.name === "canvas_compose_images" || call.name === "canvas_import_image") {
-                    result = await context.runImageOperation(toCanvasImageOperationRequest(call));
-                    await connection.writeState(context.getSnapshot());
-                } else throw new Error("未知绘图工具：" + call.name);
+                if (isSiteTool(call.name)) {
+                    result = await runSiteTool(call.name, call.input || {}, navigate, {canvasSnapshot:context?.getSnapshot() || null});
+                } else if (call.name === "canvas_run_generation") {
+                    if (!context) throw new Error("请先打开目标画布");
+                    const nodeId = String(call.input?.nodeId || "").trim();
+                    const mode = call.input?.mode;
+                    if (!nodeId || !context.getSnapshot().nodes.some(node => node.id === nodeId)) throw new Error("生成节点不存在");
+                    if (mode !== undefined && mode !== "image") throw new Error("Company Lite 仅配置图片生成");
+                    context.applyOps([{type:"run_generation", nodeId, mode:"image", ...(typeof call.input?.prompt === "string" ? {prompt:call.input.prompt} : {})}]);
+                    await context.persistCurrentSnapshot();
+                    result = {submitted:true,nodeId};
+                } else {
+                    if (!context) throw new Error("请先打开目标画布");
+                    if (context.getSnapshot().projectId !== projectId) throw new Error("画布项目已切换，请重新连接绘图工具");
+                    if (call.name === "canvas_apply_ops") { context.applyOps(call.input?.ops); await context.persistCurrentSnapshot(); result = context.getSnapshot(); await connection.writeState(result as CanvasAgentSnapshot); }
+                    else if (call.name === "canvas_read_image") {
+                        const node = context.getSnapshot().nodes.find(n => n.id === call.input?.nodeId);
+                        if (!node || node.type !== "image") throw new Error("图片节点不存在");
+                        const dataUrl = await imageToDataUrl({storageKey:node.metadata?.storageKey, url:node.metadata?.content});
+                        result = {nodeId:node.id, dataUrl, width:node.metadata?.naturalWidth, height:node.metadata?.naturalHeight};
+                    } else if (call.name === "canvas_crop_image" || call.name === "canvas_split_image" || call.name === "canvas_resample_image" || call.name === "canvas_stitch_images" || call.name === "canvas_compose_images" || call.name === "canvas_import_image") {
+                        result = await context.runImageOperation(toCanvasImageOperationRequest(call));
+                        await context.persistCurrentSnapshot();
+                        await connection.writeState(context.getSnapshot());
+                    } else throw new Error("未知绘图工具：" + call.name);
+                }
                 if (closed) return;
                 await post("/canvas/result", {requestId:call.requestId, result});
                 if (!closed) setAgentState({activity:"绘图工具已完成"});
@@ -117,7 +141,7 @@ export function CanvasToolPanel() {
     if (!panelOpen && !pending) return null;
     return <aside data-canvas-shortcuts-ignore className="w-80 shrink-0 border-l p-4 overflow-auto" style={{background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke}}>
         <p>Canvas 绘图工具</p><p>{connected ? "已连接" : "未连接"} · {activity}</p>
-        {studioManaged ? <p>当前任务连接由 Studio 管理。关闭后请从工作台重新打开任务画布。</p> : <>
+        {studioManaged ? <p>共享 Canvas 连接由 Company Lite 管理。</p> : <>
             <Input aria-label="绘图服务地址" placeholder="本地绘图服务地址" value={url} onChange={e=>setAgentState({url:e.target.value,enabled:false})}/>
             <Input.Password aria-label="连接令牌" placeholder="连接令牌" value={token} onChange={e=>setAgentState({token:e.target.value,enabled:false})}/>
             <Button onClick={()=>setAgentState({enabled:!enabled})}>{enabled ? "断开" : "连接"}</Button>

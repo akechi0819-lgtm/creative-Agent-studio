@@ -1,15 +1,11 @@
 import type { ReactNode } from "react";
 
 import { CanvasToolPanel } from "@/components/canvas/canvas-tool-panel";
-import { AppTopNav } from "@/components/layout/app-top-nav";
 
 export default function UserLayout({ children }: { children: ReactNode }) {
     return (
         <div className="flex h-dvh overflow-hidden bg-background text-foreground">
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                <AppTopNav />
-                <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
-            </div>
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>
             <CanvasToolPanel />
         </div>
     );
