@@ -18,8 +18,6 @@ jobs:
         os: [ubuntu-24.04, macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
-    env:
-      STUDIO_DATA_DIR: ${{ runner.temp }}/company-lite-ci-data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,3 +38,5 @@ jobs:
         run: npx playwright install chromium
       - name: Run source tests
         run: npm test
+        env:
+          STUDIO_DATA_DIR: ${{ runner.temp }}/company-lite-ci-data
