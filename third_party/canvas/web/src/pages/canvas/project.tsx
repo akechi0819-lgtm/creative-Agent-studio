@@ -116,6 +116,11 @@ type CanvasGenerationRequest = {
     controller: AbortController;
 };
 
+type CanvasGenerationSubmissionCallbacks = {
+    onSubmitted: () => void;
+    onError: (error: Error) => void;
+};
+
 const VIDEO_NODE_MAX_WIDTH = 420;
 const VIDEO_NODE_MAX_HEIGHT = 420;
 // Stable empty reference array prevents `... || []` from invalidating CanvasNode's React.memo on every render.
@@ -268,7 +273,8 @@ function InfiniteCanvasPage() {
     const selectedNodeIdsRef = useRef(selectedNodeIds);
     const viewportRef = useRef(viewport);
     const focusAnimRef = useRef<number | null>(null);
-    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>(null);
+    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, submission?: CanvasGenerationSubmissionCallbacks) => Promise<void>) | null>(null);
+    const submitGenerationRef = useRef<((nodeId: string, prompt: string) => Promise<{ submitted: true; nodeId: string }>) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
     const selectionBoxRef = useRef(selectionBox);
@@ -295,7 +301,7 @@ function InfiniteCanvasPage() {
 
     const startGenerationRequest = useCallback((targetNodeId: string, originNodeId: string, runningId = originNodeId, controller = new AbortController()) => {
         const previous = generationRequestsRef.current.get(targetNodeId);
-        if (previous?.controller !== controller) previous?.controller.abort();
+        if (previous && previous.controller !== controller) throw new Error("该节点正在生成图片，请先查询 generation_get_status，完成后再生成。");
         generationRequestsRef.current.set(targetNodeId, { targetNodeId, originNodeId, runningNodeId: runningId, controller });
         return controller;
     }, []);
@@ -388,7 +394,6 @@ function InfiniteCanvasPage() {
         generationRequestsRef.current.forEach((request) => {
             if (request.runningNodeId !== runningId) return;
             request.controller.abort();
-            generationRequestsRef.current.delete(request.targetNodeId);
             affectedNodeIds.add(request.targetNodeId);
             affectedNodeIds.add(request.originNodeId);
         });
@@ -794,6 +799,7 @@ function InfiniteCanvasPage() {
         selectedNodeIdsRef,
         viewportRef,
         generateNodeRef,
+        submitGenerationRef,
         setNodes,
         setConnections,
         setSelectedNodeIds,
@@ -2261,11 +2267,30 @@ function InfiniteCanvasPage() {
     }, []);
 
     const handleGenerateNode = useCallback(
-        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
+        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, submission?: CanvasGenerationSubmissionCallbacks) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+            const reportFailure = (error: Error, updateNode = true) => {
+                submission?.onError(error);
+                if (!submission) message.error(error.message);
+                if (updateNode) setNodes((prev) => prev.map((node) => node.id === nodeId
+                    ? { ...node, metadata: { ...node.metadata, status: node.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: error.message } }
+                    : node));
+            };
+            if ((mode as string) !== "image") {
+                reportFailure(new Error("Company Lite 仅配置图片生成"));
+                return;
+            }
+            if (!sourceNode) {
+                reportFailure(new Error("生成节点不存在"));
+                return;
+            }
+            if (generationRequestsRef.current.has(nodeId)) {
+                reportFailure(new Error("该节点正在生成图片，请先查询 generation_get_status，完成后再生成。"), false);
+                return;
+            }
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
+                reportFailure(new Error("图片服务尚未配置，请回到宿主智能体配置图片 API。"));
                 return;
             }
 
@@ -2274,7 +2299,10 @@ function InfiniteCanvasPage() {
             const builtinPanel = sourceNode ? getNodeDefinition(sourceNode.type)?.useBuiltinPanel : undefined;
             if (sourceNode && builtinPanel?.writeBackToSelf && builtinPanel.mode === "image") {
                 const scene = prompt.trim();
-                if (!scene) return;
+                if (!scene) {
+                    reportFailure(new Error("请先填写图片生成提示词。"));
+                    return;
+                }
                 setRunningNodeId(nodeId);
                 const controller = startGenerationRequest(nodeId, nodeId, nodeId);
                 setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
@@ -2283,14 +2311,15 @@ function InfiniteCanvasPage() {
                     const context = await hydrateNodeGenerationContext(buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, fullPrompt));
                     const refs = context.referenceImages;
                     const image = refs.length
-                        ? await requestEdit({ ...generationConfig, count: "1" }, context.prompt, refs, { signal: controller.signal }).then((items) => items[0])
-                        : await requestGeneration({ ...generationConfig, count: "1" }, context.prompt, { signal: controller.signal }).then((items) => items[0]);
+                        ? await requestEdit({ ...generationConfig, count: "1" }, context.prompt, refs, { signal: controller.signal, onSubmitted: submission?.onSubmitted }).then((items) => items[0])
+                        : await requestGeneration({ ...generationConfig, count: "1" }, context.prompt, { signal: controller.signal, onSubmitted: submission?.onSubmitted }).then((items) => items[0]);
                     const uploaded = await uploadImage(image.dataUrl, { signal: controller.signal });
                     setNodes((prev) =>
                         prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...imageMetadata(uploaded), prompt: scene, model: generationConfig.model, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)),
                     );
                     setDialogNodeId(null);
                 } catch (error) {
+                    submission?.onError(error instanceof Error ? error : new Error(String(error)));
                     if (!isGenerationCanceled(error)) {
                         const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
                         message.error(errorDetails);
@@ -2307,13 +2336,22 @@ function InfiniteCanvasPage() {
             const runController = startGenerationRequest(nodeId, nodeId, nodeId);
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
-            const generationContext = await hydrateNodeGenerationContext(
-                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
-            );
+            let generationContext: Awaited<ReturnType<typeof hydrateNodeGenerationContext>>;
+            try {
+                generationContext = await hydrateNodeGenerationContext(
+                    buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
+                );
+            } catch (error) {
+                finishGenerationRequest(nodeId, runController);
+                setRunningNodeId(null);
+                reportFailure(error instanceof Error ? error : new Error(String(error)));
+                return;
+            }
             const effectivePrompt = generationContext.prompt.trim();
             if (runController.signal.aborted) {
                 finishGenerationRequest(nodeId, runController);
                 setRunningNodeId(null);
+                submission?.onError(new Error("图片生成请求在发送前已取消。"));
                 return;
             }
             const markSourceStatus = sourceNode?.type !== CanvasNodeType.Image && !editingTextNode;
@@ -2337,6 +2375,7 @@ function InfiniteCanvasPage() {
                             ? [{ id: sourceNode.id, name: `${sourceNode.title || sourceNode.id}.png`, type: sourceNode.metadata.mimeType || "image/png", dataUrl: sourceNode.metadata.content, storageKey: sourceNode.metadata.storageKey }]
                             : [];
                     const referenceImages = [...new Map([...sourceReference, ...generationContext.referenceImages].map((image) => [image.id, image])).values()];
+                    if (!effectivePrompt && referenceImages.length === 0) throw new Error("请先填写图片生成提示词或连接参考图片。");
                     const generationType = referenceImages.length ? ("edit" as const) : ("generation" as const);
                     const generationMetadata = buildImageGenerationMetadata(generationType, generationConfig, count, referenceImages);
                     const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : isImageNode ? CanvasNodeType.Image : CanvasNodeType.Text];
@@ -2411,8 +2450,8 @@ function InfiniteCanvasPage() {
                         imageIds.map(async (imageId) => {
                             try {
                                 const image = referenceImages.length
-                                    ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, { signal: controller.signal }).then((items) => items[0])
-                                    : await requestGeneration({ ...generationConfig, count: "1" }, effectivePrompt, { signal: controller.signal }).then((items) => items[0]);
+                                    ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, { signal: controller.signal, onSubmitted: submission?.onSubmitted }).then((items) => items[0])
+                                    : await requestGeneration({ ...generationConfig, count: "1" }, effectivePrompt, { signal: controller.signal, onSubmitted: submission?.onSubmitted }).then((items) => items[0]);
                                 const uploaded = await uploadImage(image.dataUrl, { signal: controller.signal });
                                 const imageSize = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
                                 const item: CanvasNodeImage = { id: imageId, status: NODE_STATUS_SUCCESS, content: uploaded.url, storageKey: uploaded.storageKey, naturalWidth: uploaded.width, naturalHeight: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
@@ -2444,6 +2483,7 @@ function InfiniteCanvasPage() {
                                 if (isConfigNode) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
                                 return true;
                             } catch (error) {
+                                submission?.onError(error instanceof Error ? error : new Error(String(error)));
                                 if (isGenerationCanceled(error)) return false;
                                 const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
                                 if (!firstError) firstError = errorDetails;
@@ -2676,6 +2716,7 @@ function InfiniteCanvasPage() {
                     }),
                 );
             } catch (error) {
+                submission?.onError(error instanceof Error ? error : new Error(String(error)));
                 if (isGenerationCanceled(error)) return;
                 const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
                 message.error(errorDetails);
@@ -2707,8 +2748,41 @@ function InfiniteCanvasPage() {
         generateNodeRef.current = handleGenerateNode;
     }, [handleGenerateNode]);
 
+    const submitImageGeneration = useCallback((nodeId: string, prompt: string) => {
+        return new Promise<{ submitted: true; nodeId: string }>((resolve, reject) => {
+            let settled = false;
+            const onSubmitted = () => {
+                if (settled) return;
+                settled = true;
+                resolve({ submitted: true, nodeId });
+            };
+            const onError = (error: Error) => {
+                if (settled) return;
+                settled = true;
+                reject(error);
+            };
+            void handleGenerateNode(nodeId, "image", prompt, { onSubmitted, onError }).catch((error) => {
+                onError(error instanceof Error ? error : new Error(String(error)));
+            });
+        });
+    }, [handleGenerateNode]);
+    useEffect(() => {
+        submitGenerationRef.current = submitImageGeneration;
+        return () => {
+            if (submitGenerationRef.current === submitImageGeneration) submitGenerationRef.current = null;
+        };
+    }, [submitImageGeneration]);
+
     const handleRetryNode = useCallback(
         async (node: CanvasNodeData, imageId?: string) => {
+            if (node.type !== CanvasNodeType.Image) {
+                message.error("Company Lite 仅配置图片生成");
+                return;
+            }
+            if (generationRequestsRef.current.has(node.id)) {
+                message.error("该节点正在生成图片，请先查询 generation_get_status，完成后再生成。");
+                return;
+            }
             if (hasResumableVideoTask(node)) {
                 await pollVideoNodeTask(node);
                 return;
@@ -3000,13 +3074,13 @@ function InfiniteCanvasPage() {
     }, []);
     const handleNodeRetry = useCallback(
         (node: CanvasNodeData) => {
-            if (node.type === CanvasNodeType.Text && (node.metadata?.textCount || 1) > 1) {
-                void generateNodeRef.current?.(node.id, "text", node.metadata?.prompt || "");
+            if (node.type !== CanvasNodeType.Image) {
+                message.error("Company Lite 仅配置图片生成");
                 return;
             }
             void handleRetryNode(node);
         },
-        [handleRetryNode],
+        [handleRetryNode, message],
     );
     const handleNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
         event.preventDefault();

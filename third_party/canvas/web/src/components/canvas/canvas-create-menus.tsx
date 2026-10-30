@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { ImageIcon, List, Music2, Settings2, Video, X } from "lucide-react";
+import { ImageIcon, List, Settings2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -21,7 +21,7 @@ export function ConnectionCreateMenu({
 }: {
     pending: PendingConnectionCreate;
     scale?: number;
-    onCreate: (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio) => void;
+    onCreate: (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config) => void;
     onClose: () => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -45,8 +45,6 @@ export function ConnectionCreateMenu({
             <div className="grid gap-0.5">
                 <ConnectionCreateOption theme={theme} icon={<List className="size-4" />} title={t("canvas.createMenu.text")} description={t("canvas.createMenu.textDescription")} onClick={() => onCreate(CanvasNodeType.Text)} />
                 <ConnectionCreateOption theme={theme} icon={<ImageIcon className="size-4" />} title={t("canvas.createMenu.image")} onClick={() => onCreate(CanvasNodeType.Image)} />
-                <ConnectionCreateOption theme={theme} icon={<Video className="size-4" />} title={t("canvas.createMenu.video")} onClick={() => onCreate(CanvasNodeType.Video)} />
-                <ConnectionCreateOption theme={theme} icon={<Music2 className="size-4" />} title={t("canvas.createMenu.audio")} onClick={() => onCreate(CanvasNodeType.Audio)} />
                 <ConnectionCreateOption theme={theme} icon={<Settings2 className="size-4" />} title={t("canvas.createMenu.config")} description={t("canvas.createMenu.configDescription")} onClick={() => onCreate(CanvasNodeType.Config)} />
             </div>
         </div>
@@ -97,6 +95,7 @@ export function NodeCreateMenu({ position, scale = 1, onCreate, onClose }: { pos
             ref={menuRef}
             className="absolute z-[120] max-h-[70vh] w-[240px] overflow-y-auto rounded-2xl border p-2 shadow-2xl backdrop-blur thin-scrollbar"
             data-canvas-no-zoom
+            data-node-create-menu
             style={{ left: position.x, top: position.y, transform: `scale(${1 / scale})`, transformOrigin: "top left", background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}
         >

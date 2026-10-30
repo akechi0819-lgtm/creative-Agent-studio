@@ -91,13 +91,19 @@ export function CanvasToolPanel() {
                     result = await runSiteTool(call.name, call.input || {}, navigate, {canvasSnapshot:context?.getSnapshot() || null});
                 } else if (call.name === "canvas_run_generation") {
                     if (!context) throw new Error("请先打开目标画布");
+                    if (context.getSnapshot().projectId !== projectId) throw new Error("画布项目已切换，请重新连接绘图工具");
                     const nodeId = String(call.input?.nodeId || "").trim();
                     const mode = call.input?.mode;
-                    if (!nodeId || !context.getSnapshot().nodes.some(node => node.id === nodeId)) throw new Error("生成节点不存在");
+                    const node = context.getSnapshot().nodes.find(node => node.id === nodeId);
+                    if (!nodeId || !node) throw new Error("生成节点不存在");
                     if (mode !== undefined && mode !== "image") throw new Error("Company Lite 仅配置图片生成");
-                    context.applyOps([{type:"run_generation", nodeId, mode:"image", ...(typeof call.input?.prompt === "string" ? {prompt:call.input.prompt} : {})}]);
+                    const prompt = (typeof call.input?.prompt === "string" ? call.input.prompt.trim() : "")
+                        || node.metadata?.composerContent
+                        || node.metadata?.prompt
+                        || "";
+                    result = await context.submitGeneration(nodeId, prompt);
                     await context.persistCurrentSnapshot();
-                    result = {submitted:true,nodeId};
+                    await connection.writeState(context.getSnapshot());
                 } else {
                     if (!context) throw new Error("请先打开目标画布");
                     if (context.getSnapshot().projectId !== projectId) throw new Error("画布项目已切换，请重新连接绘图工具");

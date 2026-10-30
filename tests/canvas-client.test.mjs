@@ -53,7 +53,12 @@ test("本地 HTTP 桥接错误会传回工具调用方", async () => {
     json(response, 404, { error: "unexpected path" });
   });
   try {
-    await assert.rejects(callCanvasTool("canvas_get_state", {}, configFor(bridge.url)), /canvas_get_state: local bridge failure/);
+    await assert.rejects(callCanvasTool("canvas_get_state", {}, configFor(bridge.url)), error => {
+      assert.equal(error.code, "ERR_CANVAS_TOOL_FAILED");
+      assert.equal(error.safeMessage, "Canvas 工具请求失败，请核对画布状态。");
+      assert.doesNotMatch(error.message, /local bridge failure/);
+      return true;
+    });
   } finally {
     await bridge.close();
   }
@@ -133,4 +138,45 @@ test("桥接故障诊断编号传回调用方且不采用服务器任意错误�
       return true;
     });
   } finally { await bridge.close(); }
+});
+
+test("仅两类固定的 409 画布错误会传给宿主作为可执行提示", async () => {
+  const cases = [
+    ["图片服务尚未配置，请回到宿主智能体配置图片 API。", "ERR_CANVAS_IMAGE_API_UNCONFIGURED"],
+    ["该节点正在生成图片，请先查询 generation_get_status，完成后再生成。", "ERR_CANVAS_NODE_BUSY"],
+  ];
+  for (const [message, code] of cases) {
+    const bridge = await startBridge((request, response) => {
+      if (request.url === "/health") return replyToHealth(response);
+      json(response, 409, { ok: false, requestId: "e8ee0961-a2a3-4d21-a770-9f1d54a0af17", error: message });
+    });
+    try {
+      await assert.rejects(callCanvasTool("canvas_run_generation", {}, configFor(bridge.url)), error => {
+        assert.equal(error.code, code);
+        assert.equal(error.status, 409);
+        assert.equal(error.message, message);
+        assert.equal(error.safeMessage, message);
+        return true;
+      });
+    } finally {
+      await bridge.close();
+    }
+  }
+});
+
+test("其他 409 上游错误内容仍保持隐藏", async () => {
+  const bridge = await startBridge((request, response) => {
+    if (request.url === "/health") return replyToHealth(response);
+    json(response, 409, { ok: false, error: "private prompt secret" });
+  });
+  try {
+    await assert.rejects(callCanvasTool("canvas_get_state", {}, configFor(bridge.url)), error => {
+      assert.equal(error.code, "ERR_CANVAS_TOOL_FAILED");
+      assert.doesNotMatch(error.message, /private|secret/);
+      assert.doesNotMatch(error.safeMessage, /private|secret/);
+      return true;
+    });
+  } finally {
+    await bridge.close();
+  }
 });

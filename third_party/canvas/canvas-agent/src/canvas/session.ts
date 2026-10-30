@@ -36,6 +36,7 @@ const SITE_TOOLS = new Set<ToolName>([
 
 const DIRECT_CANVAS_TOOLS = new Set<ToolName>([
     "canvas_read_image",
+    "canvas_run_generation",
     "canvas_crop_image",
     "canvas_split_image",
     "canvas_resample_image",
@@ -126,7 +127,13 @@ export class CanvasSession {
         const item = body.requestId ? this.pending.get(body.requestId) : null;
         if (!item || item.targetKey !== targetKey) return false;
         this.pending.delete(body.requestId!);
-        body.error ? item.reject(new Error(body.error)) : item.resolve(body.result);
+        if (body.error === "图片服务尚未配置，请回到宿主智能体配置图片 API。" || body.error === "该节点正在生成图片，请先查询 generation_get_status，完成后再生成。") {
+            item.reject(new BridgeError(body.error, 409));
+        } else if (body.error) {
+            item.reject(new Error(body.error));
+        } else {
+            item.resolve(body.result);
+        }
         return true;
     }
 

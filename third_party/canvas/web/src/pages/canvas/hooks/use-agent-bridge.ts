@@ -13,7 +13,7 @@ import { deleteStoredImages, imageToDataUrl, uploadImage } from "@/services/imag
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ContextMenuState, type ViewportTransform } from "@/types/canvas";
 
-type GenerateNodeRef = MutableRefObject<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>;
+type GenerateNodeRef = MutableRefObject<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, submission?: { onSubmitted: () => void; onError: (error: Error) => void }) => Promise<void>) | null>;
 
 type AgentBridgeParams = {
     projectLoaded: boolean;
@@ -28,6 +28,7 @@ type AgentBridgeParams = {
     selectedNodeIdsRef: MutableRefObject<Set<string>>;
     viewportRef: MutableRefObject<ViewportTransform>;
     generateNodeRef: GenerateNodeRef;
+    submitGenerationRef: MutableRefObject<((nodeId: string, prompt: string) => Promise<{ submitted: true; nodeId: string }>) | null>;
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
     setConnections: Dispatch<SetStateAction<CanvasConnection[]>>;
     setSelectedNodeIds: Dispatch<SetStateAction<Set<string>>>;
@@ -41,11 +42,16 @@ type AgentBridgeParams = {
  * capabilities to the drawing-tool store. All members except applyAgentOps are internal.
  */
 export function useAgentBridge(params: AgentBridgeParams) {
-    const { projectLoaded, projectId, title, nodes, connections, selectedNodeIds, viewport, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, generateNodeRef, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setViewport, setContextMenu } =
+    const { projectLoaded, projectId, title, nodes, connections, selectedNodeIds, viewport, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, generateNodeRef, submitGenerationRef, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setViewport, setContextMenu } =
         params;
     const setAgentCanvasContext = useCanvasToolStore((state) => state.setCanvasContext);
     const [agentUndoSnapshot, setAgentUndoSnapshot] = useState<CanvasAgentSnapshot | null>(null);
     const projectTitle = title || i18n.t("canvas.project.untitled");
+
+    const submitGeneration = useCallback((nodeId: string, prompt: string) => {
+        if (!submitGenerationRef.current) return Promise.reject(new Error("图片生成请求尚未就绪"));
+        return submitGenerationRef.current(nodeId, prompt);
+    }, [submitGenerationRef]);
 
     const agentSnapshot = useMemo<CanvasAgentSnapshot>(() => ({ projectId, title: projectTitle, nodes, connections, selectedNodeIds: Array.from(selectedNodeIds), viewport }), [connections, projectTitle, nodes, projectId, selectedNodeIds, viewport]);
     const applyAgentOps = useCallback(
@@ -209,9 +215,9 @@ export function useAgentBridge(params: AgentBridgeParams) {
             setAgentCanvasContext(null);
             return;
         }
-        setAgentCanvasContext({ snapshot: agentSnapshot, getSnapshot: getAgentSnapshot, applyOps: applyAgentOps, persistCurrentSnapshot, runImageOperation, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
+        setAgentCanvasContext({ snapshot: agentSnapshot, getSnapshot: getAgentSnapshot, applyOps: applyAgentOps, persistCurrentSnapshot, submitGeneration, runImageOperation, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
         return () => setAgentCanvasContext(null);
-    }, [agentSnapshot, applyAgentOps, getAgentSnapshot, persistCurrentSnapshot, runImageOperation, agentUndoSnapshot, projectLoaded, setAgentCanvasContext, undoAgentOps]);
+    }, [agentSnapshot, applyAgentOps, getAgentSnapshot, persistCurrentSnapshot, submitGeneration, runImageOperation, agentUndoSnapshot, projectLoaded, setAgentCanvasContext, undoAgentOps]);
 
     return { applyAgentOps };
 }

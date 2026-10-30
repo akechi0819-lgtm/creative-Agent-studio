@@ -511,22 +511,25 @@ function LoadingContent({ theme }: Pick<NodeContentRendererProps, "theme">) {
 
 function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "node" | "theme" | "onRetry">) {
     const { t } = useTranslation();
+    const canRetry = node.type === CanvasNodeType.Image;
     return (
         <div className="flex max-w-[260px] flex-col items-center gap-3 px-5 text-center">
             <div className="text-xs leading-5 text-red-300">{node.metadata?.errorDetails || t("canvas.node.failed")}</div>
-            <button
-                type="button"
-                className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition hover:scale-[1.02]"
-                style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
-                onClick={(event) => {
-                    event.stopPropagation();
-                    onRetry?.(node);
-                }}
-                onMouseDown={(event) => event.stopPropagation()}
-            >
-                <RefreshCw className="size-3.5" />
-                {t("canvas.node.retry")}
-            </button>
+            {canRetry ? (
+                <button
+                    type="button"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition hover:scale-[1.02]"
+                    style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onRetry?.(node);
+                    }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                >
+                    <RefreshCw className="size-3.5" />
+                    {t("canvas.node.retry")}
+                </button>
+            ) : null}
         </div>
     );
 }

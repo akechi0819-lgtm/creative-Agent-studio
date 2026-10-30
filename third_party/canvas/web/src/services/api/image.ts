@@ -96,7 +96,7 @@ type GeminiPayload = {
     promptFeedback?: { blockReason?: string };
 };
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
-type RequestOptions = { signal?: AbortSignal };
+type RequestOptions = { signal?: AbortSignal; onSubmitted?: () => void };
 
 const IMAGE_QUALITY_VALUES = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_IMAGE_SHORT_SIDE = 1024;
@@ -683,7 +683,7 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     for (const image of references) {
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
     }
-    const response = await axios.post<GeminiPayload>(
+    const request = axios.post<GeminiPayload>(
         geminiApiUrl(config, "generateContent"),
         {
             ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
@@ -691,6 +691,8 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
         },
         { headers: geminiHeaders(config), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS },
     );
+    options?.onSubmitted?.();
+    const response = await request;
     return parseGeminiImagePayload(response.data);
 }
 
@@ -720,7 +722,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
         const requestSize = resolveRequestSize(config.size);
         const background = normalizeBackground(config.background);
         try {
-            const result = await runModelPlugin({
+            const request = runModelPlugin({
                 capability: "image",
                 script,
                 config: requestConfig,
@@ -729,6 +731,8 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
                 signal: options?.signal,
             });
+            options?.onSubmitted?.();
+            const result = await request;
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -745,7 +749,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const requestSize = resolveRequestSize(config.size);
     const background = normalizeBackground(config.background);
     try {
-        const response = await axios.post<ImageApiResponse>(
+        const request = axios.post<ImageApiResponse>(
             aiApiUrl(requestConfig, "/images/generations"),
             {
                 model: requestConfig.model,
@@ -764,6 +768,8 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 timeout: IMAGE_REQUEST_TIMEOUT_MS,
             },
         );
+        options?.onSubmitted?.();
+        const response = await request;
         const images = await parseImagePayload(response.data);
         return images;
     } catch (error) {
@@ -783,7 +789,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         const background = normalizeBackground(config.background);
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
-            const result = await runModelPlugin({
+            const request = runModelPlugin({
                 capability: "image",
                 script,
                 config: requestConfig,
@@ -792,6 +798,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
                 signal: options?.signal,
             });
+            options?.onSubmitted?.();
+            const result = await request;
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -831,7 +839,9 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     files.forEach((file) => formData.append(imageField, file));
 
     try {
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
+        const request = axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
+        options?.onSubmitted?.();
+        const response = await request;
         const images = await parseImagePayload(response.data);
         return images;
     } catch (error) {

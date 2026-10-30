@@ -6,6 +6,7 @@ export type CanvasToolContext = {
     getSnapshot: () => CanvasAgentSnapshot;
     applyOps: (ops?: CanvasAgentOp[]) => CanvasAgentSnapshot;
     persistCurrentSnapshot: () => Promise<void>;
+    submitGeneration: (nodeId: string, prompt: string) => Promise<{ submitted: true; nodeId: string }>;
     runImageOperation: (request: CanvasImageOperationRequest) => Promise<CanvasImageOperationResult>;
     undoOps: () => CanvasAgentSnapshot | null;
     canUndo: boolean;

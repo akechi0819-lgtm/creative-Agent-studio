@@ -206,6 +206,27 @@ test("tool results are accepted only from the requesting client", async (t) => {
     assert.deepEqual(await result, { ok: true });
 });
 
+test("only the two fixed actionable browser errors become safe HTTP bridge errors", async (t) => {
+    const session = new CanvasSession("instance-1");
+    const client = connect(session, "client-1");
+    t.after(() => client.close());
+
+    for (const message of [
+        "图片服务尚未配置，请回到宿主智能体配置图片 API。",
+        "该节点正在生成图片，请先查询 generation_get_status，完成后再生成。",
+    ]) {
+        const result = session.callTool("site_navigate", { path: "/canvas" }, { projectId: "project-1", clientId: "client-1" });
+        const requestId = client.events.filter((event) => event.type === "tool_call").at(-1)?.data.requestId as string;
+        assert.equal(session.resolveResult("project-1", "client-1", { requestId, error: message }), true);
+        await assert.rejects(result, (error) => error instanceof BridgeError && error.statusCode === 409 && error.message === message);
+    }
+
+    const result = session.callTool("site_navigate", { path: "/canvas" }, { projectId: "project-1", clientId: "client-1" });
+    const requestId = client.events.filter((event) => event.type === "tool_call").at(-1)?.data.requestId as string;
+    assert.equal(session.resolveResult("project-1", "client-1", { requestId, error: "private prompt secret" }), true);
+    await assert.rejects(result, (error) => error instanceof Error && !(error instanceof BridgeError) && error.message === "private prompt secret");
+});
+
 test("replacing a same-client connection invalidates its old state and pending calls", async (t) => {
     const session = new CanvasSession("instance-1");
     const oldClient = connect(session, "client-1");
