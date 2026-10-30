@@ -4,14 +4,15 @@
 
 ## 源码快速开始
 
-本分支名为 `codex/company-lite`。下方仓库地址是占位符，示例不表示本分支已推送或可从远端获取；使用管理员提供的可访问仓库地址和分支。
+源码分支 `codex/company-lite` 已推送到 [GitHub 仓库](https://github.com/akechi0819-lgtm/creative-Agent-studio)。
 
 ```sh
 git --version
 node --version
 npm --version
-git clone --branch codex/company-lite <仓库地址> CompanyLite
+git clone --branch codex/company-lite https://github.com/akechi0819-lgtm/creative-Agent-studio.git CompanyLite
 cd CompanyLite
+node scripts/setup.mjs status
 node scripts/prepare.mjs
 node scripts/setup.mjs status
 ```
@@ -22,7 +23,7 @@ node scripts/setup.mjs status
 
 ## 安装与连接
 
-只在首次安装、配置或故障修复时简洁展示五项真实进度；日常创作不重复安装清单。自动推进可执行检查，仅在本人登录、输入凭据或需要宿主审批时等待，不要求逐项确认。
+首次安装、配置或故障修复时，先运行 `node scripts/setup.mjs status` 并简洁展示五项真实进度，再按状态自动运行耗时的 `node scripts/prepare.mjs`；准备完成后重新读取状态。不要在展示初始状态前开始构建。日常创作不重复安装清单。自动推进可执行检查，仅在本人登录、输入凭据或需要宿主审批时等待，不要求逐项确认。
 
 1. 源码根目录及 Git、Node.js、npm 运行依赖。
 2. Canvas 构建状态，以及当前宿主实际调用 `canvas_status` 后的连接结果。
@@ -59,6 +60,8 @@ node scripts/setup.mjs check-image
 命令仅读取一次本机剪贴板，把 Key 写入本机私有配置，不回显或写入日志；JSON 不含 Key。若剪贴板入口不可用，可按[宿主使用说明](docs/代理宿主使用.md)改用仓库外的私有 JSON 文件。不得要求用户把 Key 粘贴到对话或普通命令参数。`check-image` 只检查 API 连接，不发起生成请求。
 
 配置模板和 revision 由宿主根据当前 setup 状态生成，员工无需创建或理解 JSON。备用文件也由宿主准备，员工只在本机编辑器中填写 Key；详细操作见[宿主使用说明](docs/代理宿主使用.md)。
+
+管理员提供的非敏感图片地址／模型及素材 MCP 默认值示例，以及如何对每次 setup 调用指定外置 defaults 文件，见[宿主使用说明中的管理员默认值小节](docs/代理宿主使用.md#管理员提供的公共默认值)。
 
 共享 Canvas 服务可从源码根分别通过 `node scripts/studio.mjs status`、`node scripts/studio.mjs open @JSON` 和 `node scripts/studio.mjs mcp-config` 查看、打开或配置。宿主日常绘图优先直接调用 Canvas MCP；创作时使用 `canvas_open` 选择新项目、最近项目或历史项目。Canvas 历史和图片 API 配置跨线程共用，其他线程的需求、来源和批准不会自动沿用。
 

@@ -172,6 +172,126 @@ async function readJsonFile(file, label) {
   }
 }
 
+async function readPreparationFile(file, label) {
+  let source;
+  try { source = await fs.readFile(file, 'utf8'); }
+  catch (error) {
+    if (error.code === 'ENOENT') return { present: false, value: null };
+    throw setupError('ERR_SETUP_STATE', `${label} 无法读取`);
+  }
+  try { return { present: true, value: JSON.parse(source) }; }
+  catch { throw setupError('ERR_SETUP_STATE', `${label} 格式无效`); }
+}
+
+function preparationPidIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+function lockStartedAfterState(lock, state) {
+  const stateTime = state.status === 'ready' ? Date.parse(state.completedAt)
+    : state.status === 'failed' ? Date.parse(state.failedAt)
+      : Date.parse(state.startedAt);
+  const lockTime = Date.parse(lock.startedAt);
+  if (!Number.isFinite(stateTime) || !Number.isFinite(lockTime)) return true;
+  return lockTime > stateTime;
+}
+
+function preparationStage(state) {
+  const dependency = Object.entries(state?.dependencies || {})
+    .find(([, entry]) => ['installing', 'failed'].includes(entry?.status));
+  if (dependency) return dependency[0] === '.' ? 'package' : 'canvas';
+  if (Object.values(state?.builds || {}).some((entry) => ['building', 'failed'].includes(entry?.status))) return 'canvas';
+  return state?.dependencies?.['.']?.status === 'ready' ? 'canvas' : 'package';
+}
+
+async function readPreparationStatus(repoRoot) {
+  const directory = path.join(repoRoot, '.studio-runtime');
+  const [stateFile, lockFile] = await Promise.all([
+    readPreparationFile(path.join(directory, 'prepare-state.json'), '源码准备状态'),
+    readPreparationFile(path.join(directory, 'prepare.lock'), '源码准备锁'),
+  ]);
+  const state = stateFile.value;
+  if (stateFile.present && (!state || typeof state !== 'object' || Array.isArray(state)
+    || state.schemaVersion !== 3 || !['preparing', 'ready', 'failed'].includes(state.status)
+    || !state.dependencies || typeof state.dependencies !== 'object' || Array.isArray(state.dependencies)
+    || !state.builds || typeof state.builds !== 'object' || Array.isArray(state.builds))) {
+    throw setupError('ERR_SETUP_STATE', '源码准备状态格式无效');
+  }
+
+  const lock = lockFile.value;
+  if (lockFile.present && (!lock || typeof lock !== 'object' || Array.isArray(lock)
+    || !Number.isInteger(lock.pid) || lock.pid <= 0)) {
+    throw setupError('ERR_SETUP_STATE', '源码准备锁格式无效');
+  }
+  const lockAlive = lockFile.present && preparationPidIsAlive(lock.pid);
+  if (state && lockAlive && lockStartedAfterState(lock, state)) {
+    return { phase: 'preparing', state: null, pid: lock.pid, lockPresent: true };
+  }
+  if (state?.status === 'ready') return { phase: 'ready', state, lockAlive, pid: lock?.pid ?? null };
+  if (state?.status === 'failed') return { phase: 'failed', state, pid: lock?.pid ?? null };
+  if (state?.status === 'preparing') {
+    return { phase: lockAlive ? 'preparing' : 'interrupted', state, pid: lock?.pid ?? null, lockPresent: lockFile.present };
+  }
+  if (lockAlive) return { phase: 'preparing', state: null, pid: lock.pid, lockPresent: true };
+  if (lockFile.present) return { phase: 'interrupted', state: null, pid: lock.pid, lockPresent: true };
+  return null;
+}
+
+function applyPreparationStatus(packageStep, canvasStep, preparation) {
+  if (!preparation || preparation.phase === 'ready') return;
+  const stage = preparationStage(preparation.state);
+  const step = stage === 'package' ? packageStep : canvasStep;
+  const active = preparation.phase === 'preparing';
+  const failedDependency = Object.values(preparation.state?.dependencies || {}).find((entry) => entry?.status === 'failed');
+  const failedBuild = Object.values(preparation.state?.builds || {}).find((entry) => entry?.status === 'failed');
+  const failure = failedDependency?.error || failedBuild?.error || preparation.state?.error || '准备过程未完成';
+  const detail = typeof failure === 'string' ? failure : '准备过程未完成';
+  step.status = active ? 'preparing' : 'needs_action';
+  step.complete = false;
+  step.actionNeeded = !active;
+  step.error = active ? null : {
+    code: preparation.phase === 'failed' ? 'ERR_SETUP_PREPARATION_FAILED' : 'ERR_SETUP_PREPARATION_INTERRUPTED',
+    message: detail,
+  };
+  if (active) {
+    const installing = Object.entries(preparation.state?.dependencies || {})
+      .find(([, entry]) => entry?.status === 'installing');
+    const building = Object.entries(preparation.state?.builds || {})
+      .find(([, entry]) => entry?.status === 'building');
+    if (installing) {
+      const component = installing[0] === '.' ? '项目' : installing[0].endsWith('canvas-agent') ? 'Canvas Agent' : 'Canvas Web';
+      step.summary = `正在安装 ${component} 依赖。`;
+    } else if (building) {
+      const component = building[0] === 'CanvasAgent' ? 'Canvas Agent' : 'Canvas Web';
+      step.summary = `正在构建 ${component}。`;
+    } else if (preparation.state) {
+      step.summary = stage === 'package' ? '正在检查项目运行依赖。' : '正在核验 Canvas Agent 与 Canvas Web 构建产物。';
+    } else {
+      step.summary = `源码准备已启动${preparation.pid ? `（PID ${preparation.pid}）` : ''}，正在写入准备状态。`;
+    }
+    step.nextAction = '源码准备仍在进行，请稍后重新查看状态。';
+  } else if (preparation.phase === 'failed') {
+    step.summary = `源码准备失败：${detail}`;
+    step.nextAction = '修复准备失败原因后运行 node scripts/prepare.mjs。';
+  } else {
+    step.summary = '源码准备已中断，未发现活动准备进程；旧构建文件不会作为本次准备成功的证明。';
+    step.nextAction = '运行 node scripts/prepare.mjs 重新开始源码准备。';
+  }
+  step.checks.push({
+    name: '源码准备状态',
+    ok: active,
+    detail: active
+      ? step.summary
+      : preparation.phase === 'failed' ? detail : step.summary,
+  });
+}
+
 async function readHostReport(root) {
   const value = await readJsonFile(path.join(root, 'setup', 'host-report.json'), '宿主报告');
   if (value === null) return null;
@@ -248,7 +368,7 @@ function stageLogs(steps, hostReport, imageCheck, defaultsError) {
 export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion = process.version, env = process.env } = {}) {
   const resolvedRoot = rootPath(root);
   const resolvedRepo = path.resolve(repoRoot);
-  const [packageStep, canvasStep, record, hostReport, imageCheck, defaults, canvasMcpCheck] = await Promise.all([
+  const [packageStep, canvasStep, record, hostReport, imageCheck, defaults, canvasMcpCheck, preparation] = await Promise.all([
     checkPackage(resolvedRepo, nodeVersion),
     checkCanvasComponent(resolvedRepo),
     readConfigRecord({ root: resolvedRoot }),
@@ -256,6 +376,7 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     readImageCheck(resolvedRoot),
     loadDefaults(resolvedRepo, env),
     readJsonFile(path.join(resolvedRoot, 'setup', 'canvas-mcp-check.json'), '本地 Canvas MCP 检查'),
+    readPreparationStatus(resolvedRepo),
   ]);
   const componentsReady = canvasStep.complete;
   const mcpReady = canvasMcpCheck?.service === 'company-lite-canvas' && Boolean(safeTimestamp(canvasMcpCheck.checkedAt));
@@ -273,6 +394,7 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
       summary:'画布组件已就绪，等待宿主智能体连接本地 Canvas MCP。',
       nextAction:'运行 node scripts/studio.mjs mcp-config 取得 command/args，再按所用宿主实际配置格式添加本机 stdio MCP，并实际调用 canvas_status。无需打开画布或生成图片。'});
   }
+  applyPreparationStatus(packageStep, canvasStep, preparation);
 
   const materialReady = hostReport?.status === 'connected';
   const materialMcpUrl = defaults.materials?.mcpUrl || '';
@@ -417,7 +539,9 @@ function cryptoRandom() {
 
 function modelsEndpoint(baseUrl) {
   const parsed = new URL(baseUrl);
-  parsed.pathname = `${parsed.pathname.replace(/\/+$/, '')}/models`;
+  const basePath = parsed.pathname.replace(/\/+$/, '');
+  const apiPath = /\/v1$/i.test(basePath) ? basePath : `${basePath}/v1`;
+  parsed.pathname = `${apiPath}/models`;
   parsed.search = '';
   parsed.hash = '';
   return parsed.toString();
