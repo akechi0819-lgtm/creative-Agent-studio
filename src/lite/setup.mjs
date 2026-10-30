@@ -2,6 +2,8 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { dataRoot } from '../canvas/client.mjs';
+import { readMaterialConfig, saveMaterialConfig } from '../materials/config.mjs';
+import { verifyMaterials } from '../materials/verify.mjs';
 import { publicConfig, readConfigRecord, saveConfig, validateCompanyDefaults } from './config.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
@@ -11,9 +13,16 @@ const REQUIRED_SETUP_DEPENDENCIES = ['@modelcontextprotocol/sdk', 'zod'];
 const SETUP_FILES = [
   'package.json',
   'scripts/setup.mjs',
+  'scripts/materials.mjs',
+  'scripts/materials-mcp.mjs',
   'scripts/studio.mjs',
   'src/lite/setup.mjs',
+  'src/lite/material-login.mjs',
   'src/lite/config.mjs',
+  'src/materials/client.mjs',
+  'src/materials/config.mjs',
+  'src/materials/mcp.mjs',
+  'src/materials/verify.mjs',
   'src/canvas/runtime.mjs',
 ];
 
@@ -295,18 +304,56 @@ function applyPreparationStatus(packageStep, canvasStep, preparation) {
 async function readHostReport(root) {
   const value = await readJsonFile(path.join(root, 'setup', 'host-report.json'), '宿主报告');
   if (value === null) return null;
-  if (value.schemaVersion !== 1 || !['connected', 'failed'].includes(value.status)
+  // v1 reports described the old single-tool MCP probe and never prove both
+  // current-host query and original-file download access.
+  if (value.schemaVersion !== 2) return null;
+  if (!['connected', 'failed'].includes(value.status)
     || typeof value.checkedAt !== 'string'
-    || (value.toolName !== null && (typeof value.toolName !== 'string' || !/^[\w.-]{1,120}$/.test(value.toolName)))
-    || (value.status === 'connected' && !value.toolName)) {
+    || (value.status === 'connected' && (
+      typeof value.credentialId !== 'string' || !value.credentialId
+      || typeof value.materialCheckAt !== 'string'
+      || typeof value.queryTool !== 'string' || !/^[\w.-]{1,120}$/.test(value.queryTool)
+      || typeof value.downloadTool !== 'string' || !/^[\w.-]{1,120}$/.test(value.downloadTool)
+    ))) {
     throw setupError('ERR_SETUP_STATE', '宿主报告格式无效');
   }
   return {
     status: value.status,
     checkedAt: safeTimestamp(value.checkedAt),
-    toolName: value.toolName,
+    credentialId: value.credentialId || null,
+    materialCheckAt: safeTimestamp(value.materialCheckAt),
+    queryTool: value.queryTool || null,
+    downloadTool: value.downloadTool || null,
     source: '宿主报告',
     independentlyVerified: false,
+  };
+}
+
+async function readMaterialCheck(root) {
+  const value = await readJsonFile(path.join(root, 'setup', 'material-check.json'), '素材库验证记录');
+  if (value === null) return null;
+  if (value.schemaVersion !== 1 || typeof value.credentialId !== 'string' || !value.credentialId
+    || typeof value.baseUrl !== 'string' || typeof value.checkedAt !== 'string'
+    || !['authenticated', 'queryVerified', 'downloadVerified'].every((key) => typeof value[key] === 'boolean')
+    || !Number.isSafeInteger(value.bytes) || value.bytes < 0
+    || typeof value.sha256 !== 'string' || (value.sha256 !== '' && !/^[a-f\d]{64}$/i.test(value.sha256))
+    || ![null, 'config', 'login', 'query', 'download'].includes(value.failedStage)
+    || ![null, 'config_invalid', 'login_failed', 'query_failed', 'download_failed', 'empty_download', 'no_small_image'].includes(value.failureCode)) {
+    throw setupError('ERR_SETUP_STATE', '素材库验证记录格式无效');
+  }
+  return {
+    credentialId: value.credentialId,
+    baseUrl: value.baseUrl,
+    checkedAt: safeTimestamp(value.checkedAt),
+    authenticated: value.authenticated,
+    queryVerified: value.queryVerified,
+    downloadVerified: value.downloadVerified,
+    bytes: value.bytes,
+    sha256: value.sha256.toLowerCase(),
+    failedStage: value.failedStage,
+    failureCode: value.failureCode,
+    source: '本机实际验证',
+    independentlyVerified: true,
   };
 }
 
@@ -341,12 +388,36 @@ async function loadDefaults(repoRoot, env) {
   }
 }
 
-function stageLogs(steps, hostReport, imageCheck, defaultsError) {
+export async function resolveMaterialBaseUrl({ baseUrl = '', root, repoRoot = REPO_ROOT, env = process.env } = {}) {
+  const supplied = typeof baseUrl === 'string' ? baseUrl.trim() : '';
+  if (supplied) return validateCompanyDefaults({ materials: { baseUrl: supplied } }).materials.baseUrl;
+  const defaults = await loadDefaults(path.resolve(repoRoot), env);
+  if (defaults.error) throw setupError('ERR_MATERIAL_DEFAULTS', '外部素材库默认地址无效；请检查默认配置，或显式提供 HTTPS 地址。');
+  if (defaults.materials?.baseUrl) return defaults.materials.baseUrl;
+  const saved = await readMaterialConfig({ root });
+  if (saved?.baseUrl) return saved.baseUrl;
+  throw setupError('ERR_MATERIAL_URL', '请提供素材库 HTTPS 地址，或在外部默认配置 materials.baseUrl 中填写地址。');
+}
+
+function stageLogs(steps, hostReport, materialCheck, imageCheck, defaultsError) {
   const logs = [];
   for (const step of steps) {
     for (const check of step.checks || []) {
       logs.push({ level: check.ok ? 'info' : 'error', stage: step.id, message: `${check.name}：${check.detail}` });
     }
+  }
+  if (materialCheck) {
+    const verified = materialCheck.authenticated && materialCheck.queryVerified && materialCheck.downloadVerified
+      && materialCheck.bytes > 0 && /^[a-f\d]{64}$/i.test(materialCheck.sha256) && materialCheck.failedStage === null;
+    logs.push({
+      level: verified ? 'info' : 'error',
+      stage: 'materials',
+      at: materialCheck.checkedAt,
+      source: materialCheck.source,
+      message: verified
+        ? `本机已验证 Teedy 登录、素材查询及原件下载（${materialCheck.bytes} bytes；SHA-256 ${materialCheck.sha256}）。`
+        : `本机素材验证未通过（失败阶段：${materialCheck.failedStage || 'unknown'}）。`,
+    });
   }
   if (hostReport) {
     logs.push({
@@ -355,8 +426,8 @@ function stageLogs(steps, hostReport, imageCheck, defaultsError) {
       at: hostReport.checkedAt,
       source: hostReport.source,
       message: hostReport.status === 'connected'
-        ? `宿主报告：只读连接探测已报告成功（工具：${hostReport.toolName}；independentlyVerified=false）。`
-        : `宿主报告：只读连接探测未通过（${hostReport.toolName || '未提供工具名'}；independentlyVerified=false）。`,
+        ? `当前宿主已报告实际调用素材查询工具 ${hostReport.queryTool} 和原件下载工具 ${hostReport.downloadTool}（independentlyVerified=false）。`
+        : '当前宿主报告素材查询或原件下载未通过（independentlyVerified=false）。',
     });
   }
   if (imageCheck) logs.push({ level: imageCheck.ok ? 'info' : 'error', stage: 'image', at: imageCheck.checkedAt, message: imageCheck.message });
@@ -368,11 +439,13 @@ function stageLogs(steps, hostReport, imageCheck, defaultsError) {
 export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion = process.version, env = process.env } = {}) {
   const resolvedRoot = rootPath(root);
   const resolvedRepo = path.resolve(repoRoot);
-  const [packageStep, canvasStep, record, hostReport, imageCheck, defaults, canvasMcpCheck, preparation] = await Promise.all([
+  const [packageStep, canvasStep, record, materialConfig, hostReport, materialCheck, imageCheck, defaults, canvasMcpCheck, preparation] = await Promise.all([
     checkPackage(resolvedRepo, nodeVersion),
     checkCanvasComponent(resolvedRepo),
     readConfigRecord({ root: resolvedRoot }),
+    readMaterialConfig({ root: resolvedRoot }),
     readHostReport(resolvedRoot),
+    readMaterialCheck(resolvedRoot),
     readImageCheck(resolvedRoot),
     loadDefaults(resolvedRepo, env),
     readJsonFile(path.join(resolvedRoot, 'setup', 'canvas-mcp-check.json'), '本地 Canvas MCP 检查'),
@@ -396,49 +469,73 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
   }
   applyPreparationStatus(packageStep, canvasStep, preparation);
 
-  const materialReady = hostReport?.status === 'connected';
-  const materialMcpUrl = defaults.materials?.mcpUrl || '';
-  const materialLoginUrl = defaults.materials?.loginUrl || '';
+  const defaultBaseMismatch = Boolean(materialConfig && defaults.materials?.baseUrl
+    && defaults.materials.baseUrl !== materialConfig.baseUrl);
+  const materialCheckCurrent = Boolean(!defaultBaseMismatch && materialConfig && materialCheck
+    && materialCheck.credentialId === materialConfig.credentialId
+    && materialCheck.baseUrl === materialConfig.baseUrl
+    && materialCheck.checkedAt);
+  const currentMaterialCheck = materialCheckCurrent ? materialCheck : null;
+  const localVerified = Boolean(currentMaterialCheck?.authenticated && currentMaterialCheck?.queryVerified
+    && currentMaterialCheck?.downloadVerified && currentMaterialCheck.bytes > 0
+    && /^[a-f\d]{64}$/i.test(currentMaterialCheck.sha256) && currentMaterialCheck.failedStage === null);
+  const linkedHostReport = Boolean(currentMaterialCheck && hostReport
+    && hostReport.credentialId === materialConfig?.credentialId
+    && hostReport.materialCheckAt === currentMaterialCheck.checkedAt) ? hostReport : null;
+  const hostReportCurrent = Boolean(localVerified && linkedHostReport?.status === 'connected');
+  const materialReady = localVerified && hostReportCurrent;
+  const materialBaseUrl = defaults.materials?.baseUrl || materialConfig?.baseUrl || '';
+  const loginAction = materialBaseUrl
+    ? '在当前宿主中运行 `node scripts/setup.mjs login-materials`，然后请员工本人在打开的本机网页填写 Teedy 账号。'
+    : '先向管理员取得素材库 HTTPS 地址；运行 `node scripts/setup.mjs login-materials <HTTPS地址>`，再请员工本人在打开的本机网页填写 Teedy 账号。';
   const hostInstruction = [
-    '请使用本人公司素材库（Teedy）账号验证只读访问；所用宿主智能体可使用当前已登录的个人或公司账号。',
-    materialMcpUrl
-      ? `公司提供的只读素材 MCP 地址：${materialMcpUrl}。请先检查当前宿主是否已有该服务；没有时使用宿主自己的 MCP 配置功能添加。按宿主和服务方的官方说明配置，不要猜测传输类型、认证字段或额外权限；缺少信息时请联系管理员。`
-      : '公司尚未提供素材 MCP 地址。请检查当前宿主是否已有公司只读素材 MCP；如果没有，请等待管理员提供连接信息。收到后使用宿主自己的 MCP 配置功能添加，并遵循宿主和服务方的官方说明，不要猜测地址或配置协议。',
-    materialLoginUrl
-      ? `本人素材库登录入口：${materialLoginUrl}。请由员工本人完成公司素材库登录；凭据按宿主和服务方提供的流程处理。`
-      : '请由员工本人通过公司素材库要求的登录流程完成身份验证；所用宿主自身的登录账号与素材库账号可以不同。',
-    '确认素材服务可用后，实际调用一个只读素材工具并检查返回成功。只记录工具名和成功/失败，不保存素材内容或凭据到安装记录。',
-    '探测后，在源码目录运行 `node scripts/setup.mjs report-host connected 实际工具名` 报告结果；检查失败时将 connected 改为 failed。',
+    loginAction,
+    '登录网页仅监听 127.0.0.1，员工本人在网页中输入账号；CLI 不接收口令，也不会把账号口令写入验证记录。登录通过后会自动查询素材并下载一份原件进行本机验证。',
+    '本机验证通过后，先运行 `node scripts/materials.mjs mcp-config`，按宿主实际格式添加本机 stdio MCP 素材服务。由当前宿主实际调用公司 Teedy 查询工具和原件下载工具，再在源码目录运行 `node scripts/setup.mjs report-host connected <查询工具名> <下载工具名>`。',
+    'setup 就绪还要求当前宿主这两项真实调用均成功；旧版单工具报告不再作为证据。',
   ].join('\n\n');
   const materialsStep = {
     id: 'materials',
     title: '连接公司素材库',
-    status: materialReady ? 'host_reported' : hostReport?.status === 'failed' ? 'needs_action' : 'waiting',
+    status: materialReady ? 'ready' : !materialConfig ? 'waiting' : localVerified ? 'host_action_needed' : 'needs_action',
     complete: materialReady,
     actionNeeded: !materialReady,
     summary: materialReady
-      ? `上次宿主探测已报告素材 MCP 可用（${hostReport.toolName}）`
-      : hostReport?.status === 'failed'
-        ? '宿主报告连接检查未通过，请在宿主中重新完成探测。'
-        : materialMcpUrl
-          ? '等待宿主智能体完成素材 MCP 连接检查。'
-          : '等待公司提供素材库连接。',
+      ? `本机验证与当前宿主素材调用报告均已通过（${linkedHostReport.queryTool}、${linkedHostReport.downloadTool}）`
+      : !materialConfig
+        ? materialBaseUrl ? '等待员工本人完成 Teedy 登录及本机查询、原件下载验证。' : '等待公司提供素材库 HTTPS 地址。'
+        : defaultBaseMismatch
+          ? '公司默认素材库地址已变更，需在新地址重新登录并完成本机验证。'
+        : localVerified
+        ? linkedHostReport?.status === 'failed' ? '本机素材验证通过；当前宿主查询或原件下载报告未通过。' : '本机素材验证通过；等待当前宿主实际调用查询和原件下载工具。'
+          : currentMaterialCheck?.failedStage
+            ? `当前保存的 Teedy 账号本机验证未通过（${currentMaterialCheck.failedStage}）。`
+            : '当前保存的 Teedy 账号尚无有效的登录、查询及原件下载验证。',
     nextAction: materialReady
-      ? '新宿主或新会话使用前，请实际调用素材只读工具确认连接；继续配置图片服务。'
-      : '在所用宿主中完成本人登录并实际执行只读素材检查，然后报告检查结果。',
-    error: hostReport?.status === 'failed' ? { code: 'ERR_HOST_PROBE', message: '宿主报告的只读素材 MCP 探测未通过' } : null,
-    checkedAt: hostReport?.checkedAt || null,
-    source: hostReport?.source || null,
-    independentlyVerified: false,
-    mcpUrl: materialMcpUrl || null,
-    loginUrl: materialLoginUrl || null,
+      ? '继续配置图片服务。'
+      : localVerified
+        ? '运行 node scripts/materials.mjs mcp-config，按宿主实际格式接入本机 stdio MCP 素材服务；实际调用查询和原件下载工具后，运行 report-host connected <查询工具名> <下载工具名>。'
+        : loginAction,
+    error: linkedHostReport?.status === 'failed' ? { code: 'ERR_HOST_PROBE', message: '当前宿主报告的素材查询或原件下载未通过' } : defaultBaseMismatch ? { code: 'ERR_MATERIAL_DEFAULT_CHANGED', message: '公司默认素材库地址与已保存账号不一致，需在新地址重新验证' } : currentMaterialCheck && !localVerified ? { code: 'ERR_MATERIAL_CHECK', message: '本机素材库登录、查询或原件下载验证未通过' } : null,
+    checkedAt: currentMaterialCheck?.checkedAt || linkedHostReport?.checkedAt || null,
+    source: materialReady ? '本机验证与当前宿主报告' : currentMaterialCheck?.source || null,
+    independentlyVerified: Boolean(currentMaterialCheck),
+    baseUrl: materialBaseUrl || materialConfig?.baseUrl || null,
     hostInstruction,
     checks: [{
-      name: '宿主智能体素材 MCP 状态',
-      ok: materialReady,
-      detail: materialReady
-        ? `上次探测：${hostReport.toolName}（${hostReport.checkedAt || '时间未知'}）；新宿主或新会话请实际调用只读工具确认。`
-        : hostReport?.status === 'failed' ? '宿主报告的探测未通过' : '等待宿主智能体完成检查',
+      name: '本机 Teedy 登录', ok: Boolean(currentMaterialCheck?.authenticated),
+      detail: currentMaterialCheck?.authenticated ? `已验证（${currentMaterialCheck.checkedAt}）` : '等待员工本人在本机网页登录并验证',
+    }, {
+      name: '本机素材查询', ok: Boolean(currentMaterialCheck?.queryVerified),
+      detail: currentMaterialCheck?.queryVerified ? '已实际查询素材记录' : '等待本机查询验证',
+    }, {
+      name: '本机原件下载', ok: Boolean(currentMaterialCheck?.downloadVerified),
+      detail: currentMaterialCheck?.downloadVerified ? `${currentMaterialCheck.bytes} bytes 已下载并计算 SHA-256` : '等待本机下载一份原件验证',
+    }, {
+      name: '当前宿主查询和原件下载', ok: Boolean(hostReportCurrent),
+      detail: hostReportCurrent
+        ? `查询：${linkedHostReport.queryTool}；下载：${linkedHostReport.downloadTool}（${linkedHostReport.checkedAt}）`
+        : linkedHostReport?.status === 'failed' ? '当前宿主报告的查询或下载调用未通过' : '等待当前宿主分别实际调用查询和下载工具',
     }],
   };
 
@@ -495,7 +592,7 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
   };
   steps.push(finishStep);
   const currentStep = steps.find((step) => !step.complete) || finishStep;
-  const logs = stageLogs(steps, hostReport, imageCheck?.configRevision === record.revision ? imageCheck : null, defaults.error);
+  const logs = stageLogs(steps, linkedHostReport, currentMaterialCheck, imageCheck?.configRevision === record.revision ? imageCheck : null, defaults.error);
   return {
     current: currentStep.id,
     actionNeeded: currentStep.actionNeeded,
@@ -531,6 +628,31 @@ async function writePrivateJson(root, relative, value) {
     await fs.rm(temporary, { force: true });
     throw error;
   }
+}
+
+async function removePrivateSetupFiles(root, names) {
+  const resolvedRoot = rootPath(root);
+  const directory = path.join(resolvedRoot, 'setup');
+  let directoryInfo;
+  try { directoryInfo = await fs.lstat(directory); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw setupError('ERR_SETUP_PATH', '安装配置目录必须是普通目录');
+  const rootReal = await fs.realpath(resolvedRoot);
+  const directoryReal = await fs.realpath(directory);
+  if (!isInside(rootReal, directoryReal)) throw setupError('ERR_SETUP_PATH', '安装配置目录超出应用数据目录');
+  for (const name of names) {
+    const file = path.join(directory, name);
+    let info;
+    try { info = await fs.lstat(file); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (info.isDirectory() && !info.isSymbolicLink()) throw setupError('ERR_SETUP_PATH', '安装验证记录必须是普通文件');
+    await fs.unlink(file);
+  }
+}
+
+/** Clear evidence before a new login attempt so a rejected replacement account cannot look ready. */
+export async function beginMaterialLogin({ root } = {}) {
+  await removePrivateSetupFiles(root, ['material-check.json', 'host-report.json']);
 }
 
 function cryptoRandom() {
@@ -605,27 +727,109 @@ export async function saveAndVerifyImageConfig(input, { root, repoRoot, env, fet
   return getSetupStatus({ root, repoRoot, env });
 }
 
-/** Record a sanitized host result only after its agent actually calls a read-only material MCP tool. */
-export async function reportHostProbe({ status, toolName = '' } = {}, { root, now = () => new Date() } = {}) {
-  if (!['connected', 'failed'].includes(status)) throw setupError('ERR_HOST_REPORT', '宿主报告状态只能是 connected 或 failed');
-  const normalizedTool = typeof toolName === 'string' ? toolName.trim() : '';
-  if (status === 'connected' && !normalizedTool) throw setupError('ERR_HOST_REPORT', '成功的宿主报告必须提供实际只读工具名');
-  if (normalizedTool && !/^[\w.-]{1,120}$/.test(normalizedTool)) throw setupError('ERR_HOST_REPORT', '宿主报告的工具名只能包含字母、数字、点、下划线或连字符');
-  const report = {
+/** Record a redacted phase result tied to the exact locally saved Teedy credentials. */
+export async function recordMaterialCheck(result, { root, credentialId, now = () => new Date() } = {}) {
+  const config = await readMaterialConfig({ root });
+  if (!config || !credentialId || config.credentialId !== credentialId) {
+    throw setupError('ERR_MATERIAL_CHECK_STALE', '素材库账号在验证期间已变化；请重新运行素材检查。');
+  }
+  const phaseKeys = ['authenticated', 'queryVerified', 'downloadVerified'];
+  if (!result || typeof result !== 'object'
+    || phaseKeys.some((key) => typeof result[key] !== 'boolean')
+    || !Number.isSafeInteger(result.bytes) || result.bytes < 0
+    || typeof result.sha256 !== 'string') {
+    throw setupError('ERR_MATERIAL_CHECK_RESULT', '素材库检查结果格式无效。');
+  }
+  const failedStages = ['config', 'login', 'query', 'download'];
+  const failureCodes = ['config_invalid', 'login_failed', 'query_failed', 'download_failed', 'empty_download', 'no_small_image'];
+  let failedStage = result.failedStage ?? null;
+  if (failedStage !== null && !failedStages.includes(failedStage)) failedStage = 'config';
+  if (!failedStage) failedStage = result.authenticated ? result.queryVerified ? result.downloadVerified ? null : 'download' : 'query' : 'login';
+  const failureCode = result.failureCode ?? null;
+  const normalizedFailureCode = failureCode === null || failureCodes.includes(failureCode) ? failureCode : 'config_invalid';
+  const sha256 = /^[a-f\d]{64}$/i.test(result.sha256) ? result.sha256.toLowerCase() : '';
+  const bytes = result.bytes;
+  const checkedAt = now().toISOString();
+  const check = {
     schemaVersion: 1,
+    checkedAt,
+    credentialId,
+    baseUrl: config.baseUrl,
+    authenticated: result.authenticated,
+    queryVerified: result.queryVerified,
+    downloadVerified: result.downloadVerified,
+    bytes,
+    sha256,
+    failedStage,
+    failureCode: normalizedFailureCode,
+  };
+  await writePrivateJson(root, 'material-check.json', check);
+  return { ...check, source: '本机实际验证', independentlyVerified: true };
+}
+
+/** Verify the offered credentials before persisting them, then bind the check to the saved credential revision. */
+export async function saveAndVerifyMaterials(input, { root, fetchImpl = fetch, now = () => new Date(), verifyImpl = verifyMaterials, saveImpl = saveMaterialConfig } = {}) {
+  let result;
+  try { result = await verifyImpl(input, { root, fetchImpl }); }
+  catch {
+    const error = setupError('ERR_MATERIAL_VERIFY', '素材库登录、查询或原件下载验证未完成。');
+    error.stage = 'config';
+    throw error;
+  }
+  const stagesPassed = result?.authenticated === true && result?.queryVerified === true && result?.downloadVerified === true
+    && Number.isSafeInteger(result.bytes) && result.bytes > 0
+    && typeof result.sha256 === 'string' && /^[a-f\d]{64}$/i.test(result.sha256)
+    && (result.failedStage ?? null) === null;
+  if (!stagesPassed) {
+    const error = setupError('ERR_MATERIAL_VERIFY', '素材库登录、查询或原件下载验证未通过。');
+    error.stage = ['config', 'login', 'query', 'download'].includes(result?.failedStage) ? result.failedStage
+      : result?.authenticated !== true ? 'login' : result?.queryVerified !== true ? 'query' : 'download';
+    error.failureCode = ['config_invalid', 'login_failed', 'query_failed', 'download_failed', 'empty_download', 'no_small_image'].includes(result?.failureCode)
+      ? result.failureCode : null;
+    throw error;
+  }
+  let saved;
+  try {
+    saved = await saveImpl({ baseUrl: input.baseUrl, username: input.username, password: input.password }, { root });
+    if (!saved?.credentialId) throw new Error('missing credential id');
+    await recordMaterialCheck(result, { root, credentialId: saved.credentialId, now });
+  } catch {
+    const error = setupError('ERR_MATERIAL_SAVE', '验证结果未能保存到本机；请重新运行素材库登录。');
+    error.stage = 'save';
+    throw error;
+  }
+  return { credentialId: saved.credentialId };
+}
+
+/** Record the two current-host tools only after a successful local login/query/download check. */
+export async function reportHostProbe({ status, queryTool = '', downloadTool = '' } = {}, { root, now = () => new Date() } = {}) {
+  if (!['connected', 'failed'].includes(status)) throw setupError('ERR_HOST_REPORT', '宿主报告状态只能是 connected 或 failed');
+  const queryName = typeof queryTool === 'string' ? queryTool.trim() : '';
+  const downloadName = typeof downloadTool === 'string' ? downloadTool.trim() : '';
+  if (status === 'connected' && (!/^[\w.-]{1,120}$/.test(queryName) || !/^[\w.-]{1,120}$/.test(downloadName))) {
+    throw setupError('ERR_HOST_REPORT', '成功的宿主报告必须提供查询和原件下载工具名');
+  }
+  const config = await readMaterialConfig({ root });
+  const check = await readMaterialCheck(root);
+  const checkPassed = Boolean(config && check && check.credentialId === config.credentialId && check.baseUrl === config.baseUrl
+    && check.authenticated && check.queryVerified && check.downloadVerified && check.bytes > 0
+    && /^[a-f\d]{64}$/i.test(check.sha256) && check.failedStage === null);
+  if (status === 'connected' && !checkPassed) {
+    throw setupError('ERR_HOST_REPORT', '请先完成当前账号的本机登录、查询和原件下载验证');
+  }
+  const report = {
+    schemaVersion: 2,
     status,
-    toolName: normalizedTool || null,
+    credentialId: checkPassed ? config.credentialId : null,
+    materialCheckAt: checkPassed ? check.checkedAt : null,
+    queryTool: status === 'connected' ? queryName : null,
+    downloadTool: status === 'connected' ? downloadName : null,
     checkedAt: now().toISOString(),
-    source: '宿主报告',
-    independentlyVerified: false,
   };
   await writePrivateJson(root, 'host-report.json', report);
   return {
-    source: report.source,
-    status: report.status,
-    toolName: report.toolName,
-    checkedAt: report.checkedAt,
-    independentlyVerified: false,
+    source: '宿主报告', status: report.status, queryTool: report.queryTool,
+    downloadTool: report.downloadTool, checkedAt: report.checkedAt, independentlyVerified: false,
   };
 }
 

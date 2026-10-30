@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import path from 'node:path';
 import { dataRoot } from '../canvas/client.mjs';
 
@@ -72,9 +73,27 @@ function normalizePublicEndpoint(value, label) {
   return result;
 }
 
+function normalizeMaterialBaseUrl(value) {
+  if (typeof value !== 'string') throw configError('ERR_COMPANY_DEFAULTS_INVALID', '公司素材库地址必须是文本');
+  const result = value.trim();
+  if (result.length > 2000) throw configError('ERR_COMPANY_DEFAULTS_INVALID', '公司素材库地址长度超出限制');
+  if (!result) return '';
+  let parsed;
+  try { parsed = new URL(result); } catch {
+    throw configError('ERR_COMPANY_DEFAULTS_INVALID', '公司素材库地址无效');
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+  const localHostname = hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '::1'
+    || (net.isIP(hostname) === 4 && Number(hostname.split('.')[0]) === 127);
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || localHostname) {
+    throw configError('ERR_COMPANY_DEFAULTS_INVALID', '公司素材库地址仅支持非本机、不含凭据或查询参数的 HTTPS 地址');
+  }
+  return parsed.toString().replace(/\/$/, '');
+}
+
 /** Validate the non-secret defaults shared by packaging and the setup UI. */
 export function validateCompanyDefaults(value) {
-  const invalid = () => configError('ERR_COMPANY_DEFAULTS_INVALID', '公司默认配置只允许图片地址/模型及素材 MCP/登录地址，不接受 API Key、token 或账号口令');
+  const invalid = () => configError('ERR_COMPANY_DEFAULTS_INVALID', '公司默认配置只允许图片地址/模型及素材库地址，不接受 API Key、token 或账号口令');
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).some((key) => !['image', 'materials'].includes(key))) throw invalid();
   const image = Object.hasOwn(value, 'image') ? value.image : {};
@@ -82,17 +101,14 @@ export function validateCompanyDefaults(value) {
   if (!image || typeof image !== 'object' || Array.isArray(image)
     || Object.keys(image).some((key) => !['baseUrl', 'model'].includes(key))) throw invalid();
   if (!materials || typeof materials !== 'object' || Array.isArray(materials)
-    || Object.keys(materials).some((key) => !['mcpUrl', 'loginUrl'].includes(key))) throw invalid();
+    || Object.keys(materials).some((key) => !['baseUrl'].includes(key))) throw invalid();
   if (['baseUrl', 'model'].some((key) => Object.hasOwn(image, key) && typeof image[key] !== 'string')
-    || ['mcpUrl', 'loginUrl'].some((key) => Object.hasOwn(materials, key) && typeof materials[key] !== 'string')) throw invalid();
+    || (Object.hasOwn(materials, 'baseUrl') && typeof materials.baseUrl !== 'string')) throw invalid();
   const model = typeof image.model === 'string' ? image.model.trim() : '';
   if (model.length > 300) throw configError('ERR_COMPANY_DEFAULTS_INVALID', '图片模型名称长度超出限制');
   return {
     image: { baseUrl: normalizePublicEndpoint(image.baseUrl === undefined ? '' : image.baseUrl, '图片服务'), model },
-    materials: {
-      mcpUrl: normalizePublicEndpoint(materials.mcpUrl === undefined ? '' : materials.mcpUrl, '公司素材 MCP'),
-      loginUrl: normalizePublicEndpoint(materials.loginUrl === undefined ? '' : materials.loginUrl, '公司素材登录'),
-    },
+    materials: { baseUrl: normalizeMaterialBaseUrl(materials.baseUrl === undefined ? '' : materials.baseUrl) },
   };
 }
 

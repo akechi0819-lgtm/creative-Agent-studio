@@ -6,11 +6,15 @@ import test from 'node:test';
 import {
   getSetupStatus,
   recordCanvasMcpCheck,
+  recordMaterialCheck,
   reportHostProbe,
   saveAndVerifyImageConfig,
 } from '../src/lite/setup.mjs';
+import { saveMaterialConfig } from '../src/materials/config.mjs';
 
 const image = { baseUrl: 'https://images.example/v1', model: 'image-v2', apiKey: 'setup-preparation-test-key' };
+const materials = { baseUrl: 'https://materials.example', username: 'fixture-user', password: 'fixture-password' };
+const materialHash = 'b'.repeat(64);
 const dependencyTargets = ['.', 'third_party/canvas/canvas-agent', 'third_party/canvas/web'];
 const buildTargets = ['CanvasAgent', 'CanvasWeb'];
 
@@ -21,9 +25,16 @@ async function withReadyRepo(run) {
     const root = path.join(directory, 'data');
     for (const relative of [
       'scripts/setup.mjs',
+      'scripts/materials.mjs',
+      'scripts/materials-mcp.mjs',
       'scripts/studio.mjs',
       'src/lite/setup.mjs',
+      'src/lite/material-login.mjs',
       'src/lite/config.mjs',
+      'src/materials/client.mjs',
+      'src/materials/config.mjs',
+      'src/materials/mcp.mjs',
+      'src/materials/verify.mjs',
       'src/canvas/runtime.mjs',
     ]) {
       const file = path.join(repoRoot, relative);
@@ -51,7 +62,12 @@ async function withReadyRepo(run) {
     await fs.writeFile(path.join(agentRoot, 'package.json'), JSON.stringify({ dependencies: {} }));
     await fs.writeFile(path.join(agentRoot, 'dist', 'index.js'), 'export {};');
 
-    await reportHostProbe({ status: 'connected', toolName: 'search_materials' }, { root });
+    const savedMaterials = await saveMaterialConfig(materials, { root });
+    await recordMaterialCheck({
+      authenticated: true, queryVerified: true, downloadVerified: true,
+      bytes: 1234, sha256: materialHash, failedStage: null, failureCode: null,
+    }, { root, credentialId: savedMaterials.credentialId });
+    await reportHostProbe({ status: 'connected', queryTool: 'search_materials', downloadTool: 'download_file' }, { root });
     await recordCanvasMcpCheck({ root });
     const ready = await saveAndVerifyImageConfig({ expectedRevision: 1, image }, {
       root,

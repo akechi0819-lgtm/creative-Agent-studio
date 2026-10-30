@@ -2,10 +2,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readImageKeyFromClipboard } from '../src/lite/clipboard.mjs';
+import { startMaterialLogin } from '../src/lite/material-login.mjs';
 import {
   getSetupStatus,
+  beginMaterialLogin,
   reportHostProbe,
   saveAndVerifyImageConfig,
+  saveAndVerifyMaterials,
+  resolveMaterialBaseUrl,
   verifyImageApi,
 } from '../src/lite/setup.mjs';
 
@@ -17,7 +21,7 @@ function output(value) {
 }
 
 function usage() {
-  return '用法：node scripts/setup.mjs [status|report-host connected <工具名>|failed [工具名]|configure-image @JSON文件 [--key-from-clipboard]|check-image]';
+  return '用法：node scripts/setup.mjs [status|login-materials [远端 HTTPS 地址]|report-host connected <查询工具名> <下载工具名>|report-host failed|configure-image @JSON文件 [--key-from-clipboard]|check-image]';
 }
 
 async function readPrivatePayload(argument, publicFieldsOnly = false) {
@@ -55,8 +59,23 @@ async function run() {
     return;
   }
   if (command === 'report-host') {
-    if (args.length < 1 || args.length > 2 || !['connected', 'failed'].includes(args[0])) throw new Error(usage());
-    await reportHostProbe({ status: args[0], toolName: args[1] || '' }, { root });
+    const valid = args[0] === 'connected' ? args.length === 3
+      : args[0] === 'failed' ? args.length === 1 : false;
+    if (!valid) throw new Error(usage());
+    await reportHostProbe({ status: args[0], queryTool: args[1] || '', downloadTool: args[2] || '' }, { root });
+    await emitStatus();
+    return;
+  }
+  if (command === 'login-materials') {
+    if (args.length > 1) throw new Error(usage());
+    const baseUrl = await resolveMaterialBaseUrl({ baseUrl: args[0] || '', root });
+    await beginMaterialLogin({ root });
+    const session = await startMaterialLogin({
+      baseUrl,
+      onCredentials: (credentials) => saveAndVerifyMaterials(credentials, { root }),
+    });
+    output({ status: 'waiting_for_employee_login', url: session.url });
+    await session.completed;
     await emitStatus();
     return;
   }

@@ -1,6 +1,6 @@
 # Creative Agent Studio — Company Lite
 
-`codex/company-lite` 是面向外部宿主智能体的源码能力包：宿主当前对话线程主持创作并调用工具；本机 Canvas/MCP 保存跨线程共享的项目历史、图片与排版状态；公司现有云端 Teedy 只读 MCP 提供远端素材。本仓库不包含聊天或推理平台，也不另建任务账本。
+`codex/company-lite` 是面向外部宿主智能体的源码能力包：宿主当前对话线程主持创作并调用工具；本机 Canvas/MCP 保存跨线程共享的项目历史、图片与排版状态；本机只读素材 MCP 连接公司远端 Teedy 提供远端素材。本仓库不包含聊天或推理平台，也不另建任务账本。
 
 ## 源码快速开始
 
@@ -19,7 +19,7 @@ node scripts/setup.mjs status
 
 本地准备需要 Git、Node.js 22.19+（22.x）或 24+，以及 npm；执行 Node 脚本前由宿主先检查它们是否可用。在 PowerShell 中如 `npm` 命令被策略阻止，可用 `npm.cmd --version` 检查，不要求更改执行策略。`node scripts/prepare.mjs` 按仓库锁定清单安装或复用依赖并编译 Canvas；`npm run prepare:dev` 是等价开发别名。员工无需另装 Python、Office 或系统编译器。缺少 Git、Node.js 或 npm 时，宿主应说明缺项，并按当前系统官方安装说明协助用户；不得擅自改动系统策略、权限或 PATH。
 
-命令从克隆后的源码根目录运行。Canvas 通过本机默认浏览器打开，需要可用的桌面浏览器。宿主须能读取该目录的项目规则、运行本地命令、连接标准 stdio MCP、实际查看 MCP 返回的图片，并在当前对话线程取得用户确认和必要审批；缺少能力时说明并暂停相关步骤，不宣称无条件兼容。
+以上命令由宿主智能体从克隆后的源码根目录运行，不要求员工手工操作终端。Canvas 通过本机默认浏览器打开，需要可用的桌面浏览器。宿主须能读取该目录的项目规则、运行本地命令、连接标准 stdio MCP、实际查看 MCP 返回的图片，并在当前对话线程取得用户确认和必要审批；缺少能力时说明并暂停相关步骤，不宣称无条件兼容。
 
 ## 安装与连接
 
@@ -27,7 +27,7 @@ node scripts/setup.mjs status
 
 1. 源码根目录及 Git、Node.js、npm 运行依赖。
 2. Canvas 构建状态，以及当前宿主实际调用 `canvas_status` 后的连接结果。
-3. 本人公司 Teedy 账号、服务提供的 MCP URL／登录地址与只读工具实际调用结果。
+3. 本人 Teedy 登录、自动查询和原件下载验证，以及宿主实际调用素材 MCP 的结果。
 4. 图片 API 地址、模型和 Key 的配置及非生图连接检查。
 5. 当前整体就绪状态和下一步操作。
 
@@ -41,14 +41,7 @@ node scripts/studio.mjs mcp-config
 
 根据输出中的 `command` 和 `args`，按当前宿主实际接受的 stdio MCP 格式配置服务，再调用 `canvas_status`。输出 JSON 外层的 `mcpServers` 只是交换示例，并非每个宿主通用的配置文件。本机 MCP SDK stdio 已通过测试，不代表任何具体宿主客户端已验收。
 
-Teedy 的账号、只读权限、MCP URL、登录地址和可能需要的 API Key 按 setup 状态及服务方实际说明，在当前宿主支持的安全入口配置；不猜测传输方式、字段或权限。公司尚未提供连接信息时，先向管理员索取。只在宿主实际调用只读工具后记录结果：
-
-```sh
-node scripts/setup.mjs report-host connected <工具名>
-node scripts/setup.mjs report-host failed [工具名]
-```
-
-该记录是宿主报告，不是 CLI 对 Teedy 的独立连接验证。凭据不进入仓库、日志或普通对话消息。
+素材库使用本人账号密码登录远端 Teedy。本机 Node 素材 MCP 负责只读查询和下载，不需要远端 OAuth MCP 或额外的 Python。宿主启动 `node scripts/setup.mjs login-materials`，打开一次性本机表单；员工只填账号密码，提交后自动验证登录、查询和原件下载。验证通过后，宿主用 `node scripts/materials.mjs mcp-config` 接入素材 MCP，再实际查询、下载并记录两项结果。全部命令由宿主执行，员工不操作终端；详见[素材库安装流程](docs/代理宿主使用.md#teedy-素材库)。
 
 图片 API 配置需要 `expectedRevision`、`image.baseUrl` 和 `image.model`。员工复制 Key 并在当前对话明确说“已复制”后，宿主才可运行：
 
@@ -61,7 +54,7 @@ node scripts/setup.mjs check-image
 
 配置模板和 revision 由宿主根据当前 setup 状态生成，员工无需创建或理解 JSON。备用文件也由宿主准备，员工只在本机编辑器中填写 Key；详细操作见[宿主使用说明](docs/代理宿主使用.md)。
 
-管理员提供的非敏感图片地址／模型及素材 MCP 默认值示例，以及如何对每次 setup 调用指定外置 defaults 文件，见[宿主使用说明中的管理员默认值小节](docs/代理宿主使用.md#管理员提供的公共默认值)。
+管理员提供的非敏感图片地址／模型及Teedy 根地址默认值示例，以及如何对每次 setup 调用指定外置 defaults 文件，见[宿主使用说明中的管理员默认值小节](docs/代理宿主使用.md#管理员提供的公共默认值)。
 
 共享 Canvas 服务可从源码根分别通过 `node scripts/studio.mjs status`、`node scripts/studio.mjs open @JSON` 和 `node scripts/studio.mjs mcp-config` 查看、打开或配置。宿主日常绘图优先直接调用 Canvas MCP；创作时使用 `canvas_open` 选择新项目、最近项目或历史项目。Canvas 历史和图片 API 配置跨线程共用，其他线程的需求、来源和批准不会自动沿用。
 
@@ -78,7 +71,7 @@ Canvas 继续支持手动绘图和既有像素操作，包括导入、拼贴、�
 
 ## 当前证据与边界
 
-- 源码根回归 38/38、Canvas bridge 23/23 均通过，0 失败、0 跳过；Canvas web typecheck/build 通过。
+- 首轮源码根回归 38/38、Canvas bridge 23/23 均通过，0 失败、0 跳过；Canvas web typecheck/build 通过。
 - Mac 本机全新浅克隆起始没有 `node_modules` 和构建产物；`node scripts/prepare.mjs` 完成三组依赖安装及 Canvas Agent/Web 构建。随后 setup 正确报告本地源码与 Canvas 就绪、仍等待当前宿主 MCP。克隆目录中的共享 Canvas 集成 1/1 通过（4.6 秒），覆盖多项目、裁切拼接、历史重启恢复及 MCP stdio 图片读写，未请求生图。
 - 隔离临时配置下的真实图片服务 `GET /v1/models` 返回 HTTP 200 并列出配置模型；未进行生图，源配置未更改，临时 Key 目录已删除。另一次真实 Canvas MCP 单张生成样本上游 HTTP 200，用时 20.198 秒，本机完整保存用时 25.892 秒，准备画布用时 1.051 秒；请求计数为 1。主代理已实际打开检查验收图。这些都是本机样本，不是普遍时延或宿主验收承诺。
 - 源码提交 `5fbf1bd` 的 Windows/macOS/Linux GitHub Actions 已全部通过；CI 覆盖源码构建和集成，员工交互桌面仍待实测。具体宿主的本地命令、MCP 配置和图片读取能力，以及 Teedy 账号和只读权限仍需目标环境验证。

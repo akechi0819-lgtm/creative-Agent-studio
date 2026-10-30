@@ -14,13 +14,13 @@ Company Lite 是给外部宿主智能体使用的本地创作能力包。宿主�
 flowchart LR
   HOST["外部宿主智能体<br/>对话、推理、确认与工具调用"] <--> SKILL["Company Lite Skill<br/>主持当前线程创作流程"]
   HOST <--> SETUP["本机纯 CLI<br/>状态、配置与连接检查"]
-  HOST <--> TEEDY["公司现有云端 Teedy MCP<br/>搜索与实际下载"]
+  HOST <--> TEEDY["本机只读素材 MCP 连接公司远端 Teedy<br/>搜索与实际下载"]
   HOST <--> CMCP["本机共享 Canvas MCP<br/>操作画布与读取图像"]
   CMCP <--> WEB["本机 Canvas 网页<br/>历史项目、图片、排版与像素工具"]
   WEB --> IMG["员工本机配置的图片 API"]
 ```
 
-宿主智能体负责对话、推理和用户确认。Canvas 负责绘图、生成和像素操作；本包不内置或启动任何代理推理平台，也不运行第二个 Agent。符合能力要求的外部宿主可运行本包。Teedy 继续使用公司现有云端只读 MCP；不修改其内容、标签或 ACL。
+宿主智能体负责对话、推理和用户确认。Canvas 负责绘图、生成和像素操作；本包不内置或启动任何代理推理平台，也不运行第二个 Agent。符合能力要求的外部宿主可运行本包。本机只读素材 MCP 连接公司现有远端 Teedy；不修改其内容、标签或 ACL。
 
 ## 3. 工作边界与宿主要求
 
@@ -38,19 +38,22 @@ Company Lite 从 Git 仓库源码目录运行。执行任何 Node 脚本前，�
 
 1. 克隆源码、Git／Node.js／npm 和运行依赖是否就绪。
 2. Canvas 组件构建状态和当前宿主实际调用 `canvas_status` 后的连接结果。
-3. 本人公司 Teedy 账号、服务提供的 MCP URL／登录地址和只读工具实际调用报告。
+3. 本人 Teedy 登录、自动查询和原件下载验证，以及宿主查询与下载两项报告。
 4. 图片 API 地址、模型、Key 及非生图连接检查。
 5. 当前总体就绪状态和下一步。
 
 仅在首次安装、配置或故障修复时简洁展示这五项；日常创作不重复清单。宿主自动检查依赖并运行 `node scripts/prepare.mjs`，自动完成已有可执行步骤，只在本人登录、复制 Key 或必要宿主审批时等待，不逐项确认。缺少服务地址或登录信息时，setup 状态会标出缺口，宿主再向管理员索取。
 
-使用 Teedy 时，宿主依据 setup 状态中的实际 MCP URL／登录地址及公司、服务方说明，在当前宿主支持的安全配置入口设置本人账号、只读权限和服务要求的 Key。不能猜测传输方式、字段或权限，也不将凭据粘贴到普通对话、仓库或日志。连接完成后由当前宿主实际调用只读工具，再从源码根运行 `node scripts/setup.mjs report-host connected <工具名>`；失败时用 `failed [工具名]`。该记录是宿主报告，不是 CLI 独立连接验证。新宿主或首次进入新会话时，重新确认并调用当前 Canvas MCP 的 `canvas_status`；旧报告只代表上次实际调用，不表示新宿主已接通。
+Teedy 的实际认证是用户名密码登录、会话 Cookie，不是远端 OAuth MCP。公司提供 HTTPS 根地址 `materials.baseUrl`；本机 Node stdio 素材 MCP 连接该远端服务，复用现有只读查询、原件下载与 ACL 检查逻辑，无需 Python。宿主运行 `node scripts/setup.mjs login-materials` 并打开一次性本机登录表单，员工仅在表单填写账号密码。提交后自动登录、查询并下载原件验证，全部通过才保存本机私有凭据；失败、空库或无原件时不能标记完成。
+
+随后宿主执行 `node scripts/materials.mjs mcp-config` 接入素材 MCP，并实际调用查询、详情、下载工具，确认本地原件后运行 `node scripts/setup.mjs report-host connected search_materials download_file`。本机验证与宿主工具报告分开，报告关联当前配置；旧单项报告不能证明下载。安装验证完成后删除测试原件，不把它作为创作参考。重检已保存凭据用 `node scripts/materials.mjs check`。所有命令由宿主执行，员工不操作终端、不编辑 JSON；普通问答框不收集密码。详见宿主使用说明。
+
 
 若 Canvas MCP 尚未添加，从源码根运行 `node scripts/studio.mjs mcp-config`。根据输出中的 `command`／`args` 按当前宿主实际支持的 stdio 配置入口和格式操作。外层 `mcpServers` JSON 只是交换示例，不是通用客户端配置文件。本机 MCP SDK stdio 已通过测试，不代表所有宿主客户端均已验证。配置后调用 `canvas_status`。
 
 图片 API 地址、模型、Key 和 `expectedRevision` 由宿主读取当前 `setup status` 后生成参数载荷；员工不需创建或理解 JSON。员工复制 Key 并在当前对话明确说“已复制”后，宿主才运行 `node scripts/setup.mjs configure-image @JSON文件 --key-from-clipboard`。命令仅读取一次本机剪贴板，把 Key 写入本机私有配置，不回显、不写日志。若当前系统没有可用剪贴板入口，宿主可在仓库外生成仅当前用户可访问的私有 JSON 模板，员工在本机编辑器中填写 Key 后由 CLI 导入，并在成功后删除临时文件；文件内容不可进入对话、普通参数或日志。随后运行 `node scripts/setup.mjs check-image`；它只检查 API 连接，不发出生成请求。图片 API 配置在共享 Canvas 中跨线程复用。
 
-日常从源码根按需运行 `node scripts/setup.mjs status`、`report-host`、`configure-image`、`check-image`；Canvas 服务通过 `node scripts/studio.mjs status`、`open @JSON`、`mcp-config` 或宿主的 Canvas MCP 使用。Studio CLI 管理共享 Canvas 服务，不创建任务记录。
+日常从源码根按需运行 `node scripts/setup.mjs status`、`login-materials`、`report-host`、`configure-image`、`check-image`；Canvas 服务通过 `node scripts/studio.mjs status`、`open @JSON`、`mcp-config` 或宿主的 Canvas MCP 使用。Studio CLI 管理共享 Canvas 服务，不创建任务记录。
 
 ## 5. 创作流程
 
@@ -73,9 +76,9 @@ Canvas 网页与 MCP 使用同一本机工作空间和图片 API 配置。画布
 
 ## 7. 验收边界
 
-源码根回归 38/38、Canvas bridge 23/23 通过，0 失败、0 跳过；Canvas web typecheck/build 通过（Vite 有既有导入与大 chunk 警告）。Mac 本机全新浅克隆初始没有 `node_modules` 和构建产物；`node scripts/prepare.mjs` 完成三组依赖安装及 Canvas Agent/Web 构建，退出码为 0。克隆目录中的共享 Canvas 集成 1/1 通过（4.6 秒），覆盖多项目、裁切拼接、历史重启恢复与 MCP stdio 图片读写，未发起生图。
+首轮源码根回归 38/38、Canvas bridge 23/23 通过，0 失败、0 跳过；Canvas web typecheck/build 通过（Vite 有既有导入与大 chunk 警告）。Mac 本机全新浅克隆初始没有 `node_modules` 和构建产物；`node scripts/prepare.mjs` 完成三组依赖安装及 Canvas Agent/Web 构建，退出码为 0。克隆目录中的共享 Canvas 集成 1/1 通过（4.6 秒），覆盖多项目、裁切拼接、历史重启恢复与 MCP stdio 图片读写，未发起生图。
 
-隔离临时配置下的图片服务 `GET /v1/models` 实测 HTTP 200 并返回配置模型；未生图，源配置未改，临时 Key 目录已删除。另有一次真实 Canvas MCP 图片生成样本：上游 API HTTP 200、耗时 20.198 秒，本机完整保存 25.892 秒、准备画布 1.051 秒；主代理已实际打开检查验收图。单次结果不保证普遍时延或所有宿主均通过。Windows/Linux 源码 CI 已定义但未运行，未形成跨系统验收结论。
+隔离临时配置下的图片服务 `GET /v1/models` 实测 HTTP 200 并返回配置模型；未生图，源配置未改，临时 Key 目录已删除。另有一次真实 Canvas MCP 图片生成样本：上游 API HTTP 200、耗时 20.198 秒，本机完整保存 25.892 秒、准备画布 1.051 秒；主代理已实际打开检查验收图。单次结果不保证普遍时延或所有宿主均通过。源码提交 `d8ae34f` 的 Windows/macOS/Linux CI 已通过；本轮素材登录改动的验证结果见工程进度。
 
 源码准备与宿主实际工具仍需分开验收：根目录测试、Canvas web 构建和本机真实 MCP 请求不能证明任意宿主的本地命令、MCP 图像读取、Teedy 员工账号与只读权限已通过。
 

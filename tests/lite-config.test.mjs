@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { publicConfig, readConfig, readConfigRecord, saveConfig } from '../src/lite/config.mjs';
+import { publicConfig, readConfig, readConfigRecord, saveConfig, validateCompanyDefaults } from '../src/lite/config.mjs';
 
 async function withRoot(run) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'company-lite-config-'));
@@ -103,4 +103,17 @@ test('rejects persisted non-image channels instead of silently dropping them', a
     }));
     await assert.rejects(readConfigRecord({ root }), (error) => error.code === 'ERR_CONFIG_CORRUPT');
   });
+});
+
+test('company defaults accept one non-secret materials base URL and reject the old MCP endpoint fields', () => {
+  assert.deepEqual(validateCompanyDefaults({
+    image: { baseUrl: 'https://images.example/v1', model: 'image-v2' },
+    materials: { baseUrl: 'https://teedy.example' },
+  }), {
+    image: { baseUrl: 'https://images.example/v1', model: 'image-v2' },
+    materials: { baseUrl: 'https://teedy.example', },
+  });
+  assert.throws(() => validateCompanyDefaults({ materials: { mcpUrl: 'https://teedy.example/mcp' } }), error => error.code === 'ERR_COMPANY_DEFAULTS_INVALID');
+  assert.throws(() => validateCompanyDefaults({ materials: { loginUrl: 'https://teedy.example/login' } }), error => error.code === 'ERR_COMPANY_DEFAULTS_INVALID');
+  assert.throws(() => validateCompanyDefaults({ materials: { baseUrl: 'http://teedy.example' } }), error => error.code === 'ERR_COMPANY_DEFAULTS_INVALID');
 });

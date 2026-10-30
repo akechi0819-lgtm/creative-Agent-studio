@@ -5,13 +5,16 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  beginMaterialLogin,
   getSetupStatus,
   recordCanvasMcpCheck,
+  recordMaterialCheck,
   reportHostProbe,
   saveAndVerifyImageConfig,
   verifyImageApi,
 } from '../src/lite/setup.mjs';
 import { saveConfig } from '../src/lite/config.mjs';
+import { saveMaterialConfig } from '../src/materials/config.mjs';
 
 async function withTemp(run) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'company-lite-setup-'));
@@ -23,9 +26,16 @@ async function createPackageFixture(repoRoot, { canvas = true } = {}) {
   const files = [
     'package.json',
     'scripts/setup.mjs',
+    'scripts/materials.mjs',
+    'scripts/materials-mcp.mjs',
     'scripts/studio.mjs',
     'src/lite/setup.mjs',
+    'src/lite/material-login.mjs',
     'src/lite/config.mjs',
+    'src/materials/client.mjs',
+    'src/materials/config.mjs',
+    'src/materials/mcp.mjs',
+    'src/materials/verify.mjs',
     'src/canvas/runtime.mjs',
   ];
   for (const relative of files) {
@@ -67,9 +77,16 @@ async function createFreshSourceCliFixture(repoRoot) {
   const sourceRoot = path.resolve(import.meta.dirname, '..');
   for (const relative of [
     'scripts/setup.mjs',
+    'scripts/materials.mjs',
+    'scripts/materials-mcp.mjs',
     'scripts/studio.mjs',
     'src/lite/setup.mjs',
+    'src/lite/material-login.mjs',
     'src/lite/config.mjs',
+    'src/materials/client.mjs',
+    'src/materials/config.mjs',
+    'src/materials/mcp.mjs',
+    'src/materials/verify.mjs',
     'src/lite/clipboard.mjs',
     'src/canvas/client.mjs',
     'src/canvas/runtime.mjs',
@@ -85,6 +102,22 @@ async function createFreshSourceCliFixture(repoRoot) {
 }
 
 const image = { baseUrl: 'https://images.example/v1', model: 'image-v2', apiKey: 'image-secret-never-public' };
+const materialCredentials = { baseUrl: 'https://materials.example', username: 'employee@example.test', password: 'material-secret-never-public' };
+const materialHash = 'a'.repeat(64);
+
+async function saveVerifiedMaterials(root, { downloadVerified = true, failureCode = null } = {}) {
+  const saved = await saveMaterialConfig(materialCredentials, { root });
+  await recordMaterialCheck({
+    authenticated: true,
+    queryVerified: true,
+    downloadVerified,
+    bytes: downloadVerified ? 1234 : 0,
+    sha256: downloadVerified ? materialHash : '',
+    failedStage: downloadVerified ? null : 'download',
+    failureCode,
+  }, { root, credentialId: saved.credentialId, now: () => new Date('2026-10-30T02:00:00.000Z') });
+  return saved;
+}
 
 test('clipboard key input stays local and accepts a non-secret parameter file', {skip:process.platform!=='darwin'}, async()=>{
   await withTemp(async directory=>{
@@ -132,8 +165,9 @@ test('derives source and Canvas readiness from project files and dependencies wi
     assert.equal(status.steps.find((step) => step.id === 'materials').status, 'waiting');
     assert.equal(status.complete, false);
     assert.equal(status.current, 'canvas');
-    assert.match(status.steps.find((step) => step.id === 'materials').summary, /等待公司提供素材库连接/);
-    assert.match(status.steps.find((step) => step.id === 'materials').hostInstruction, /宿主自己的 MCP 配置功能/);
+    assert.match(status.steps.find((step) => step.id === 'materials').summary, /等待公司提供素材库 HTTPS 地址/);
+    assert.match(status.steps.find((step) => step.id === 'materials').hostInstruction, /node scripts\/materials\.mjs mcp-config/);
+    assert.match(status.steps.find((step) => step.id === 'materials').hostInstruction, /stdio MCP/);
     assert.match(status.steps.find((step) => step.id === 'canvas').nextAction, /command\/args/);
     assert.match(status.steps.find((step) => step.id === 'canvas').nextAction, /node scripts\/studio\.mjs mcp-config/);
     assert.match(status.steps.find((step) => step.id === 'materials').hostInstruction, /node scripts\/setup\.mjs report-host connected/);
@@ -203,7 +237,7 @@ test('a saved image API is reused on reopen and a successful /models GET stays s
   });
 });
 
-test('reports image API HTTP failures and never completes until the host supplies a read-only probe report', async () => {
+test('ignores v1 single-tool reports and requires current local evidence plus both host tools', async () => {
   await withTemp(async (directory) => {
     const repoRoot = path.join(directory, 'app');
     const root = path.join(directory, 'data');
@@ -218,24 +252,55 @@ test('reports image API HTTP failures and never completes until the host supplie
     assert.equal(failed.steps.find((step) => step.id === 'materials').status, 'waiting');
     assert.equal(failed.complete, false);
 
-    const report = await reportHostProbe({ status: 'connected', toolName: 'search_documents' }, { root });
+    const saved = await saveVerifiedMaterials(root);
+    const materialCheckPath = path.join(root, 'setup', 'material-check.json');
+    const storedCheck = JSON.parse(await fs.readFile(materialCheckPath, 'utf8'));
+    assert.equal(storedCheck.schemaVersion, 1);
+    assert.equal(storedCheck.credentialId, saved.credentialId);
+    assert.equal(storedCheck.queryVerified, true);
+    assert.equal(storedCheck.downloadVerified, true);
+    assert.equal(JSON.stringify(storedCheck).includes(materialCredentials.username), false);
+    assert.equal(JSON.stringify(storedCheck).includes(materialCredentials.password), false);
+
+    await fs.writeFile(path.join(root, 'setup', 'host-report.json'), JSON.stringify({
+      schemaVersion: 1, status: 'connected', toolName: 'search_documents', checkedAt: '2026-10-29T10:00:00.000Z',
+    }));
+    const oldReportStatus = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
+    const ignoredMaterialStep = oldReportStatus.steps.find((step) => step.id === 'materials');
+    assert.equal(ignoredMaterialStep.complete, false);
+    assert.equal(ignoredMaterialStep.status, 'host_action_needed');
+    assert.match(ignoredMaterialStep.summary, /等待当前宿主实际调用查询和原件下载工具/);
+
+    await assert.rejects(
+      reportHostProbe({ status: 'connected', queryTool: 'search_materials' }, { root }),
+      error => error.code === 'ERR_HOST_REPORT',
+    );
+    const report = await reportHostProbe({ status: 'connected', queryTool: 'search_materials', downloadTool: 'download_file' }, { root });
     await recordCanvasMcpCheck({root});
     assert.equal(report.source, '宿主报告');
     assert.equal(report.independentlyVerified, false);
     assert.equal(await fs.stat(path.join(root, 'setup', 'host-report.json')).then((info) => info.isFile()), true);
     const status = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
     const materialStep = status.steps.find((step) => step.id === 'materials');
-    assert.equal(materialStep.status, 'host_reported');
-    assert.equal(materialStep.independentlyVerified, false);
-    assert.equal(materialStep.source, '宿主报告');
-    assert.match(materialStep.checks[0].detail, /上次探测.*新宿主或新会话请实际调用只读工具确认/);
+    assert.equal(materialStep.status, 'ready');
+    assert.equal(materialStep.complete, true);
+    assert.equal(materialStep.independentlyVerified, true);
+    assert.equal(materialStep.source, '本机验证与当前宿主报告');
+    assert.match(materialStep.checks[3].detail, /查询：search_materials；下载：download_file/);
     assert.match(status.steps.find((step) => step.id === 'canvas').checks.find((check) => check.name === '宿主调用本地 Canvas MCP').detail, /上次探测.*新宿主或新会话请实际调用 canvas_status/);
     assert.equal(status.complete, false, 'the failed image connection must keep final setup incomplete');
     assert.equal(status.current, 'image');
 
-    await reportHostProbe({ status: 'failed', toolName: 'search_documents' }, { root });
+    await reportHostProbe({ status: 'failed' }, { root });
     const failedHostStatus = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
     assert.equal(failedHostStatus.steps.find((step) => step.id === 'materials').error.code, 'ERR_HOST_PROBE');
+
+    await beginMaterialLogin({ root });
+    assert.equal(await fs.lstat(materialCheckPath).then(() => true, error => error.code !== 'ENOENT'), false);
+    assert.equal(await fs.lstat(path.join(root, 'setup', 'host-report.json')).then(() => true, error => error.code !== 'ENOENT'), false);
+    const resetStatus = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
+    assert.equal(resetStatus.steps.find((step) => step.id === 'materials').complete, false);
+    assert.equal(resetStatus.steps.find((step) => step.id === 'materials').status, 'needs_action');
   });
 });
 
@@ -272,7 +337,8 @@ test('final setup stays blocked until the current image revision and host probe 
     const root = path.join(directory, 'data');
     await createPackageFixture(repoRoot);
     await saveConfig({ expectedRevision: 1, image }, { root });
-    await reportHostProbe({ status: 'connected', toolName: 'list_materials' }, { root });
+    await saveVerifiedMaterials(root);
+    await reportHostProbe({ status: 'connected', queryTool: 'search_materials', downloadTool: 'download_file' }, { root });
     const beforeImageCheck = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
     assert.equal(beforeImageCheck.current, 'canvas');
     assert.equal(beforeImageCheck.steps.find((step) => step.id === 'finish').complete, false);
@@ -295,6 +361,35 @@ test('final setup stays blocked until the current image revision and host probe 
   });
 });
 
+test('failed material verification is persisted without secrets and becomes stale when credentials rotate', async () => {
+  await withTemp(async directory => {
+    const repoRoot = path.join(directory, 'app');
+    const root = path.join(directory, 'data');
+    await createPackageFixture(repoRoot);
+    const saved = await saveVerifiedMaterials(root, { downloadVerified: false, failureCode: 'no_small_image' });
+    const check = JSON.parse(await fs.readFile(path.join(root, 'setup', 'material-check.json'), 'utf8'));
+    assert.equal(check.credentialId, saved.credentialId);
+    assert.equal(check.authenticated, true);
+    assert.equal(check.queryVerified, true);
+    assert.equal(check.downloadVerified, false);
+    assert.equal(check.failedStage, 'download');
+    assert.equal(check.failureCode, 'no_small_image');
+    assert.equal(check.sha256, '');
+    assert.equal(JSON.stringify(check).includes(materialCredentials.password), false);
+    const firstStatus = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
+    assert.equal(firstStatus.steps.find(step => step.id === 'materials').complete, false);
+    await assert.rejects(
+      reportHostProbe({ status: 'connected', queryTool: 'search_materials', downloadTool: 'download_file' }, { root }),
+      error => error.code === 'ERR_HOST_REPORT',
+    );
+
+    await saveMaterialConfig(materialCredentials, { root });
+    const rotatedStatus = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
+    assert.equal(rotatedStatus.steps.find(step => step.id === 'materials').complete, false);
+    assert.match(rotatedStatus.steps.find(step => step.id === 'materials').summary, /尚无有效/);
+  });
+});
+
 test('external defaults can prefill non-secret image fields but must stay outside the repository and cannot contain keys', async () => {
   await withTemp(async (directory) => {
     const repoRoot = path.join(directory, 'app');
@@ -303,14 +398,15 @@ test('external defaults can prefill non-secret image fields but must stay outsid
     const outsideDefaults = path.join(directory, 'company-lite-defaults.json');
     await fs.writeFile(outsideDefaults, JSON.stringify({
       image: { baseUrl: 'https://company.example/v1', model: 'img-prod' },
-      materials: { mcpUrl: 'https://materials.example/mcp', loginUrl: 'https://materials.example/login' },
+      materials: { baseUrl: 'https://materials.example' },
     }));
     const valid = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: { COMPANY_LITE_DEFAULTS_FILE: outsideDefaults } });
     assert.deepEqual(valid.steps.find((step) => step.id === 'image').defaults, {
       baseUrl: 'https://company.example/v1', model: 'img-prod',
     });
-    assert.equal(valid.steps.find((step) => step.id === 'materials').mcpUrl, 'https://materials.example/mcp');
-    assert.equal(valid.steps.find((step) => step.id === 'materials').loginUrl, 'https://materials.example/login');
+    assert.equal(valid.steps.find((step) => step.id === 'materials').baseUrl, 'https://materials.example');
+    assert.match(valid.steps.find((step) => step.id === 'materials').hostInstruction, /node scripts\/setup\.mjs login-materials/);
+    assert.match(valid.steps.find((step) => step.id === 'materials').hostInstruction, /员工本人在网页中输入账号/);
 
     await fs.writeFile(outsideDefaults, JSON.stringify({ image: { baseUrl: 'https://company.example/v1', model: 'img-prod', apiKey: 'private' } }));
     const withKey = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: { COMPANY_LITE_DEFAULTS_FILE: outsideDefaults } });
@@ -373,22 +469,27 @@ test('setup status runs from a fresh source clone without node_modules or Canvas
   });
 });
 
-test('host CLI reports return full status JSON and require a real tool name for connected', async () => {
+test('host CLI requires local evidence and reports both query and download tool names', async () => {
   await withTemp(async (directory) => {
     const root = path.join(directory, 'data');
     const defaultsFile = await createCliDefaults(directory);
-    const report = runSetupCli(['report-host', 'connected', 'search_materials'], { root, defaultsFile });
+    await saveVerifiedMaterials(root);
+    const report = runSetupCli(['report-host', 'connected', 'search_materials', 'download_file'], { root, defaultsFile });
     assert.equal(report.status, 0, report.stderr);
     const status = JSON.parse(report.stdout);
     const materials = status.steps.find((step) => step.id === 'materials');
-    assert.equal(materials.status, 'host_reported');
-    assert.equal(materials.independentlyVerified, false);
-    assert.match(materials.summary, /上次宿主探测已报告素材 MCP 可用/);
+    assert.equal(materials.status, 'ready');
+    assert.equal(materials.independentlyVerified, true);
+    assert.match(materials.summary, /search_materials、download_file/);
     assert.equal(JSON.stringify(status).includes(image.apiKey), false);
+    const hostReport = JSON.parse(await fs.readFile(path.join(root, 'setup', 'host-report.json'), 'utf8'));
+    assert.equal(hostReport.schemaVersion, 2);
+    assert.equal(hostReport.queryTool, 'search_materials');
+    assert.equal(hostReport.downloadTool, 'download_file');
 
-    const missingTool = runSetupCli(['report-host', 'connected'], { root, defaultsFile });
+    const missingTool = runSetupCli(['report-host', 'connected', 'search_materials'], { root, defaultsFile });
     assert.equal(missingTool.status, 1);
-    assert.match(missingTool.stderr, /实际只读工具名/);
+    assert.match(missingTool.stderr, /report-host connected/);
   });
 });
 
