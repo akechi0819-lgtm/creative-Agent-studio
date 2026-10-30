@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        os: [macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -30,11 +30,7 @@ jobs:
             third_party/canvas/web/package-lock.json
       - name: Install source dependencies and build Canvas
         run: node scripts/prepare.mjs
-      - name: Install test browser on Linux
-        if: runner.os == 'Linux'
-        run: npx playwright install --with-deps chromium
       - name: Install test browser on macOS and Windows
-        if: runner.os != 'Linux'
         run: npx playwright install chromium
       - name: Run source tests
         run: npm test

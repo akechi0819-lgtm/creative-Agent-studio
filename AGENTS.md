@@ -19,6 +19,8 @@
 
 ## 运行与数据边界
 
+- 当前支持 Windows 和 macOS，不做 Linux 适配或验收。员工安装入口为 `docs/员工安装提示词.md`，固定克隆 `codex/company-lite`；默认服务地址和图片模型从根目录 `company-defaults.json` 读取，不要求员工另贴 URL。
+
 - 本仓库按源码运行：执行 Node 脚本前先检查 Git、Node.js 22.19+（22.x）或 24+ 和 npm；从仓库根运行 `node scripts/prepare.mjs` 安装锁定依赖并构建 Canvas，`npm run prepare:dev` 是等价开发别名。PowerShell 中如 `npm` 被策略阻止，可用 `npm.cmd --version` 检查，不要求更改执行策略。无需 Python、Office 或系统编译器。缺少基础工具时说明缺项，按当前系统官方说明协助用户安装；不擅自修改系统策略、权限或 PATH。
 - 宿主智能体负责安装、配置和创作。从源码根运行 `node scripts/setup.mjs status`。仅首次安装、配置或故障修复时简洁呈现源码与依赖、本机 Canvas MCP、Teedy MCP 实际探测、图片 API 和整体就绪五项状态；自动推进可执行检查，只在本人登录、宿主 MCP 审批或用户输入凭据时等待，不增加逐步确认。日常创作不重复安装清单。
 - Canvas 是跨宿主线程共享的持续本机工作空间，保留历史项目、生成图片和排版编辑状态；允许查找、重开并继续旧作品。绘图连接、图片 API 配置和 Canvas 项目历史跨线程共用。当前宿主对话线程负责区分本次需求和批准；Canvas 项目不承载任务审批或跨线程确认。
@@ -28,7 +30,7 @@
 - `node scripts/studio.mjs mcp-config` 的 `command`／`args` 是 stdio 配置参数；外层 JSON 只是示例，不保证任意宿主接受相同格式。按宿主实际入口和格式配置，不猜测固定菜单或目录。本机 MCP SDK stdio 验证不等于客户端兼容验证。
 - 需求澄清、制作单确认和最终批准必须来自当前宿主对话中的用户直接表达。已有用户授权范围内的明确失败可按原授权和费用范围处理；超出范围或授权含义不清时先询问。状态未知时先查现有状态，不自动重发。成品必须由宿主实际读图后才能进入审核；用户明确批准后再导出。
 - 独立 CompanyLite 数据根用于本机共享 Canvas 历史、共用配置和运行状态，不是另一套任务或审批系统；不导入旧版数据。
-- Teedy 认证已查明为用户名密码登录远端 `/api/user/login` 后使用 Cookie；本机 Node stdio 素材 MCP 复用只读访问逻辑，不是远端 OAuth MCP。公司提供 `materials.baseUrl`，宿主运行 `node scripts/setup.mjs login-materials` 并打开一次性本机登录页；员工仅在表单输入账号密码，自动验证登录、查询和实际原件下载。随后宿主按 `node scripts/materials.mjs mcp-config` 接入，并真实查询、下载后报告两项结果。空库、无权限、下载失败或仅浏览器登录均不能标记就绪。安装授权包含验证下载，验证后删除测试原件；日常创作仍先选素材再下载。所有命令由宿主执行，员工不操作终端。不得把真实地址、员工账号、密码或原件提交公开仓库。
+- Teedy 认证已查明为用户名密码登录远端 `/api/user/login` 后使用 Cookie；本机 Node stdio 素材 MCP 复用只读访问逻辑，不是远端 OAuth MCP。公司提供 `materials.baseUrl`，宿主运行 `node scripts/setup.mjs login-materials` 并打开一次性本机登录页；员工仅在表单输入账号密码，自动验证登录、查询和实际原件下载。随后宿主按 `node scripts/materials.mjs mcp-config` 接入，并真实查询、下载后报告两项结果。空库、无权限、下载失败或仅浏览器登录均不能标记就绪。安装授权包含验证下载，验证后删除测试原件；日常创作仍先选素材再下载。所有命令由宿主执行，员工不操作终端。当前公司素材库和图片 API 请求地址已获用户授权，作为非秘密默认值放入 `company-defaults.json`；不得提交员工账号、密码、Key、Cookie 或原件。
 - 员工复制图片 API Key 并明确说“已复制”后，才能运行 `node scripts/setup.mjs configure-image @JSON --key-from-clipboard`，仅读一次本机剪贴板并将 Key 写入本机私有配置；不得自行读、回显或记入日志。剪贴板不可用时，宿主生成仓库外仅本人可读写的私有 JSON 模板，用户在本机编辑器填入 Key 后再由 CLI 导入；文件内容不读回、不记录并在导入成功后删除。普通问答框不作为秘密输入入口。
 
 

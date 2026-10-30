@@ -32,6 +32,8 @@ flowchart LR
 
 ## 4. 源码准备、状态和配置
 
+当前支持 Windows 和 macOS，不做 Linux 适配或验收。仓库附带 [员工安装提示词](docs/员工安装提示词.md)，固定极简分支；根目录 `company-defaults.json` 预置获授权的公司 Teedy 地址、图片 API 请求地址和模型，员工无需另贴 URL。账号密码只填本机表单，图片 Key 仍通过复制后回复“已复制”输入。
+
 Company Lite 从 Git 仓库源码目录运行。执行任何 Node 脚本前，宿主先检查 Git、Node.js 22.19+（22.x）或 24+ 和 npm。缺少任一项时说明缺口，并按当前系统官方说明协助用户安装；不改系统策略、权限或 PATH。无需 Python、Office 或系统编译器。
 
 确认 Git、Node.js 和 npm 可用后，在仓库根运行 `node scripts/prepare.mjs`，自动安装锁文件锁定的依赖并构建 Canvas；`npm run prepare:dev` 是等价开发别名。随后可用 `node scripts/setup.mjs status` 读取当前五项进度：

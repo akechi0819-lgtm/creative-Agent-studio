@@ -2,9 +2,11 @@
 
 `codex/company-lite` 是面向外部宿主智能体的源码能力包：宿主当前对话线程主持创作并调用工具；本机 Canvas/MCP 保存跨线程共享的项目历史、图片与排版状态；本机只读素材 MCP 连接公司远端 Teedy 提供远端素材。本仓库不包含聊天或推理平台，也不另建任务账本。
 
+当前支持 Windows 和 macOS；Linux 不在支持范围内，也未作适配。首次安装可直接复制[员工安装提示词](docs/员工安装提示词.md)，其中包含 GitHub 分支入口和五步安装流程。公司 Teedy 与图片 API 默认值已放在仓库根目录的 `company-defaults.json`，不需要员工或管理员另发服务地址。
+
 ## 源码快速开始
 
-源码分支 `codex/company-lite` 已推送到 [GitHub 仓库](https://github.com/akechi0819-lgtm/creative-Agent-studio)。
+源码分支 `codex/company-lite` 已推送到 [GitHub 分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/codex/company-lite)。
 
 ```sh
 git --version
@@ -54,7 +56,7 @@ node scripts/setup.mjs check-image
 
 配置模板和 revision 由宿主根据当前 setup 状态生成，员工无需创建或理解 JSON。备用文件也由宿主准备，员工只在本机编辑器中填写 Key；详细操作见[宿主使用说明](docs/代理宿主使用.md)。
 
-管理员提供的非敏感图片地址／模型及Teedy 根地址默认值示例，以及如何对每次 setup 调用指定外置 defaults 文件，见[宿主使用说明中的管理员默认值小节](docs/代理宿主使用.md#管理员提供的公共默认值)。
+图片 API 地址、模型和 Teedy 根地址由仓库根目录的 `company-defaults.json` 提供；当前值和读取方式见[宿主使用说明](docs/代理宿主使用.md#仓库内置默认值)。不要要求员工提供或粘贴这些 URL。
 
 共享 Canvas 服务可从源码根分别通过 `node scripts/studio.mjs status`、`node scripts/studio.mjs open @JSON` 和 `node scripts/studio.mjs mcp-config` 查看、打开或配置。宿主日常绘图优先直接调用 Canvas MCP；创作时使用 `canvas_open` 选择新项目、最近项目或历史项目。Canvas 历史和图片 API 配置跨线程共用，其他线程的需求、来源和批准不会自动沿用。
 
@@ -78,6 +80,6 @@ Canvas 继续支持手动绘图和既有像素操作，包括导入、拼贴、�
 
 ## 初次使用提示
 
-在宿主中打开源码根目录，简短提示智能体：
+给员工的完整宿主中立安装提示词见[docs/员工安装提示词.md](docs/员工安装提示词.md)，可整段复制。宿主完成克隆后，从仓库根目录读取规则和 Skill，并按提示词显示五项真实进度。现有的简短创作入口提示如下：
 
 > 请先从当前源码根目录读取 README、AGENTS、宿主使用说明和创作 Skill；按文档检查当前可用工具与状态，自动完成可执行准备。所有本地命令从该根目录运行，日常创作不重复安装清单。

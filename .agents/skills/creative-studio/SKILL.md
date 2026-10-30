@@ -13,6 +13,8 @@ description: 在 Company Lite 源码目录中主持当前宿主对话线程的�
 
 # 源码准备与状态
 
+当前支持 Windows 和 macOS，不做 Linux 适配。首次安装按 `docs/员工安装提示词.md` 固定使用极简分支，自动读取源码根目录 `company-defaults.json` 的公司素材库和图片 API 默认值，不要求员工另贴地址。
+
 执行 Node 脚本前，先检查 Git、Node.js 22.19+（22.x）或 24+ 和 npm。可运行 `git --version`、`node --version` 与 `npm --version`；PowerShell 中如 `npm` 命令被策略阻止，用 `npm.cmd --version` 检查，不要求更改执行策略。缺少基础工具时说明缺项，按当前系统官方安装说明协助用户，不改系统策略、权限或 PATH。无需 Python、Office 或系统编译器。
 
 首次准备先运行 `node scripts/setup.mjs status`，按实际结果简洁展示五步进度；然后从源码根自动运行耗时的 `node scripts/prepare.mjs` 安装固定依赖并构建 Canvas，完成后重新读取 setup 状态。不要在展示初始状态前开始构建。`npm run prepare:dev` 是等价开发别名。宿主自动推进可执行步骤；仅在本人登录、私密凭据输入或必要审批时等待。

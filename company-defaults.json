@@ -1,0 +1,9 @@
+{
+  "image": {
+    "baseUrl": "https://api.osodm.com",
+    "model": "gpt-image-2.5-sunburst"
+  },
+  "materials": {
+    "baseUrl": "https://teedy.apinova.cn/"
+  }
+}
