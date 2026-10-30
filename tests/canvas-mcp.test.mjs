@@ -32,8 +32,18 @@ test('MCP exposes shared drawing tools, preserves explicit targets, and reports 
   assert.deepEqual(calls.at(-1).target,{projectId:'project-1',clientId:'client-1'});
   assert.equal(result.content[0].type,'image');
   assert.deepEqual(Buffer.from(result.content[0].data,'base64'),png);
+  const source=path.join(root,'reference.png');
+  await fs.writeFile(source,png);
+  const imported=await client.callTool({name:'canvas_import_file',arguments:{path:source,title:'Reference',projectId:'project-1',clientId:'client-1'}});
+  assert.equal(imported.isError,undefined);
+  assert.equal(calls.at(-1).name,'canvas_import_image');
+  assert.equal(calls.at(-1).input.title,'Reference');
+  assert.deepEqual(Buffer.from(calls.at(-1).input.dataUrl.split(',')[1],'base64'),png);
+  assert.deepEqual(calls.at(-1).target,{projectId:'project-1',clientId:'client-1'});
+  assert.deepEqual(await fs.readFile(source),png);
   const saved=await client.callTool({name:'canvas_save_image',arguments:{nodeId:'image-1'}});
   assert.deepEqual(await fs.readFile(JSON.parse(saved.content[0].text).path),png);
+  assert.deepEqual(await fs.readFile(source),png);
   const before=calls.length;
   const invalid=await client.callTool({name:'site_navigate',arguments:{path:'/config'}});
   assert.equal(invalid.isError,true);assert.equal(calls.length,before);

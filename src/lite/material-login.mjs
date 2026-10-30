@@ -32,7 +32,7 @@ function headers() {
   return {
     'Cache-Control': 'no-store, max-age=0',
     'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-    'Referrer-Policy': 'no-referrer',
+    'Referrer-Policy': 'strict-origin',
     'X-Content-Type-Options': 'nosniff',
     'Cross-Origin-Resource-Policy': 'same-origin',
   };

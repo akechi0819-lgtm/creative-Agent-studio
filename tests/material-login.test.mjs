@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { chromium } from 'playwright';
 import {
   beginMaterialLogin,
   getSetupStatus,
@@ -37,6 +38,52 @@ async function withRoot(run) {
 async function status(root, defaultsFile) {
   return getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: { COMPANY_LITE_DEFAULTS_FILE: defaultsFile } });
 }
+
+test('native browser form submission passes the local Origin and completes the one-time login', async () => {
+  const browser = await chromium.launch({ headless: true });
+  const username = 'fixture-user@example.invalid';
+  const password = 'fixture-browser-password-do-not-render';
+  const verificationResult = { authenticated: true, queryVerified: true, downloadVerified: true };
+  const credentialsReceived = [];
+  let session;
+  try {
+    session = await startMaterialLogin({
+      baseUrl: 'https://teedy.example',
+      onCredentials: async (credentials) => {
+        credentialsReceived.push(credentials);
+        return verificationResult;
+      },
+    });
+
+    const page = await browser.newPage();
+    let submittedHeaders;
+    page.on('request', (request) => {
+      if (request.method() === 'POST') submittedHeaders = request.headers();
+    });
+    const pageResponse = await page.goto(session.url);
+    assert.equal(pageResponse.status(), 200);
+    assert.equal(pageResponse.headers()['referrer-policy'], 'strict-origin');
+    assert.doesNotMatch(await page.locator('body').textContent(), /fixture-browser-password|fixture-user@example/);
+
+    await page.locator('#username').fill(username);
+    await page.locator('#password').fill(password);
+    const [postResponse] = await Promise.all([
+      page.waitForResponse((response) => response.request().method() === 'POST'),
+      page.getByRole('button', { name: '登录并验证素材访问' }).click(),
+    ]);
+    const localOrigin = new URL(session.url).origin;
+    assert.equal(postResponse.status(), 200);
+    assert.equal(submittedHeaders.origin, localOrigin);
+    assert.equal(submittedHeaders.referer, `${localOrigin}/`, 'the one-time token path must not appear in Referer');
+    assert.match(await page.locator('h1').textContent(), /素材库验证完成/);
+    assert.deepEqual(credentialsReceived, [{ baseUrl: 'https://teedy.example', username, password }]);
+    assert.deepEqual(await session.completed, verificationResult);
+    await assert.rejects(fetch(session.url));
+  } finally {
+    session?.close();
+    await browser.close();
+  }
+});
 
 async function browserGetAndPost(session, username, password) {
   const opened = await fetch(session.url);
