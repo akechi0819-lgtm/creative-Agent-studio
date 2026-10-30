@@ -32,7 +32,7 @@ flowchart LR
 
 ## 4. 源码准备、状态和配置
 
-当前支持 Windows 和 macOS，不做 Linux 适配或验收。仓库附带 [员工安装提示词](docs/员工安装提示词.md)，固定极简分支；根目录 `company-defaults.json` 预置获授权的公司 Teedy 地址、图片 API 请求地址和模型，员工无需另贴 URL。账号密码与图片 Key 的输入由宿主选择实际可用方式，员工不操作终端。
+当前支持 Windows 和 macOS，不做 Linux 适配或验收。仓库附带 [员工安装提示词](docs/员工安装提示词.md)，固定极简分支；根目录 `company-defaults.json` 预填获授权的公司 Teedy 地址、图片 API 请求地址和模型，可由员工选择更换。安装时展示图片 API 当前本机设置（若有）或默认值并询问沿用或更换；已保存图片配置优先于默认值。员工可在对话提供非秘密 URL 和模型。账号密码与图片 Key 的输入由宿主选择实际可用方式，员工不操作终端。
 
 Company Lite 从 Git 仓库源码目录运行。执行任何 Node 脚本前，宿主先检查 Git、Node.js 22.19+（22.x）或 24+ 和 npm。缺少任一项时说明缺口，并按当前系统官方说明协助用户安装；不改系统策略、权限或 PATH。无需 Python、Office 或系统编译器。
 
@@ -46,7 +46,7 @@ Company Lite 从 Git 仓库源码目录运行。执行任何 Node 脚本前，�
 
 仅在首次安装、配置或故障修复时简洁展示这五项；日常创作不重复清单。宿主自动检查依赖并运行 `node scripts/prepare.mjs`，自动完成已有可执行步骤，只在本人登录、复制 Key 或必要宿主审批时等待，不逐项确认。缺少服务地址或登录信息时，setup 状态会标出缺口，宿主再向管理员索取。
 
-Teedy 的实际认证是用户名密码登录、会话 Cookie，不是远端 OAuth MCP。公司提供 HTTPS 根地址 `materials.baseUrl`；本机 Node stdio 素材 MCP 连接该远端服务，复用现有只读查询、原件下载与 ACL 检查逻辑，无需 Python。宿主运行 `node scripts/setup.mjs login-materials` 并打开一次性本机登录表单，员工仅在表单填写账号密码。提交后自动登录、查询并下载原件验证，全部通过才保存本机私有凭据；失败、空库或无原件时不能标记完成。
+Teedy 的实际认证是用户名密码登录、会话 Cookie，不是远端 OAuth MCP。公司 HTTPS 根地址 `materials.baseUrl` 是可更换的预填值；员工可提供其他非秘密 HTTPS 地址，由宿主显式传给 `login-materials`。本机 Node stdio 素材 MCP 连接所选远端服务，复用现有只读查询、原件下载与 ACL 检查逻辑，无需 Python。宿主打开一次性本机登录表单，员工仅在表单填写账号密码。提交后自动登录、查询并下载原件验证，全部通过才保存本机私有凭据；失败、空库或无原件时不能标记完成。
 
 随后宿主执行 `node scripts/materials.mjs mcp-config` 接入素材 MCP，并实际调用查询、详情、下载工具，确认本地原件后运行 `node scripts/setup.mjs report-host connected search_materials download_file`。本机验证与宿主工具报告分开，报告关联当前配置；旧单项报告不能证明下载。安装验证完成后删除测试原件，不把它作为创作参考。重检已保存凭据用 `node scripts/materials.mjs check`。所有命令由宿主执行，员工不操作终端、不编辑 JSON；普通问答框不收集密码。详见宿主使用说明。
 

@@ -2,7 +2,7 @@
 
 `codex/company-lite` 是面向外部宿主智能体的源码能力包：宿主当前对话线程主持创作并调用工具；本机 Canvas/MCP 保存跨线程共享的项目历史、图片与排版状态；本机只读素材 MCP 连接公司远端 Teedy 提供远端素材。本仓库不包含聊天或推理平台，也不另建任务账本。
 
-当前支持 Windows 和 macOS；Linux 不在支持范围内，也未作适配。首次安装可直接复制[员工安装提示词](docs/员工安装提示词.md)，其中包含 GitHub 分支入口、五步安装流程和验收标准。步骤规定完成结果，不绑定各宿主唯一命令或配置方式。公司 Teedy 与图片 API 默认值已放在仓库根目录的 `company-defaults.json`，不需要员工或管理员另发服务地址。
+当前支持 Windows 和 macOS；Linux 不在支持范围内，也未作适配。首次安装可直接复制[员工安装提示词](docs/员工安装提示词.md)，其中包含 GitHub 分支入口、五步安装流程和验收标准。步骤规定完成结果，不绑定各宿主唯一命令或配置方式。仓库根目录的 `company-defaults.json` 提供公司 Teedy 与图片 API 的预填默认值，可按员工选择更换；图片 API 已保存的本机配置优先于默认值。
 
 ## 源码快速开始
 
@@ -61,7 +61,7 @@ node scripts/setup.mjs check-image
 
 配置模板和 revision 由宿主根据当前 setup 状态生成，员工无需创建或理解 JSON，也无需操作终端或编辑技术配置。关于各凭据输入机制和 CLI 调用方式，见[宿主使用说明](docs/代理宿主使用.md)。
 
-图片 API 地址、模型和 Teedy 根地址由仓库根目录的 `company-defaults.json` 提供；当前值和读取方式见[宿主使用说明](docs/代理宿主使用.md#仓库内置默认值)。不要要求员工提供或粘贴这些 URL。
+图片 API 地址、模型和 Teedy 根地址由仓库根目录的 `company-defaults.json` 预填；员工可在当前对话提供非秘密 URL 和模型来更换。图片 API 已保存的本机设置优先于默认值。当前值和读取方式见[宿主使用说明](docs/代理宿主使用.md#仓库内置默认值)。
 
 共享 Canvas 服务可从源码根分别通过 `node scripts/studio.mjs status`、`node scripts/studio.mjs open @JSON` 和 `node scripts/studio.mjs mcp-config` 查看、打开或配置。宿主日常绘图优先直接调用 Canvas MCP；创作时使用 `canvas_open` 选择新项目、最近项目或历史项目。Canvas 历史和图片 API 配置跨线程共用，其他线程的需求、来源和批准不会自动沿用。
 
