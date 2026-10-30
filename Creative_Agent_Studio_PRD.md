@@ -32,7 +32,7 @@ flowchart LR
 
 ## 4. 源码准备、状态和配置
 
-当前支持 Windows 和 macOS，不做 Linux 适配或验收。仓库附带 [员工安装提示词](docs/员工安装提示词.md)，固定极简分支；根目录 `company-defaults.json` 预置获授权的公司 Teedy 地址、图片 API 请求地址和模型，员工无需另贴 URL。账号密码只填本机表单，图片 Key 仍通过复制后回复“已复制”输入。
+当前支持 Windows 和 macOS，不做 Linux 适配或验收。仓库附带 [员工安装提示词](docs/员工安装提示词.md)，固定极简分支；根目录 `company-defaults.json` 预置获授权的公司 Teedy 地址、图片 API 请求地址和模型，员工无需另贴 URL。账号密码与图片 Key 的输入由宿主选择实际可用方式，员工不操作终端。
 
 Company Lite 从 Git 仓库源码目录运行。执行任何 Node 脚本前，宿主先检查 Git、Node.js 22.19+（22.x）或 24+ 和 npm。缺少任一项时说明缺口，并按当前系统官方说明协助用户安装；不改系统策略、权限或 PATH。无需 Python、Office 或系统编译器。
 
@@ -41,7 +41,7 @@ Company Lite 从 Git 仓库源码目录运行。执行任何 Node 脚本前，�
 1. 克隆源码、Git／Node.js／npm 和运行依赖是否就绪。
 2. Canvas 组件构建状态和当前宿主实际调用 `canvas_status` 后的连接结果。
 3. 本人 Teedy 登录、自动查询和原件下载验证，以及宿主查询与下载两项报告。
-4. 图片 API 地址、模型、Key 及非生图连接检查。
+4. 图片 API 地址、模型、Key、连接预检及一张真实测试图的生成、保存、读图和历史重开。
 5. 当前总体就绪状态和下一步。
 
 仅在首次安装、配置或故障修复时简洁展示这五项；日常创作不重复清单。宿主自动检查依赖并运行 `node scripts/prepare.mjs`，自动完成已有可执行步骤，只在本人登录、复制 Key 或必要宿主审批时等待，不逐项确认。缺少服务地址或登录信息时，setup 状态会标出缺口，宿主再向管理员索取。
@@ -53,7 +53,7 @@ Teedy 的实际认证是用户名密码登录、会话 Cookie，不是远端 OAu
 
 若 Canvas MCP 尚未添加，从源码根运行 `node scripts/studio.mjs mcp-config`。根据输出中的 `command`／`args` 按当前宿主实际支持的 stdio 配置入口和格式操作。外层 `mcpServers` JSON 只是交换示例，不是通用客户端配置文件。本机 MCP SDK stdio 已通过测试，不代表所有宿主客户端均已验证。配置后调用 `canvas_status`。
 
-图片 API 地址、模型、Key 和 `expectedRevision` 由宿主读取当前 `setup status` 后生成参数载荷；员工不需创建或理解 JSON。员工复制 Key 并在当前对话明确说“已复制”后，宿主才运行 `node scripts/setup.mjs configure-image @JSON文件 --key-from-clipboard`。命令仅读取一次本机剪贴板，把 Key 写入本机私有配置，不回显、不写日志。若当前系统没有可用剪贴板入口，宿主可在仓库外生成仅当前用户可访问的私有 JSON 模板，员工在本机编辑器中填写 Key 后由 CLI 导入，并在成功后删除临时文件；文件内容不可进入对话、普通参数或日志。随后运行 `node scripts/setup.mjs check-image`；它只检查 API 连接，不发出生成请求。图片 API 配置在共享 Canvas 中跨线程复用。
+凭据输入方式由宿主根据实际能力选择，不把剪贴板或固定回复作为安装前提。优先使用宿主专用凭据入口或可用的本机输入方式，由宿主完成配置导入；不要求员工理解命令或编辑技术配置。普通聊天问答框不等同于秘密输入入口，凭据不得进入仓库或日志。不支持某一种方式时先选择其他可用方式，只有确实没有可用入口时才说明障碍。现有 CLI 的剪贴板和私有文件导入方法见宿主使用说明；这些是可选实现，不代表每个宿主都必须采用。若选择剪贴板，必须取得用户对本次复制读取的明确确认，仅读取一次且不回显。配置后先检查图片 API 连接，再通过实际宿主 Canvas MCP 生成一张测试图；安装授权包含该次测试，无需另行确认费用。确认生成完成、图片保存到本机、宿主实际读图，并能从画布历史重开该作品后，才算安装验收通过。`check-image` 本身仅检查连接，不能替代真实生图。状态未知时先查结果，不盲目重复提交。
 
 日常从源码根按需运行 `node scripts/setup.mjs status`、`login-materials`、`report-host`、`configure-image`、`check-image`；Canvas 服务通过 `node scripts/studio.mjs status`、`open @JSON`、`mcp-config` 或宿主的 Canvas MCP 使用。Studio CLI 管理共享 Canvas 服务，不创建任务记录。
 

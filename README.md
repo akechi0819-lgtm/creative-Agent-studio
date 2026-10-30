@@ -2,7 +2,7 @@
 
 `codex/company-lite` 是面向外部宿主智能体的源码能力包：宿主当前对话线程主持创作并调用工具；本机 Canvas/MCP 保存跨线程共享的项目历史、图片与排版状态；本机只读素材 MCP 连接公司远端 Teedy 提供远端素材。本仓库不包含聊天或推理平台，也不另建任务账本。
 
-当前支持 Windows 和 macOS；Linux 不在支持范围内，也未作适配。首次安装可直接复制[员工安装提示词](docs/员工安装提示词.md)，其中包含 GitHub 分支入口和五步安装流程。公司 Teedy 与图片 API 默认值已放在仓库根目录的 `company-defaults.json`，不需要员工或管理员另发服务地址。
+当前支持 Windows 和 macOS；Linux 不在支持范围内，也未作适配。首次安装可直接复制[员工安装提示词](docs/员工安装提示词.md)，其中包含 GitHub 分支入口、五步安装流程和验收标准。步骤规定完成结果，不绑定各宿主唯一命令或配置方式。公司 Teedy 与图片 API 默认值已放在仓库根目录的 `company-defaults.json`，不需要员工或管理员另发服务地址。
 
 ## 源码快速开始
 
@@ -25,12 +25,12 @@ node scripts/setup.mjs status
 
 ## 安装与连接
 
-首次安装、配置或故障修复时，先运行 `node scripts/setup.mjs status` 并简洁展示五项真实进度，再按状态自动运行耗时的 `node scripts/prepare.mjs`；准备完成后重新读取状态。不要在展示初始状态前开始构建。日常创作不重复安装清单。自动推进可执行检查，仅在本人登录、输入凭据或需要宿主审批时等待，不要求逐项确认。
+首次安装、配置或故障修复时，先运行 `node scripts/setup.mjs status` 并简洁展示五项真实进度，再按状态自动运行耗时的 `node scripts/prepare.mjs`；准备完成后重新读取状态。不要在展示初始状态前开始构建。日常创作不重复安装清单。自动推进可执行检查；仅在员工需要登录、使用宿主实际提供的安全凭据入口，或需要宿主审批时等待，不要求逐项确认。本次安装授权包含一张真实测试图；须由当前宿主实际调用 Canvas MCP 完成生成、状态查询、本机历史保存、读图和重开验证后才算通过。
 
 1. 源码根目录及 Git、Node.js、npm 运行依赖。
 2. Canvas 构建状态，以及当前宿主实际调用 `canvas_status` 后的连接结果。
 3. 本人 Teedy 登录、自动查询和原件下载验证，以及宿主实际调用素材 MCP 的结果。
-4. 图片 API 地址、模型和 Key 的配置及非生图连接检查。
+4. 图片 API 地址、模型和 Key 的配置及 API 连接检查；再通过当前宿主实际调用 Canvas MCP 完成一张真实测试图并读图、重开历史。
 5. 当前整体就绪状态和下一步操作。
 
 新宿主或首次进入新会话时，确认当前实际可用的 Canvas MCP 工具并调用 `canvas_status`；保存的探测结果只代表上次实际调用。Teedy 同样需用当前宿主现有 MCP 实际探测。不要因旧报告推断新宿主已接通，也不建立宿主注册或迁移系统。
@@ -45,16 +45,21 @@ node scripts/studio.mjs mcp-config
 
 素材库使用本人账号密码登录远端 Teedy。本机 Node 素材 MCP 负责只读查询和下载，不需要远端 OAuth MCP 或额外的 Python。宿主启动 `node scripts/setup.mjs login-materials`，打开一次性本机表单；员工只填账号密码，提交后自动验证登录、查询和原件下载。验证通过后，宿主用 `node scripts/materials.mjs mcp-config` 接入素材 MCP，再实际查询、下载并记录两项结果。全部命令由宿主执行，员工不操作终端；详见[素材库安装流程](docs/代理宿主使用.md#teedy-素材库)。
 
-图片 API 配置需要 `expectedRevision`、`image.baseUrl` 和 `image.model`。员工复制 Key 并在当前对话明确说“已复制”后，宿主才可运行：
+图片 API 配置需要 `expectedRevision`、`image.baseUrl` 和 `image.model`。宿主根据自身实际提供的安全凭据能力选择合适的本机输入方式；不假定项目已有图片 Key 表单，也不要求员工把 Key 发到普通对话。若一种方式不可用，改用另一种当前可用方式；只有确实没有可用方式才报告阻碍。宿主具备专用凭据入口且能安全导入现有 `configure-image` 配置协议时，可以使用该入口。CLI 可选方式包括：员工明确确认本次已复制后仅读一次剪贴板，或由宿主安全准备仓库外的本机私有 JSON 文件并使用现有导入命令：
 
 ```sh
+# 以下两种 Key 导入方式二选一，不要连续执行：
+# 方式一：员工明确确认本次已复制后，仅读一次剪贴板
 node scripts/setup.mjs configure-image @image-config.json --key-from-clipboard
+# 方式二：改为导入仓库外的本机私有 JSON 文件
+node scripts/setup.mjs configure-image @<仓库外本机私有文件>
+# 选择一种导入并完成后，再运行 API 连接检查
 node scripts/setup.mjs check-image
 ```
 
-命令仅读取一次本机剪贴板，把 Key 写入本机私有配置，不回显或写入日志；JSON 不含 Key。若剪贴板入口不可用，可按[宿主使用说明](docs/代理宿主使用.md)改用仓库外的私有 JSON 文件。不得要求用户把 Key 粘贴到对话或普通命令参数。`check-image` 只检查 API 连接，不发起生成请求。
+选择剪贴板时，员工必须明确确认本次复制后命令才可读取一次剪贴板；导入命令把 Key 写入本机私有配置，不回显或写入日志。私有 JSON 文件须在仓库外并由宿主按[宿主使用说明](docs/代理宿主使用.md)安全处理。不得把 Key 放进普通对话、普通命令参数、仓库或日志。`check-image` 只检查 API 连接，不生成图片；安装验收还包含一张真实测试图：由当前宿主通过已连接的 Canvas MCP 提交生成，查询状态，确认图片保存到本机 Canvas 历史，使用 `canvas_read_image` 实际读图，并重开历史确认可恢复。打印配置示例、本机 SDK 测试或单独的 API HTTP 200 都不能代替宿主 MCP 与实图验收。状态未知时先查询，不盲目重复可能收费的请求；明确失败可在本次一张测试图授权范围内修复后处理。
 
-配置模板和 revision 由宿主根据当前 setup 状态生成，员工无需创建或理解 JSON。备用文件也由宿主准备，员工只在本机编辑器中填写 Key；详细操作见[宿主使用说明](docs/代理宿主使用.md)。
+配置模板和 revision 由宿主根据当前 setup 状态生成，员工无需创建或理解 JSON，也无需操作终端或编辑技术配置。关于各凭据输入机制和 CLI 调用方式，见[宿主使用说明](docs/代理宿主使用.md)。
 
 图片 API 地址、模型和 Teedy 根地址由仓库根目录的 `company-defaults.json` 提供；当前值和读取方式见[宿主使用说明](docs/代理宿主使用.md#仓库内置默认值)。不要要求员工提供或粘贴这些 URL。
 
