@@ -78,7 +78,7 @@ Canvas 继续支持手动绘图和既有像素操作，包括导入、拼贴、�
 - 源码根回归 38/38、Canvas bridge 23/23 均通过，0 失败、0 跳过；Canvas web typecheck/build 通过。
 - Mac 本机全新浅克隆起始没有 `node_modules` 和构建产物；`node scripts/prepare.mjs` 完成三组依赖安装及 Canvas Agent/Web 构建。随后 setup 正确报告本地源码与 Canvas 就绪、仍等待当前宿主 MCP。克隆目录中的共享 Canvas 集成 1/1 通过（4.6 秒），覆盖多项目、裁切拼接、历史重启恢复及 MCP stdio 图片读写，未请求生图。
 - 隔离临时配置下的真实图片服务 `GET /v1/models` 返回 HTTP 200 并列出配置模型；未进行生图，源配置未更改，临时 Key 目录已删除。另一次真实 Canvas MCP 单张生成样本上游 HTTP 200，用时 20.198 秒，本机完整保存用时 25.892 秒，准备画布用时 1.051 秒；请求计数为 1。主代理已实际打开检查验收图。这些都是本机样本，不是普遍时延或宿主验收承诺。
-- Windows/Linux 源码 CI 已定义但未运行；没有跨操作系统验收结论。具体宿主的本地命令、MCP 配置和图片读取能力，以及 Teedy 账号和只读权限仍需目标环境验证。
+- 源码提交 `5fbf1bd` 的 Windows/macOS/Linux GitHub Actions 已全部通过；CI 覆盖源码构建和集成，员工交互桌面仍待实测。具体宿主的本地命令、MCP 配置和图片读取能力，以及 Teedy 账号和只读权限仍需目标环境验证。
 
 ## 初次使用提示
 

@@ -45,4 +45,4 @@ Canvas 保留共享历史、手动绘图和现有像素操作，包括导入、�
 
 源码根回归 38/38、Canvas bridge 23/23 通过，0 失败、0 跳过；Canvas web typecheck/build 通过。Mac 本机全新浅克隆初始无依赖和构建产物，`node scripts/prepare.mjs` 完成三个依赖组安装与 Canvas Agent/Web 构建；克隆目录共享 Canvas 集成 1/1 通过（4.6 秒），覆盖多项目、裁切拼接、历史重启恢复和 MCP stdio 图片读写，未请求生图。setup 报告本地源码与 Canvas 就绪、等待当前宿主 MCP。
 
-隔离临时配置下图片服务 `GET /v1/models` 返回 HTTP 200 并列出配置模型；未生图，源配置未改，临时 Key 目录已删除。另一次真实 Canvas MCP 单张生成样本上游 HTTP 200、用时 20.198 秒，本机完整保存 25.892 秒，准备画布 1.051 秒；主代理已实际打开检查验收图。这只是单次样本，不是普遍时延或具体宿主验收承诺。Windows/Linux 源码 CI 已定义但未运行。具体宿主命令、MCP 图片读取及 Teedy 账号权限仍需目标环境验证。
+隔离临时配置下图片服务 `GET /v1/models` 返回 HTTP 200 并列出配置模型；未生图，源配置未改，临时 Key 目录已删除。另一次真实 Canvas MCP 单张生成样本上游 HTTP 200、用时 20.198 秒，本机完整保存 25.892 秒，准备画布 1.051 秒；主代理已实际打开检查验收图。这只是单次样本，不是普遍时延或具体宿主验收承诺。源码提交 `5fbf1bd` 的 Windows/macOS/Linux GitHub Actions 已全部通过。具体宿主命令、MCP 图片读取及 Teedy 账号权限仍需目标环境验证。
