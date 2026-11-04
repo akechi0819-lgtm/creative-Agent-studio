@@ -166,6 +166,25 @@ test('shared Canvas keeps multiple real projects and image bytes across bridge r
   const mcpStatus = parseMcpJson(await mcpStep('canvas_status', () => mcpClient.callTool({ name: 'canvas_status', arguments: {} }), () => mcpStderr));
   assert.equal(mcpStatus.running, true);
   assert.ok(mcpStatus.targets.some((target) => target.projectId === firstProjectId && target.hasCanvas));
+  const corruptImagePath = path.join(root, 'corrupt-reference.png');
+  await fs.writeFile(corruptImagePath, 'this file is not a decodable image');
+  const corruptImport = await mcpStep('canvas_import_file corrupt image', () => mcpClient.callTool({
+    name: 'canvas_import_file',
+    arguments: { path: corruptImagePath, title: '待导入损坏图片', projectId: firstProjectId, clientId: restoredFirstTarget.clientId },
+  }), () => mcpStderr);
+  assert.equal(corruptImport.isError, true);
+  const corruptImportText = corruptImport.content.find((item) => item.type === 'text')?.text || '';
+  assert.match(corruptImportText, /图片无法解码/);
+  assert.match(corruptImportText, /用图片查看器确认原件可正常打开/);
+  assert.match(corruptImportText, /有效的 PNG、JPEG 或 WebP 文件重试/);
+  assert.match(corruptImportText, /诊断编号 [0-9a-f-]{36}/i);
+  assert.equal(corruptImportText.includes(corruptImagePath), false);
+  assert.doesNotMatch(corruptImportText, /this file is not a decodable image/);
+  const stateAfterCorruptImport = parseMcpJson(await mcpStep('canvas_get_state after corrupt image', () => mcpClient.callTool({
+    name: 'canvas_get_state',
+    arguments: { projectId: firstProjectId, clientId: restoredFirstTarget.clientId },
+  }), () => mcpStderr));
+  assert.equal(stateAfterCorruptImport.nodes.some((node) => node.title === '待导入损坏图片'), false);
   const mcpProjects = parseMcpJson(await mcpStep('canvas_list_projects', () => mcpClient.callTool({
     name: 'canvas_list_projects',
     arguments: { projectId: firstProjectId, clientId: restoredFirstTarget.clientId, page: 1, pageSize: 50 },

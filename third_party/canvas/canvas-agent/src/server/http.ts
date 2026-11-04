@@ -64,7 +64,10 @@ export function createHttpApp(config: BridgeConfig) {
     app.use((error: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
         const status = error instanceof BridgeError ? error.statusCode : Number(error.status) || 500;
         const requestId = res.locals.requestId;
-        if (status >= 500) console.error(JSON.stringify(bridgeDiagnostic(error, _req, requestId, status)));
+        const invalidCanvasImport = status === 422 && _req.path === "/api/tools"
+            && _req.body?.name === "canvas_import_image"
+            && error.message === "导入图片无法解码，请确认原件是有效的 PNG、JPEG 或 WebP。";
+        if (status >= 500 || invalidCanvasImport) console.error(JSON.stringify(bridgeDiagnostic(error, _req, requestId, status)));
         // Unknown errors may contain prompts, API credentials or local paths. Only known
         // protocol errors are returned verbatim; correlate other failures by request ID.
         res.status(status).json({ ok: false, error: error instanceof BridgeError ? error.message : "Canvas bridge request failed", requestId });
@@ -159,6 +162,9 @@ function processIsAlive(pid: number) {
 /** Only static route/tool names and stack source locations enter the diagnostic log. */
 export function bridgeDiagnostic(error: Error, req: Pick<Request, "path" | "method" | "body">, requestId: string, status: number) {
     const routes = new Set(["/health", "/config", "/events", "/canvas/state", "/canvas/activate", "/canvas/result", "/api/tools"]);
+    const invalidCanvasImport = status === 422 && req.path === "/api/tools"
+        && req.body?.name === "canvas_import_image"
+        && error.message === "导入图片无法解码，请确认原件是有效的 PNG、JPEG 或 WebP。";
     const frames = String(error.stack || "").split("\n").filter(line => /^\s+at /.test(line)).slice(0, 16).map(line => {
         // Keep only a filename and line/column, never function names or absolute paths.
         const match = line.match(/(?:[/\\])([A-Za-z0-9_.-]+\.[cm]?[jt]s):(\d+):(\d+)\)?$/);
@@ -170,7 +176,7 @@ export function bridgeDiagnostic(error: Error, req: Pick<Request, "path" | "meth
         method: ["GET", "POST", "OPTIONS"].includes(req.method) ? req.method : "other",
         tool: req.path === "/api/tools" && isToolName(req.body?.name) ? req.body.name : null,
         error: error instanceof RangeError ? "RangeError" : error instanceof TypeError ? "TypeError" : "Error",
-        reason: error instanceof RangeError && error.message === "Maximum call stack size exceeded" ? "stack_overflow" : "request_failed",
+        reason: invalidCanvasImport ? "invalid_image" : error instanceof RangeError && error.message === "Maximum call stack size exceeded" ? "stack_overflow" : "request_failed",
         frames,
     };
 }

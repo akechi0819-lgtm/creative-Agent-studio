@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { callCanvasTool, health, recoverImage } from "../src/canvas/client.mjs";
+import { canvasImportErrorCodes, canvasImportFailureText } from "../src/canvas/import-errors.mjs";
 
 function json(response, status, body) {
   response.writeHead(status, { "content-type": "application/json" });
@@ -174,6 +175,99 @@ test("其他 409 上游错误内容仍保持隐藏", async () => {
       assert.equal(error.code, "ERR_CANVAS_TOOL_FAILED");
       assert.doesNotMatch(error.message, /private|secret/);
       assert.doesNotMatch(error.safeMessage, /private|secret/);
+      return true;
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("canvas import classifies only evidenced bridge failures and returns its server request ID", async () => {
+  const requestId = "e8ee0961-a2a3-4d21-a770-9f1d54a0af17";
+  const cases = [
+    [422, "导入图片无法解码，请确认原件是有效的 PNG、JPEG 或 WebP。", canvasImportErrorCodes.invalidImage, /图片无法解码/],
+    [400, "invalid import parameters", canvasImportErrorCodes.invalidArguments, /title、nodeId/],
+    [401, "invalid token", canvasImportErrorCodes.invalidConnection, /Canvas 连接凭证无效/],
+    [409, "目标 projectId/clientId 未连接", canvasImportErrorCodes.disconnected, /打开目标画布/],
+    [409, "目标网页尚未上报画布状态", canvasImportErrorCodes.statePending, /同步画布状态/],
+    [409, "请求页面已断开", canvasImportErrorCodes.resultUnknown, /canvas_get_state/],
+    [413, "request entity too large", canvasImportErrorCodes.payloadTooLarge, /不超过 20 MiB/],
+    [504, "画布操作超时", canvasImportErrorCodes.resultUnknown, /canvas_get_state/],
+    [500, "private prompt and API key", canvasImportErrorCodes.resultUnknown, /canvas_status/],
+  ];
+  for (const [status, message, expectedCode, expectedText] of cases) {
+    const bridge = await startBridge((request, response) => {
+      if (request.url === "/health") return replyToHealth(response);
+      response.setHeader("x-canvas-request-id", requestId);
+      return json(response, status, { ok: false, requestId, error: message });
+    });
+    try {
+      await assert.rejects(callCanvasTool("canvas_import_image", { nodeId: "fixture", title: "Reference", dataUrl: "data:image/png;base64,aW1n" }, configFor(bridge.url)), error => {
+        assert.equal(error.code, expectedCode);
+        assert.equal(error.requestId, requestId);
+        const text = canvasImportFailureText(error);
+        assert.match(text, expectedText);
+        assert.match(text, new RegExp(requestId));
+        assert.doesNotMatch(text, /private prompt|API key|invalid import parameters/);
+        if (status === 400) assert.doesNotMatch(text, /无法解码/);
+        return true;
+      });
+    } finally {
+      await bridge.close();
+    }
+  }
+});
+
+test("unknown import transport failures do not invent a bridge request ID", async () => {
+  const bridge = await startBridge((_request, response) => response.end());
+  await bridge.close();
+  await assert.rejects(callCanvasTool("canvas_import_image", { nodeId: "fixture" }, configFor(bridge.url)), error => {
+    assert.equal(error.code, canvasImportErrorCodes.bridgeUnavailable);
+    assert.equal(error.requestId, undefined);
+    const text = canvasImportFailureText(error);
+    assert.match(text, /canvas_status/);
+    assert.match(text, /脱敏 Canvas 日志/);
+    assert.doesNotMatch(text, /诊断编号/);
+    return true;
+  });
+});
+
+test("a connected browser that has not published canvas state is reported as state-pending", async () => {
+  let toolRequests = 0;
+  const bridge = await startBridge((request, response) => {
+    if (request.url === "/health") {
+      return json(response, 200, {
+        instanceId: "test-instance",
+        targets: [{ clientId: "test-client", hasCanvas: false, projectId: "test-project" }],
+      });
+    }
+    toolRequests += 1;
+    return json(response, 404, {});
+  });
+  try {
+    await assert.rejects(callCanvasTool("canvas_import_image", { nodeId: "fixture" }, configFor(bridge.url)), error => {
+      assert.equal(error.code, canvasImportErrorCodes.statePending);
+      assert.match(canvasImportFailureText(error), /等待 canvas_status 显示目标页面已连接/);
+      assert.equal(toolRequests, 0, "a page without synced state is rejected before the import request");
+      return true;
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("an unknown import HTTP error without a bridge ID asks for the sanitized log time", async () => {
+  const bridge = await startBridge((request, response) => {
+    if (request.url === "/health") return replyToHealth(response);
+    return json(response, 500, { ok: false, error: "private prompt, no correlation ID" });
+  });
+  try {
+    await assert.rejects(callCanvasTool("canvas_import_image", { nodeId: "fixture" }, configFor(bridge.url)), error => {
+      assert.equal(error.code, canvasImportErrorCodes.resultUnknown);
+      assert.equal(error.requestId, undefined);
+      const text = canvasImportFailureText(error);
+      assert.match(text, /发生时间附近的本机脱敏 Canvas 日志/);
+      assert.doesNotMatch(text, /private prompt|诊断编号/);
       return true;
     });
   } finally {

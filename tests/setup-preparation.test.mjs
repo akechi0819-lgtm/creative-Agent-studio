@@ -36,6 +36,7 @@ async function withReadyRepo(run) {
       'src/materials/mcp.mjs',
       'src/materials/verify.mjs',
       'src/canvas/runtime.mjs',
+      'src/canvas/mcp.mjs',
     ]) {
       const file = path.join(repoRoot, relative);
       await fs.mkdir(path.dirname(file), { recursive: true });
@@ -69,12 +70,21 @@ async function withReadyRepo(run) {
     }, { root, credentialId: savedMaterials.credentialId });
     await reportHostProbe({ status: 'connected', queryTool: 'search_materials', downloadTool: 'download_file' }, { root });
     await recordCanvasMcpCheck({ root });
-    const ready = await saveAndVerifyImageConfig({ expectedRevision: 1, image }, {
+    await saveAndVerifyImageConfig({ expectedRevision: 1, image }, {
       root,
       repoRoot,
       env: {},
       fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ id: image.model }] }) }),
     });
+    // Simulate a previously accepted install so only preparation can block these tests.
+    const time = new Date().toISOString();
+    const proof = { imageNodeId: 'image-1', sha256: 'c'.repeat(64), bytes: 92, width: 4, height: 4, readAt: time };
+    const generation = { schemaVersion: 1, configRevision: 2, projectId: 'project-1', sourceNodeId: 'config-1', submittedAt: time };
+    await fs.writeFile(path.join(root, 'setup', 'image-generation.json'), JSON.stringify({
+      ...generation, model: image.model, priorImageNodeIds: [], mcpRead: proof,
+    }));
+    await fs.writeFile(path.join(root, 'setup', 'image-acceptance.json'), JSON.stringify({ ...generation, ...proof, verifiedAt: time }));
+    const ready = await getSetupStatus({ root, repoRoot, env: {} });
     assert.equal(ready.complete, true, 'the fixture starts with actual files and all other readiness checks passed');
     await run({ directory, repoRoot, root });
   } finally {

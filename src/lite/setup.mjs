@@ -1,7 +1,9 @@
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { dataRoot } from '../canvas/client.mjs';
+import { createCanvasRuntime } from '../canvas/runtime.mjs';
 import { readMaterialConfig, saveMaterialConfig } from '../materials/config.mjs';
 import { verifyMaterials } from '../materials/verify.mjs';
 import { publicConfig, readConfigRecord, saveConfig, validateCompanyDefaults } from './config.mjs';
@@ -24,6 +26,7 @@ const SETUP_FILES = [
   'src/materials/mcp.mjs',
   'src/materials/verify.mjs',
   'src/canvas/runtime.mjs',
+  'src/canvas/mcp.mjs',
 ];
 
 const CANVAS_FILES = [
@@ -373,6 +376,80 @@ async function readImageCheck(root) {
   };
 }
 
+async function readImageGenerationEvidence(root) {
+  const value = await readJsonFile(path.join(root, 'setup', 'image-generation.json'), '图片生成验收记录');
+  if (value === null) return null;
+  if (value.schemaVersion !== 1 || !Number.isInteger(value.configRevision) || value.configRevision < 1
+    || typeof value.model !== 'string' || !value.model
+    || !validCanvasId(value.projectId) || !validCanvasId(value.sourceNodeId)
+    || !Array.isArray(value.priorImageNodeIds) || value.priorImageNodeIds.some((id) => !validCanvasId(id))
+    || typeof value.submittedAt !== 'string') {
+    throw setupError('ERR_SETUP_STATE', '图片生成验收记录格式无效');
+  }
+  let mcpRead = null;
+  if (value.mcpRead !== undefined && value.mcpRead !== null) {
+    const read = value.mcpRead;
+    if (!read || typeof read !== 'object' || !validCanvasId(read.imageNodeId)
+      || !/^[a-f\d]{64}$/i.test(read.sha256 || '') || !Number.isSafeInteger(read.bytes) || read.bytes < 1
+      || !Number.isInteger(read.width) || read.width < 1 || !Number.isInteger(read.height) || read.height < 1
+      || typeof read.readAt !== 'string') {
+      throw setupError('ERR_SETUP_STATE', 'MCP 图片读取记录格式无效');
+    }
+    mcpRead = { imageNodeId: read.imageNodeId, sha256: read.sha256.toLowerCase(), bytes: read.bytes,
+      width: read.width, height: read.height, readAt: safeTimestamp(read.readAt) };
+  }
+  return {
+    configRevision: value.configRevision,
+    model: value.model,
+    projectId: value.projectId,
+    sourceNodeId: value.sourceNodeId,
+    priorImageNodeIds: [...new Set(value.priorImageNodeIds)],
+    submittedAt: safeTimestamp(value.submittedAt),
+    mcpRead,
+  };
+}
+
+async function readImageAcceptance(root) {
+  const value = await readJsonFile(path.join(root, 'setup', 'image-acceptance.json'), '图片安装验收记录');
+  if (value === null) return null;
+  if (value.schemaVersion !== 1 || !Number.isInteger(value.configRevision) || value.configRevision < 1
+    || !validCanvasId(value.projectId) || !validCanvasId(value.sourceNodeId) || !validCanvasId(value.imageNodeId)
+    || !/^[a-f\d]{64}$/i.test(value.sha256 || '') || !Number.isSafeInteger(value.bytes) || value.bytes < 1
+    || !Number.isInteger(value.width) || value.width < 1 || !Number.isInteger(value.height) || value.height < 1
+    || typeof value.submittedAt !== 'string' || typeof value.readAt !== 'string' || typeof value.verifiedAt !== 'string') {
+    throw setupError('ERR_SETUP_STATE', '图片安装验收记录格式无效');
+  }
+  return {
+    configRevision: value.configRevision,
+    projectId: value.projectId,
+    sourceNodeId: value.sourceNodeId,
+    imageNodeId: value.imageNodeId,
+    sha256: value.sha256.toLowerCase(),
+    bytes: value.bytes,
+    width: value.width,
+    height: value.height,
+    submittedAt: safeTimestamp(value.submittedAt),
+    readAt: safeTimestamp(value.readAt),
+    verifiedAt: safeTimestamp(value.verifiedAt),
+  };
+}
+
+function validCanvasId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(value);
+}
+
+function imageAcceptanceMatches(record, evidence, acceptance) {
+  return Boolean(record.image.baseUrl && record.image.model && record.image.apiKey
+    && evidence && acceptance && evidence.configRevision === record.revision
+    && evidence.model === record.image.model && evidence.projectId === acceptance.projectId
+    && evidence.sourceNodeId === acceptance.sourceNodeId && evidence.mcpRead
+    && evidence.mcpRead.imageNodeId === acceptance.imageNodeId
+    && evidence.mcpRead.sha256 === acceptance.sha256 && evidence.mcpRead.bytes === acceptance.bytes
+    && evidence.mcpRead.width === acceptance.width && evidence.mcpRead.height === acceptance.height
+    && evidence.submittedAt === acceptance.submittedAt && evidence.mcpRead.readAt === acceptance.readAt
+    && acceptance.configRevision === record.revision);
+}
+
 async function loadDefaults(repoRoot, env) {
   const override = env[DEFAULTS_ENV];
   const file = override || path.join(repoRoot, 'company-defaults.json');
@@ -439,7 +516,7 @@ function stageLogs(steps, hostReport, materialCheck, imageCheck, defaultsError) 
 export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion = process.version, env = process.env } = {}) {
   const resolvedRoot = rootPath(root);
   const resolvedRepo = path.resolve(repoRoot);
-  const [packageStep, canvasStep, record, materialConfig, hostReport, materialCheck, imageCheck, defaults, canvasMcpCheck, preparation] = await Promise.all([
+  const [packageStep, canvasStep, record, materialConfig, hostReport, materialCheck, imageCheck, imageGeneration, imageAcceptance, defaults, canvasMcpCheck, preparation] = await Promise.all([
     checkPackage(resolvedRepo, nodeVersion),
     checkCanvasComponent(resolvedRepo),
     readConfigRecord({ root: resolvedRoot }),
@@ -447,6 +524,8 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     readHostReport(resolvedRoot),
     readMaterialCheck(resolvedRoot),
     readImageCheck(resolvedRoot),
+    readImageGenerationEvidence(resolvedRoot),
+    readImageAcceptance(resolvedRoot),
     loadDefaults(resolvedRepo, env),
     readJsonFile(path.join(resolvedRoot, 'setup', 'canvas-mcp-check.json'), '本地 Canvas MCP 检查'),
     readPreparationStatus(resolvedRepo),
@@ -541,25 +620,34 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
 
   const imageConfigured = Boolean(record.image.baseUrl && record.image.model && record.image.apiKey);
   const imageVerified = imageConfigured && imageCheck?.configRevision === record.revision && imageCheck.ok;
-  const imageNeedsAction = !imageVerified;
+  const imageGenerationCurrent = Boolean(imageVerified && imageGeneration
+    && imageGeneration.configRevision === record.revision && imageGeneration.model === record.image.model);
+  const imageReadCurrent = Boolean(imageGenerationCurrent && imageGeneration.mcpRead);
+  const imageAcceptanceReady = imageReadCurrent && imageAcceptanceMatches(record, imageGeneration, imageAcceptance);
+  const imageNeedsAction = !imageAcceptanceReady;
   if (imageCheck && record.image.apiKey) imageCheck.message = imageCheck.message.replaceAll(record.image.apiKey, '[已隐藏]');
   const safeImageSummary = imageConfigured && imageCheck?.configRevision === record.revision && imageCheck.ok
-    ? '图片服务连接检查通过。'
+    ? imageAcceptanceReady ? '图片服务连接、真实生成、宿主 MCP 读图与历史重开验收均通过。'
+      : '图片服务连接检查通过，等待当前宿主完成真实生成、MCP 读图和历史重开验收。'
     : !imageConfigured
       ? '填写图片服务地址、模型和密钥后检查连接。'
       : imageCheck?.configRevision === record.revision && !imageCheck.ok
         ? '图片服务连接检查未通过。'
         : '图片服务已保存，请检查连接。';
+  let imageNextAction = '填写或确认图片服务地址、模型和密钥，然后保存并检查连接。';
+  if (imageVerified) imageNextAction = '在当前宿主打开本地画布，创建单张图片配置节点，并通过 canvas_run_generation 提交一次测试图。';
+  if (imageGenerationCurrent) imageNextAction = `在项目 ${imageGeneration.projectId} 查询生成节点 ${imageGeneration.sourceNodeId} 的状态。成功后用 canvas_read_image 读取成图，状态未知时不要重发。`;
+  if (imageReadCurrent) imageNextAction = `宿主核验历史图片：node scripts/setup.mjs verify-image ${imageGeneration.projectId} ${imageGeneration.mcpRead.imageNodeId}`;
+  if (imageAcceptanceReady) imageNextAction = '继续查看最终检查。';
   const imageStep = {
     id: 'image',
-    title: '图片服务连接',
-    status: imageVerified ? 'ready' : 'needs_action',
-    complete: imageVerified,
+    title: '图片 API 与生图验收',
+    status: imageAcceptanceReady ? 'ready' : imageVerified ? 'waiting' : 'needs_action',
+    complete: imageAcceptanceReady,
     actionNeeded: imageNeedsAction,
-    summary: imageVerified ? '连接检查通过，尚未进行真实出图。' : safeImageSummary,
-    nextAction: imageVerified
-      ? '继续查看最终检查。'
-      : '填写或确认图片服务地址、模型和密钥，然后保存并检查连接。',
+    connectionVerified: imageVerified,
+    summary: safeImageSummary,
+    nextAction: imageNextAction,
     error: imageCheck?.configRevision === record.revision && !imageCheck.ok
       ? { code: 'ERR_IMAGE_API_CHECK', message: imageCheck.message }
       : null,
@@ -573,22 +661,38 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     checks: [{
       name: '图片服务连接',
       ok: imageVerified,
-      detail: imageVerified ? '连接检查通过；尚未进行真实出图。' : imageCheck?.configRevision === record.revision ? '连接检查未通过；请查看检查记录' : '当前配置尚未检查',
+      detail: imageVerified ? 'GET /models 已确认当前配置可连接；此项不调用生成接口。' : imageCheck?.configRevision === record.revision ? '连接检查未通过；请查看检查记录' : '当前配置尚未检查',
+    }, {
+      name: '本次配置真实生成与宿主 MCP 读图',
+      ok: imageReadCurrent,
+      detail: imageReadCurrent ? `已读取新生成图片 ${imageGeneration.mcpRead.imageNodeId}（SHA-256 ${imageGeneration.mcpRead.sha256}）` : '等待通过当前配置生成图片并由宿主 MCP 实际读取',
+    }, {
+      name: '从历史重开并核对本机像素',
+      ok: imageAcceptanceReady,
+      detail: imageAcceptanceReady ? `历史项目与本机图片像素已核对（${imageAcceptance.bytes} bytes）` : '等待运行 verify-image 重开历史并核对持久化图片',
     }],
   };
 
   const steps = [packageStep, canvasStep, materialsStep, imageStep];
-  const allReady = steps.every((step) => step.complete);
+  const unfinished = steps.find(step => !step.complete);
+  const allReady = !unfinished;
   const finishStep = {
     id: 'finish',
     title: '检查完成',
     status: allReady ? 'complete' : 'blocked',
     complete: allReady,
     actionNeeded: !allReady,
-    summary: allReady ? '本地安装配置检查完成；创作时由当前宿主智能体连接共享画布，历史作品持续保留。' : '仍有步骤未完成，检查结果不会提前标为成功。',
-    nextAction: allReady ? '可在当前宿主智能体中开始创作；以后复用已保存的连接和图片配置。' : '由宿主继续处理当前未完成的一步。',
+    summary: allReady
+      ? '本机真实生图、宿主 MCP 读图与历史重开验收均通过；创作时复用共享画布和已保存配置。'
+      : `等待完成${unfinished.title}。`,
+    nextAction: allReady ? '可在当前宿主智能体中开始创作。' : unfinished.nextAction,
     error: null,
-    checks: [{ name: '全部必需步骤', ok: allReady, detail: allReady ? '4 / 4 已就绪' : '需完成源码依赖、Canvas、宿主报告和图片 API 检查' }],
+    checks: [{ name: '图片真实生成、宿主 MCP 读图与历史重开', ok: imageAcceptanceReady,
+      detail: imageAcceptanceReady
+        ? `配置版本 ${imageAcceptance.configRevision}；项目 ${imageAcceptance.projectId}；成图 ${imageAcceptance.imageNodeId}；SHA-256 ${imageAcceptance.sha256}`
+        : imageReadCurrent ? '宿主 MCP 已读到本次新生成图片；等待从历史重开项目并运行 verify-image。'
+          : imageGenerationCurrent ? '已记录本次图片生成；等待宿主 MCP 实际读取生成结果并从历史重开。'
+            : '等待本次配置下的真实生成与宿主 MCP 读图' }],
   };
   steps.push(finishStep);
   const currentStep = steps.find((step) => !step.complete) || finishStep;
@@ -608,6 +712,267 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
 /** Called only by the Canvas MCP status tool after an actual protocol invocation. */
 export async function recordCanvasMcpCheck({ root } = {}) {
   await writePrivateJson(root, 'canvas-mcp-check.json', {service:'company-lite-canvas',checkedAt:new Date().toISOString()});
+}
+
+/** Whether a successful Canvas MCP image call should leave installation evidence. */
+export async function imageAcceptanceTrackingPending({ root } = {}) {
+  const resolvedRoot = rootPath(root);
+  const [record, check, evidence, acceptance] = await Promise.all([
+    readConfigRecord({ root: resolvedRoot }), readImageCheck(resolvedRoot),
+    readImageGenerationEvidence(resolvedRoot), readImageAcceptance(resolvedRoot),
+  ]);
+  if (!record.image.baseUrl || !record.image.model || !record.image.apiKey
+    || !check?.ok || check.configRevision !== record.revision
+    || imageAcceptanceMatches(record, evidence, acceptance)) return false;
+  return !(evidence?.configRevision === record.revision && evidence.mcpRead);
+}
+
+/** Record one submitted MCP generation only while the current setup still needs its test image. */
+export async function recordImageGenerationSubmission({ projectId, sourceNodeId, canvasState } = {}, { root, now = () => new Date() } = {}) {
+  if (!validCanvasId(projectId) || !validCanvasId(sourceNodeId)
+    || !canvasState || canvasState.projectId !== projectId
+    || !Array.isArray(canvasState.nodes) || !Array.isArray(canvasState.connections)) return { recorded: false };
+  const resolvedRoot = rootPath(root);
+  const [record, check, evidence, acceptance] = await Promise.all([
+    readConfigRecord({ root: resolvedRoot }), readImageCheck(resolvedRoot),
+    readImageGenerationEvidence(resolvedRoot), readImageAcceptance(resolvedRoot),
+  ]);
+  if (!record.image.baseUrl || !record.image.model || !record.image.apiKey
+    || !check?.ok || check.configRevision !== record.revision
+    || imageAcceptanceMatches(record, evidence, acceptance)) return { recorded: false };
+  const source = canvasState.nodes.find((node) => node.id === sourceNodeId);
+  if (source?.type !== 'config' || source.metadata?.generationMode !== 'image'
+    || String(source.metadata?.count ?? '') !== '1'
+    || source.metadata?.model && source.metadata.model !== record.image.model) return { recorded: false };
+  const previousSource = evidence?.configRevision === record.revision
+    ? canvasState.nodes.find((node) => node.id === evidence.sourceNodeId)
+    : null;
+  if (evidence?.configRevision === record.revision && (evidence.mcpRead || previousSource?.metadata?.status !== 'error')) {
+    return { recorded: false };
+  }
+  const priorImageNodeIds = canvasState.nodes.filter((node) => node.type === 'image').map((node) => node.id);
+  await writePrivateJson(resolvedRoot, 'image-generation.json', {
+    schemaVersion: 1,
+    configRevision: record.revision,
+    model: record.image.model,
+    projectId,
+    sourceNodeId,
+    priorImageNodeIds,
+    submittedAt: now().toISOString(),
+    mcpRead: null,
+  });
+  return { recorded: true };
+}
+
+/** Record image bytes returned by an actual host stdio MCP canvas_read_image call. */
+export async function recordImageMcpRead({ projectId, imageNodeId, canvasState, imageResult } = {}, { root, now = () => new Date() } = {}) {
+  if (!validCanvasId(projectId) || !validCanvasId(imageNodeId)
+    || !canvasState || canvasState.projectId !== projectId
+    || !Array.isArray(canvasState.nodes) || !Array.isArray(canvasState.connections)) return { recorded: false };
+  const resolvedRoot = rootPath(root);
+  const [record, check, evidence, acceptance] = await Promise.all([
+    readConfigRecord({ root: resolvedRoot }), readImageCheck(resolvedRoot),
+    readImageGenerationEvidence(resolvedRoot), readImageAcceptance(resolvedRoot),
+  ]);
+  if (!record.image.baseUrl || !record.image.model || !record.image.apiKey
+    || !check?.ok || check.configRevision !== record.revision
+    || imageAcceptanceMatches(record, evidence, acceptance)
+    || !evidence || evidence.configRevision !== record.revision || evidence.model !== record.image.model
+    || evidence.projectId !== projectId || evidence.mcpRead) return { recorded: false };
+  if (!isFreshGeneratedImage(canvasState, imageNodeId, evidence, record.image.model)) return { recorded: false };
+  const image = decodeImageDataUrl(imageResult?.dataUrl);
+  if (!image || imageResult?.nodeId !== imageNodeId
+    || !Number.isInteger(imageResult.width) || imageResult.width < 1
+    || !Number.isInteger(imageResult.height) || imageResult.height < 1) return { recorded: false };
+  const node = canvasState.nodes.find((item) => item.id === imageNodeId);
+  if (node.metadata.naturalWidth !== imageResult.width || node.metadata.naturalHeight !== imageResult.height) return { recorded: false };
+  const mcpRead = {
+    imageNodeId,
+    sha256: createHash('sha256').update(image.bytes).digest('hex'),
+    bytes: image.bytes.length,
+    width: imageResult.width,
+    height: imageResult.height,
+    readAt: now().toISOString(),
+  };
+  await writePrivateJson(resolvedRoot, 'image-generation.json', {
+    schemaVersion: 1,
+    configRevision: evidence.configRevision,
+    model: evidence.model,
+    projectId: evidence.projectId,
+    sourceNodeId: evidence.sourceNodeId,
+    priorImageNodeIds: evidence.priorImageNodeIds,
+    submittedAt: evidence.submittedAt,
+    mcpRead,
+  });
+  return { recorded: true };
+}
+
+/** Reopen one witnessed project from Canvas history, compare the returned image to disk bytes, and seal acceptance. */
+export async function verifyImageAcceptance({ projectId, imageNodeId } = {}, {
+  root, repoRoot = REPO_ROOT, env = process.env, runtime = createCanvasRuntime({ root }), now = () => new Date(),
+} = {}) {
+  if (!validCanvasId(projectId) || !validCanvasId(imageNodeId)) {
+    throw setupError('ERR_IMAGE_ACCEPTANCE_ARGUMENT', 'verify-image 需要有效的 projectId 和生成后图片节点 ID。');
+  }
+  const resolvedRoot = rootPath(root);
+  const [record, check, evidence, previousAcceptance] = await Promise.all([
+    readConfigRecord({ root: resolvedRoot }), readImageCheck(resolvedRoot),
+    readImageGenerationEvidence(resolvedRoot), readImageAcceptance(resolvedRoot),
+  ]);
+  if (!record.image.baseUrl || !record.image.model || !record.image.apiKey
+    || !check?.ok || check.configRevision !== record.revision) {
+    throw setupError('ERR_IMAGE_ACCEPTANCE_CONFIG', '当前图片配置尚未通过连接检查；请先运行 node scripts/setup.mjs check-image。');
+  }
+  if (!evidence || evidence.configRevision !== record.revision || evidence.model !== record.image.model
+    || evidence.projectId !== projectId || evidence.mcpRead?.imageNodeId !== imageNodeId) {
+    throw setupError('ERR_IMAGE_ACCEPTANCE_EVIDENCE', '找不到与当前图片配置、项目和节点匹配的宿主 MCP 生成及读图证据。');
+  }
+  if (imageAcceptanceMatches(record, evidence, previousAcceptance)) {
+    return getSetupStatus({ root: resolvedRoot });
+  }
+
+  const initial = await runtime.status();
+  if (!initial.running) throw setupError('ERR_IMAGE_HISTORY_REOPEN', '本机 Canvas 尚未运行；请由当前宿主连接并打开画布历史后重试验收。');
+  const forRequestedProject = initial.targets.filter((target) => target.projectId === projectId && target.hasCanvas);
+  const candidates = forRequestedProject.length ? forRequestedProject : initial.targets.filter(target => target.projectId === 'library');
+  const active = candidates.find(target => target.active) || (candidates.length === 1 ? candidates[0] : null);
+  if (!active?.clientId) throw setupError('ERR_IMAGE_HISTORY_REOPEN', '当前宿主没有唯一的 Canvas 页面；请在目标宿主中打开画布历史后重试。');
+  let historyTarget = active.projectId === 'library' && !active.hasCanvas ? active : null;
+  if (!historyTarget) {
+    await runtime.call('site_navigate', { path: '/canvas?mode=choose' }, { projectId: active.projectId, clientId: active.clientId });
+    historyTarget = await waitForCanvasTarget(runtime, active.clientId, (target) => target.projectId === 'library' && !target.hasCanvas);
+  }
+  const persistedProject = await readPersistedCanvasProject(resolvedRoot, projectId);
+  if (!persistedProject) throw setupError('ERR_IMAGE_HISTORY_PROJECT', '指定项目尚未保存到本机画布历史。');
+  assertAcceptedProjectImage(persistedProject, projectId, imageNodeId, evidence, record.image.model);
+
+  await runtime.call('site_navigate', { path: `/canvas/${encodeURIComponent(projectId)}` }, {
+    projectId: historyTarget.projectId,
+    clientId: historyTarget.clientId,
+  });
+  await waitForCanvasTarget(runtime, historyTarget.clientId,
+    (target) => target.projectId === projectId && target.hasCanvas);
+  const reopenedState = await runtime.call('canvas_get_state', {}, { projectId, clientId: historyTarget.clientId });
+  assertAcceptedProjectImage(reopenedState, projectId, imageNodeId, evidence, record.image.model);
+  const reopenedImage = await runtime.call('canvas_read_image', { nodeId: imageNodeId }, { projectId, clientId: historyTarget.clientId });
+  const reopenedBytes = decodeImageDataUrl(reopenedImage?.dataUrl);
+  if (!reopenedBytes) throw setupError('ERR_IMAGE_HISTORY_READ', '从历史重开的画布未返回有效图片数据。');
+  const reopenedHash = createHash('sha256').update(reopenedBytes.bytes).digest('hex');
+  const persistedBytes = await readPersistedCanvasImage(resolvedRoot, persistedProject.nodes.find((node) => node.id === imageNodeId).metadata.storageKey);
+  const persistedHash = createHash('sha256').update(persistedBytes.bytes).digest('hex');
+  if (reopenedHash !== evidence.mcpRead.sha256 || persistedHash !== reopenedHash
+    || reopenedBytes.bytes.length !== evidence.mcpRead.bytes
+    || persistedBytes.bytes.length !== reopenedBytes.bytes.length
+    || reopenedImage.width !== evidence.mcpRead.width || reopenedImage.height !== evidence.mcpRead.height
+    || persistedBytes.mimeType !== reopenedBytes.mimeType) {
+    throw setupError('ERR_IMAGE_HISTORY_PIXELS', '历史重开后的图片与宿主 MCP 首次读图或本机持久化像素不一致。');
+  }
+
+  const acceptance = {
+    schemaVersion: 1,
+    configRevision: record.revision,
+    projectId,
+    sourceNodeId: evidence.sourceNodeId,
+    imageNodeId,
+    sha256: reopenedHash,
+    bytes: reopenedBytes.bytes.length,
+    width: reopenedImage.width,
+    height: reopenedImage.height,
+    submittedAt: evidence.submittedAt,
+    readAt: evidence.mcpRead.readAt,
+    verifiedAt: now().toISOString(),
+  };
+  await writePrivateJson(resolvedRoot, 'image-acceptance.json', acceptance);
+  return getSetupStatus({ root: resolvedRoot, repoRoot, env });
+}
+
+async function waitForCanvasTarget(runtime, clientId, predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const status = await runtime.status();
+    const target = status.targets.find((item) => item.clientId === clientId && predicate(item));
+    if (target) return target;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw setupError('ERR_IMAGE_HISTORY_REOPEN', 'Canvas 页面切换超时；请确认同一宿主窗口仍连接本机 Canvas。');
+}
+
+function assertAcceptedProjectImage(project, projectId, imageNodeId, evidence, model) {
+  if (!project || (project.projectId || project.id) !== projectId || !Array.isArray(project.nodes) || !Array.isArray(project.connections)) {
+    throw setupError('ERR_IMAGE_HISTORY_PROJECT', '历史项目内容无效或项目 ID 不匹配。');
+  }
+  if (!isFreshGeneratedImage(project, imageNodeId, evidence, model)) {
+    throw setupError('ERR_IMAGE_ACCEPTANCE_NODE', '成图节点不是本次配置生成的新图片，或与生成配置节点没有连线。');
+  }
+}
+
+function isFreshGeneratedImage(project, imageNodeId, evidence, model) {
+  if ((project.projectId || project.id) !== evidence.projectId || !Array.isArray(project.nodes) || !Array.isArray(project.connections)
+    || evidence.priorImageNodeIds.includes(imageNodeId)) return false;
+  const source = project.nodes.find((node) => node.id === evidence.sourceNodeId);
+  const image = project.nodes.find((node) => node.id === imageNodeId);
+  const successfulImages = image?.metadata?.images?.filter((item) => item.status === 'success' && item.storageKey)?.length;
+  return source?.type === 'config' && source.metadata?.generationMode === 'image'
+    && String(source.metadata?.count ?? '') === '1'
+    && (!source.metadata?.model || configuredCanvasImageModel(source.metadata.model, model))
+    && image?.type === 'image' && image.metadata?.status === 'success'
+    && image.metadata?.generationType === 'generation' && configuredCanvasImageModel(image.metadata?.model, model)
+    && typeof image.metadata?.storageKey === 'string' && image.metadata.storageKey.startsWith('image:')
+    && (!Array.isArray(image.metadata.images) || successfulImages === 1)
+    && project.connections.some((connection) => connection.fromNodeId === evidence.sourceNodeId && connection.toNodeId === imageNodeId);
+}
+
+function configuredCanvasImageModel(value, model) {
+  return value === model || value === `studio-image::${model}`;
+}
+
+async function readCanvasStoreRecord(root, store, key) {
+  if (!validCanvasId(store) || typeof key !== 'string' || !key) throw setupError('ERR_IMAGE_HISTORY_STORAGE', 'Canvas 持久化键无效。');
+  const directory = path.join(rootPath(root), 'storage', store);
+  let directoryInfo;
+  try { directoryInfo = await fs.lstat(directory); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw setupError('ERR_IMAGE_HISTORY_STORAGE', 'Canvas 持久化目录无效。');
+  const filename = path.join(directory, `${createHash('sha256').update(key).digest('hex')}.json`);
+  let info;
+  try { info = await fs.lstat(filename); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (!info.isFile() || info.isSymbolicLink()) throw setupError('ERR_IMAGE_HISTORY_STORAGE', 'Canvas 持久化记录无效。');
+  let value;
+  try { value = JSON.parse(await fs.readFile(filename, 'utf8')); }
+  catch { throw setupError('ERR_IMAGE_HISTORY_STORAGE', 'Canvas 持久化记录无法解析。'); }
+  if (value.key !== key || typeof value.contentType !== 'string' || typeof value.base64 !== 'string') {
+    throw setupError('ERR_IMAGE_HISTORY_STORAGE', 'Canvas 持久化记录格式无效。');
+  }
+  return { contentType: value.contentType, bytes: Buffer.from(value.base64, 'base64') };
+}
+
+async function readPersistedCanvasProject(root, projectId) {
+  const stored = await readCanvasStoreRecord(root, 'app_state', 'infinite-canvas:canvas_store');
+  if (!stored || stored.contentType !== 'application/vnd.creative-agent-studio.localforage-string') return null;
+  let value;
+  try { value = JSON.parse(stored.bytes.toString('utf8')); }
+  catch { throw setupError('ERR_IMAGE_HISTORY_STORAGE', '本机画布历史无法解析。'); }
+  if (!Array.isArray(value?.state?.projects) || !Array.isArray(value?.state?.deletedProjects)) {
+    throw setupError('ERR_IMAGE_HISTORY_STORAGE', '本机画布历史结构无效。');
+  }
+  const project = value.state.projects.find(item => item.id === projectId);
+  return project ? { ...project, projectId: project.id } : null;
+}
+
+async function readPersistedCanvasImage(root, storageKey) {
+  const stored = await readCanvasStoreRecord(root, 'image_files', storageKey);
+  if (!stored || !['image/png', 'image/jpeg', 'image/webp'].includes(stored.contentType) || stored.bytes.length < 1) {
+    throw setupError('ERR_IMAGE_HISTORY_STORAGE', '本机未找到成图的持久化像素文件。');
+  }
+  return { mimeType: stored.contentType, bytes: stored.bytes };
+}
+
+function decodeImageDataUrl(value) {
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(value || '');
+  if (!match) return null;
+  const bytes = Buffer.from(match[2], 'base64');
+  if (!bytes.length || bytes.toString('base64') !== match[2]) return null;
+  return { mimeType: match[1], bytes };
 }
 
 async function writePrivateJson(root, relative, value) {

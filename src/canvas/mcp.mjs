@@ -5,8 +5,15 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { createCanvasRuntime } from './runtime.mjs';
 import { dataRoot } from './client.mjs';
-import { getSetupStatus, recordCanvasMcpCheck } from '../lite/setup.mjs';
+import {
+  getSetupStatus,
+  imageAcceptanceTrackingPending,
+  recordCanvasMcpCheck,
+  recordImageGenerationSubmission,
+  recordImageMcpRead,
+} from '../lite/setup.mjs';
 import { checkCompanyCopy } from '../lite/risk.mjs';
+import { canvasImportErrorCodes, canvasImportFailureText, createCanvasImportError } from './import-errors.mjs';
 import { toolInputSchemas, toolDescriptions } from '../../third_party/canvas/canvas-agent/dist/canvas/schemas.js';
 
 const canvasTools = [
@@ -33,7 +40,12 @@ export function createCompanyCanvasMcp({ root = dataRoot(), runtime = createCanv
   const server = new McpServer({name:'company-lite-canvas',version:'0.1.0'});
   const register = (name,config,handler) => server.registerTool(name,config,async args=>{
     try { return await handler(args); }
-    catch(error) { return {isError:true,content:[{type:'text',text:error.message}]}; }
+    catch(error) {
+      const text = name === 'canvas_import_file' || name === 'canvas_import_image'
+        ? canvasImportFailureText(error)
+        : error.message;
+      return {isError:true,content:[{type:'text',text} ]};
+    }
   });
   register('company_setup_status',{description:'读取本机安装五步状态；在宿主对话中展示进度与当前需处理的一步。',inputSchema:{}},async()=>output(await getSetupStatus({root})));
   register('canvas_status',{description:'查看共享本地画布是否运行及当前各项目/页面连接；不生成图片。',inputSchema:{}},async()=>{
@@ -64,9 +76,34 @@ export function createCompanyCanvasMcp({ root = dataRoot(), runtime = createCanv
       if (name==='site_navigate' && !/^\/canvas(?:\/[A-Za-z0-9_-]+)?(?:\?mode=(?:new|recent|choose))?$/.test(input.path)) throw new Error('只允许本地画布与历史项目页面');
       if ((input.mode && input.mode!=='image') || input.ops?.some(op=>op.type==='run_generation' && op.mode && op.mode!=='image')) throw new Error('Company Lite 仅配置图片生成');
       if (name==='generation_get_status') input.scope='canvas';
+      const target = {projectId,clientId};
+      const trackImageAcceptance = (name === 'canvas_run_generation' || name === 'canvas_read_image')
+        && await imageAcceptanceTrackingPending({root});
+      const generationBefore = name==='canvas_run_generation' && trackImageAcceptance
+        ? await runtime.call('canvas_get_state',{},target)
+        : null;
       const result=await runtime.call(name,input,{projectId,clientId});
-      if(name==='canvas_read_image') return {content:[{type:'image',...imageResult(result)},
-        {type:'text',text:JSON.stringify({nodeId:result.nodeId,width:result.width,height:result.height})}]};
+      if (name==='canvas_run_generation' && trackImageAcceptance && result?.submitted===true && result.nodeId===input.nodeId && generationBefore) {
+        try {
+          await recordImageGenerationSubmission({projectId:generationBefore.projectId,sourceNodeId:input.nodeId,canvasState:generationBefore},{root});
+        } catch (error) {
+          return output({ ...result, installationEvidenceRecorded:false,
+            warning:`图片请求已提交，但安装验收记录未能保存：${error.message}。先查询 generation_get_status，不要重新提交。` });
+        }
+      }
+      if(name==='canvas_read_image') {
+        const image=imageResult(result);
+        let evidenceWarning;
+        if (trackImageAcceptance) {
+          try {
+            const canvasState=await runtime.call('canvas_get_state',{},target);
+            await recordImageMcpRead({projectId:canvasState.projectId,imageNodeId:input.nodeId,canvasState,imageResult:result},{root});
+          } catch (error) { evidenceWarning=`安装验收读图记录未能保存：${error.message}`; }
+        }
+        return {content:[{type:'image',...image},
+          {type:'text',text:JSON.stringify({nodeId:result.nodeId,width:result.width,height:result.height})},
+          ...(evidenceWarning?[{type:'text',text:evidenceWarning}]:[])]};
+      }
       return output(result);
     });
   }
@@ -75,9 +112,23 @@ export function createCompanyCanvasMcp({ root = dataRoot(), runtime = createCanv
     inputSchema:{path:z.string(),title:z.string(),nodeId:z.string().optional(),...targetSchema},
   },async({path:file,title,nodeId=randomUUID(),projectId,clientId})=>{
     const mime={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp'}[path.extname(file).toLowerCase()];
-    if(!mime)throw new Error('原件需为 PNG、JPEG 或 WebP');
-    const info=await fs.stat(file);if(!info.isFile() || info.size>20*1024*1024)throw new Error('原件不是文件或超过20 MiB');
-    const dataUrl=`data:${mime};base64,${(await fs.readFile(file)).toString('base64')}`;
+    if(!mime)throw createCanvasImportError(canvasImportErrorCodes.unsupportedFile);
+    let info;
+    try { info=await fs.stat(file); }
+    catch(error) {
+      throw createCanvasImportError(['ENOENT','ENOTDIR'].includes(error?.code)
+        ? canvasImportErrorCodes.fileMissing
+        : canvasImportErrorCodes.fileUnreadable);
+    }
+    if(!info.isFile())throw createCanvasImportError(canvasImportErrorCodes.notFile);
+    const maxBytes=20*1024*1024;
+    if(info.size>maxBytes)throw createCanvasImportError(canvasImportErrorCodes.fileTooLarge);
+    let bytes;
+    try { bytes=await fs.readFile(file); }
+    catch { throw createCanvasImportError(canvasImportErrorCodes.fileUnreadable); }
+    if(bytes.length>maxBytes)throw createCanvasImportError(canvasImportErrorCodes.fileTooLarge);
+    if(bytes.length===0)throw createCanvasImportError(canvasImportErrorCodes.invalidImage);
+    const dataUrl=`data:${mime};base64,${bytes.toString('base64')}`;
     return output(await runtime.call('canvas_import_image',{title,nodeId,dataUrl},{projectId,clientId}));
   });
   register('canvas_save_image',{

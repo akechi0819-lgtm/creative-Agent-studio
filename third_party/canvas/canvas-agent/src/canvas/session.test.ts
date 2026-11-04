@@ -227,6 +227,29 @@ test("only the two fixed actionable browser errors become safe HTTP bridge error
     await assert.rejects(result, (error) => error instanceof Error && !(error instanceof BridgeError) && error.message === "private prompt secret");
 });
 
+test("a corrupt image import maps only the known browser decode error to a safe 422", async (t) => {
+    const session = new CanvasSession("instance-1");
+    const client = connect(session, "client-1");
+    session.updateState("project-1", "client-1", { projectId: "project-1", clientId: "client-1", nodes: [], connections: [], selectedNodeIds: [] });
+    t.after(() => client.close());
+
+    const result = session.callTool("canvas_import_image", {
+        nodeId: "host-image-1",
+        title: "损坏图片",
+        dataUrl: "data:image/png;base64,aW1n",
+    }, { projectId: "project-1", clientId: "client-1" });
+    const requestId = client.event("tool_call")?.requestId as string;
+    assert.equal(session.resolveResult("project-1", "client-1", { requestId, error: "图片加载失败，无法读取像素数据" }), true);
+    await assert.rejects(result, (error) => error instanceof BridgeError
+        && error.statusCode === 422
+        && error.message === "导入图片无法解码，请确认原件是有效的 PNG、JPEG 或 WebP。");
+
+    const unrelated = session.callTool("site_navigate", { path: "/canvas" }, { projectId: "project-1", clientId: "client-1" });
+    const unrelatedRequestId = client.events.filter((event) => event.type === "tool_call").at(-1)?.data.requestId as string;
+    session.resolveResult("project-1", "client-1", { requestId: unrelatedRequestId, error: "图片加载失败，无法读取像素数据" });
+    await assert.rejects(unrelated, (error) => !(error instanceof BridgeError) && error.message === "图片加载失败，无法读取像素数据");
+});
+
 test("replacing a same-client connection invalidates its old state and pending calls", async (t) => {
     const session = new CanvasSession("instance-1");
     const oldClient = connect(session, "client-1");

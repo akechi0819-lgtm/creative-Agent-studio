@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -10,6 +12,7 @@ import { chromium } from 'playwright';
 
 import { createCanvasRuntime } from '../src/canvas/runtime.mjs';
 import { saveConfig } from '../src/lite/config.mjs';
+import { getSetupStatus, verifyImageApi } from '../src/lite/setup.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const busyMessage = '该节点正在生成图片，请先查询 generation_get_status，完成后再生成。';
@@ -157,6 +160,65 @@ test('canvas_run_generation acknowledges submission, rejects busy/missing config
   assert.equal(mock.requests.length, requestCountBeforeMissingConfig, 'missing configuration never reaches the image API');
 });
 
+test('installation image survives history reopen through the Canvas MCP without a second generation', { timeout: 90_000 }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'company-lite-install-image-'));
+  const mock = await createHeldImageServer();
+  let browser;
+  const scenarios = [];
+  t.after(async () => {
+    for (const request of mock.requests) request.release();
+    for (const scenario of scenarios) await closeScenario(scenario);
+    await browser?.close();
+    await mock.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await saveConfig({ expectedRevision: 1, image: { baseUrl: mock.baseUrl, model: 'mock-image', apiKey: 'test-only' } }, { root });
+  const preflight = await verifyImageApi({ root });
+  assert.equal(preflight.ok, true);
+  const imageStep = async () => (await getSetupStatus({ root })).steps.find(step => step.id === 'image');
+  assert.equal((await imageStep()).complete, false, 'model discovery alone cannot accept installation');
+
+  browser = await chromium.launch({ headless: true });
+  const scenario = await createScenario({ root, browser, scenarios });
+  const { projectId } = scenario.target;
+  const call = async (name, args = {}) => {
+    const r = await scenario.mcp.callTool({ name, arguments: { ...args, projectId, clientId: scenario.target.clientId } });
+    assert.notEqual(r.isError, true, mcpErrorText(r));
+    return r;
+  };
+  const png = await createFixturePng(scenario.page);
+  mock.setPng(png);
+  const created = parseMcpJson(await call('canvas_create_config_node', { prompt: '蓝色色块安装测试', count: 1, autoRun: false }));
+  const source = created.nodes.find(n => n.type === 'config');
+  const result = parseMcpJson(await call('canvas_run_generation', { nodeId: source.id, mode: 'image' }));
+  assert.equal(result.submitted, true);
+  await waitUntil(() => mock.requests.length === 1, 'one upstream install-image request');
+  mock.requests[0].release();
+  const output = await waitUntil(async () => {
+    const state = parseMcpJson(await call('canvas_get_state'));
+    return state.nodes.find(n => n.type === 'image' && n.metadata?.status === 'success');
+  }, 'generated image stored');
+  const read = async () => (await call('canvas_read_image', { nodeId: output.id })).content.find(item => item.type === 'image');
+  const before = await read();
+  assert.ok(before?.data);
+  assert.equal((await imageStep()).complete, false, 'reading from the original open project is not history recovery');
+  const verify = nodeId => promisify(execFile)(process.execPath,
+    [path.join(repoRoot, 'scripts/setup.mjs'), 'verify-image', projectId, nodeId],
+    { env: { ...process.env, STUDIO_DATA_DIR: root } });
+  await assert.rejects(verify(source.id), 'the configuration node is not a finished image');
+  assert.equal((await imageStep()).complete, false);
+  await verify(output.id);
+  assert.equal((await imageStep()).complete, true, 'only the verified generation unlocks the image step');
+  scenario.target = await waitForCanvasTarget(scenario.runtime, projectId);
+  const after = await read();
+  assert.equal(after.data, before.data, 'reopened history returns the same image bytes');
+  await saveConfig({ expectedRevision: 2, image: { apiKey: 'replacement-test-key' } }, { root });
+  await verifyImageApi({ root });
+  assert.equal((await imageStep()).complete, false, 'an old image cannot accept a newly configured key');
+  await assert.rejects(verify(output.id));
+  assert.equal(mock.requests.length, 1);
+});
+
 async function createScenario({ root, browser, scenarios }) {
   const runtime = createCanvasRuntime({ root });
   const scenario = { runtime };
@@ -192,6 +254,11 @@ async function createHeldImageServer() {
   const requests = [];
   let png = '';
   const server = http.createServer((request, response) => {
+    if (request.method === 'GET' && request.url === '/v1/models') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ data: [{ id: 'mock-image' }] }));
+      return;
+    }
     const record = { released: false, release: null };
     let release;
     const gate = new Promise((resolve) => { release = resolve; });

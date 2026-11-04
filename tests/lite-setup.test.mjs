@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -7,10 +8,14 @@ import test from 'node:test';
 import {
   beginMaterialLogin,
   getSetupStatus,
+  imageAcceptanceTrackingPending,
   recordCanvasMcpCheck,
+  recordImageGenerationSubmission,
+  recordImageMcpRead,
   recordMaterialCheck,
   reportHostProbe,
   saveAndVerifyImageConfig,
+  verifyImageAcceptance,
   verifyImageApi,
 } from '../src/lite/setup.mjs';
 import { saveConfig } from '../src/lite/config.mjs';
@@ -37,6 +42,8 @@ async function createPackageFixture(repoRoot, { canvas = true } = {}) {
     'src/materials/mcp.mjs',
     'src/materials/verify.mjs',
     'src/canvas/runtime.mjs',
+    'src/canvas/mcp.mjs',
+    'src/canvas/import-errors.mjs',
   ];
   for (const relative of files) {
     const file = path.join(repoRoot, relative);
@@ -90,6 +97,8 @@ async function createFreshSourceCliFixture(repoRoot) {
     'src/lite/clipboard.mjs',
     'src/canvas/client.mjs',
     'src/canvas/runtime.mjs',
+    'src/canvas/mcp.mjs',
+    'src/canvas/import-errors.mjs',
   ]) {
     const destination = path.join(repoRoot, relative);
     await fs.mkdir(path.dirname(destination), { recursive: true });
@@ -150,6 +159,14 @@ function runSetupCli(args, { root, defaultsFile }) {
     env: { ...process.env, STUDIO_DATA_DIR: root, COMPANY_LITE_DEFAULTS_FILE: defaultsFile },
     encoding: 'utf8',
   });
+}
+
+async function writeCanvasRecord(root, store, key, contentType, bytes) {
+  const directory = path.join(root, 'storage', store);
+  await fs.mkdir(directory, { recursive: true });
+  const content = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  const filename = path.join(directory, `${createHash('sha256').update(key).digest('hex')}.json`);
+  await fs.writeFile(filename, JSON.stringify({ key, contentType, base64: content.toString('base64') }));
 }
 
 test('derives source and Canvas readiness from project files and dependencies without requiring Python', async () => {
@@ -224,14 +241,18 @@ test('a saved image API is reused on reopen and a successful /models GET stays s
     assert.equal(request.url, 'https://images.example/v1/models');
     assert.equal(request.options.method, 'GET');
     assert.equal(request.options.headers.authorization, `Bearer ${image.apiKey}`);
-    assert.equal(saved.steps.find((step) => step.id === 'image').complete, true);
+    const savedImageStep = saved.steps.find((step) => step.id === 'image');
+    assert.equal(savedImageStep.complete, false, 'connection alone does not complete image acceptance');
+    assert.equal(savedImageStep.checks.find((check) => check.name === '图片服务连接').ok, true);
     assert.equal(saved.steps.find((step) => step.id === 'materials').status, 'waiting');
     assert.equal(saved.complete, false);
     assert.equal(saved.current, 'canvas');
     assert.equal(JSON.stringify(saved).includes(image.apiKey), false);
 
     const reopened = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
-    assert.equal(reopened.steps.find((step) => step.id === 'image').complete, true);
+    const reopenedImageStep = reopened.steps.find((step) => step.id === 'image');
+    assert.equal(reopenedImageStep.complete, false);
+    assert.equal(reopenedImageStep.checks.find((check) => check.name === '图片服务连接').ok, true);
     assert.equal(reopened.config.image.apiKeyConfigured, true);
     assert.equal(JSON.stringify(reopened).includes(image.apiKey), false);
   });
@@ -331,7 +352,7 @@ test('a 200 HTML response or a model list without the configured ID does not pas
   });
 });
 
-test('final setup stays blocked until the current image revision and host probe report both pass', async () => {
+test('a successful image connection and host probe still wait for real image acceptance', async () => {
   await withTemp(async (directory) => {
     const repoRoot = path.join(directory, 'app');
     const root = path.join(directory, 'data');
@@ -351,13 +372,112 @@ test('final setup stays blocked until the current image revision and host probe 
     assert.equal(missingCanvas.complete, false, 'files and a materials report do not prove the Canvas MCP was connected');
     await recordCanvasMcpCheck({root});
     const finalStatus = await getSetupStatus({ root, repoRoot, nodeVersion: 'v24.1.0', env: {} });
-    assert.equal(finalStatus.complete, true);
-    assert.equal(finalStatus.current, 'finish');
-    assert.equal(finalStatus.steps.find((step) => step.id === 'finish').status, 'complete');
+    assert.equal(finalStatus.complete, false);
+    assert.equal(finalStatus.current, 'image');
+    const imageStep = finalStatus.steps.find((step) => step.id === 'image');
+    assert.equal(imageStep.complete, false);
+    assert.equal(imageStep.connectionVerified, true, 'GET /models passes while final image acceptance remains pending');
     await assert.rejects(
       reportHostProbe({ status: 'connected' }, { root }),
       (error) => error.code === 'ERR_HOST_REPORT',
     );
+  });
+});
+
+test('one fresh MCP-generated image is accepted after history reopen and a later config revision invalidates it', async () => {
+  await withTemp(async (directory) => {
+    const repoRoot = path.join(directory, 'app');
+    const root = path.join(directory, 'data');
+    await createPackageFixture(repoRoot);
+    await saveVerifiedMaterials(root);
+    await reportHostProbe({ status: 'connected', queryTool: 'search_materials', downloadTool: 'download_file' }, { root });
+    await recordCanvasMcpCheck({ root });
+    const imageReady = await saveAndVerifyImageConfig({ expectedRevision: 1, image }, {
+      root, repoRoot, nodeVersion: 'v24.1.0', env: {},
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ id: image.model }] }) }),
+    });
+    assert.equal(imageReady.steps.find((step) => step.id === 'image').complete, false);
+    assert.equal(await imageAcceptanceTrackingPending({ root }), true);
+
+    const projectId = 'install-test-project';
+    const sourceNodeId = 'config-test-source';
+    const imageNodeId = 'generated-test-image';
+    const oldImageId = 'old-imported-image';
+    const pixelBytes = Buffer.from('fresh image pixels');
+    const dataUrl = `data:image/png;base64,${pixelBytes.toString('base64')}`;
+    const oldImage = { id: oldImageId, type: 'image', metadata: { status: 'success', storageKey: 'image:old' } };
+    const source = { id: sourceNodeId, type: 'config', metadata: { generationMode: 'image', count: 1, status: 'success' } };
+    const generatedImage = {
+      id: imageNodeId,
+      type: 'image',
+      metadata: {
+        status: 'success', generationType: 'generation', model: `studio-image::${image.model}`,
+        storageKey: 'image:fresh', mimeType: 'image/png', naturalWidth: 1, naturalHeight: 1,
+        images: [{ id: 'variant-1', status: 'success', storageKey: 'image:fresh' }],
+      },
+    };
+    const project = {
+      id: projectId, title: '安装测试', createdAt: '2026-11-04T00:00:00.000Z', updatedAt: '2026-11-04T00:00:05.000Z',
+      nodes: [source, oldImage, generatedImage],
+      connections: [{ id: 'generation-link', fromNodeId: sourceNodeId, toNodeId: imageNodeId }],
+    };
+    const beforeState = {
+      projectId,
+      nodes: [source, oldImage],
+      connections: [],
+    };
+    const reopenedState = { projectId, nodes: project.nodes, connections: project.connections };
+    const submitted = await recordImageGenerationSubmission({ projectId, sourceNodeId, canvasState: beforeState }, { root });
+    assert.equal(submitted.recorded, true);
+    const hostRead = await recordImageMcpRead({
+      projectId,
+      imageNodeId,
+      canvasState: reopenedState,
+      imageResult: { nodeId: imageNodeId, dataUrl, width: 1, height: 1 },
+    }, { root });
+    assert.equal(hostRead.recorded, true, 'actual MCP read evidence is tied to the new connected output');
+
+    await writeCanvasRecord(root, 'app_state', 'infinite-canvas:canvas_store',
+      'application/vnd.creative-agent-studio.localforage-string', JSON.stringify({ state: { projects: [project], deletedProjects: [] }, version: 0 }));
+    await writeCanvasRecord(root, 'image_files', 'image:fresh', 'image/png', pixelBytes);
+    const targets = [{ projectId, clientId: 'canvas-client', active: true, hasCanvas: true }];
+    const runtime = {
+      async status() { return { running: true, targets: targets.map((target) => ({ ...target })) }; },
+      async call(name, input) {
+        if (name === 'site_navigate' && input.path === '/canvas?mode=choose') {
+          targets[0] = { projectId: 'library', clientId: 'canvas-client', active: true, hasCanvas: false };
+          return {};
+        }
+        if (name === 'site_navigate' && input.path === `/canvas/${projectId}`) {
+          targets[0] = { projectId, clientId: 'canvas-client', active: true, hasCanvas: true };
+          return {};
+        }
+        if (name === 'canvas_get_state') return reopenedState;
+        if (name === 'canvas_read_image') return { nodeId: imageNodeId, dataUrl, width: 1, height: 1 };
+        throw new Error(`unexpected Canvas test tool: ${name}`);
+      },
+    };
+    const accepted = await verifyImageAcceptance({ projectId, imageNodeId }, { root, repoRoot, env: {}, runtime });
+    const acceptedStep = accepted.steps.find((step) => step.id === 'image');
+    assert.equal(acceptedStep.complete, true);
+    assert.equal(acceptedStep.connectionVerified, true);
+    assert.equal(accepted.complete, true, JSON.stringify(accepted.steps.map((step) => ({ id: step.id, complete: step.complete, summary: step.summary }))));
+    assert.deepEqual(targets[0], { projectId, clientId: 'canvas-client', active: true, hasCanvas: true });
+    const acceptance = JSON.parse(await fs.readFile(path.join(root, 'setup', 'image-acceptance.json'), 'utf8'));
+    assert.equal(acceptance.imageNodeId, imageNodeId);
+    assert.equal(acceptance.sha256, createHash('sha256').update(pixelBytes).digest('hex'));
+    assert.equal(await imageAcceptanceTrackingPending({ root }), false, 'a normal generation cannot replace accepted evidence');
+
+    const changedImage = { ...image, model: 'image-v3', apiKey: 'rotated-image-key' };
+    const changed = await saveAndVerifyImageConfig({ expectedRevision: 2, image: changedImage }, {
+      root, repoRoot, nodeVersion: 'v24.1.0', env: {},
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ id: changedImage.model }] }) }),
+    });
+    assert.equal(changed.steps.find((step) => step.id === 'image').complete, false);
+    assert.equal(changed.steps.find((step) => step.id === 'image').connectionVerified, true);
+    assert.equal(await imageAcceptanceTrackingPending({ root }), true, 'a new config revision can receive fresh evidence');
+    await assert.rejects(verifyImageAcceptance({ projectId, imageNodeId }, { root, runtime }),
+      (error) => error.code === 'ERR_IMAGE_ACCEPTANCE_EVIDENCE');
   });
 });
 

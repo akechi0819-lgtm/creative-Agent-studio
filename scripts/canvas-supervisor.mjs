@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
 import { createServer as netServer } from 'node:net';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, open, chmod } from 'node:fs/promises';
+import { writeSync } from 'node:fs';
+import { mkdir, readFile, writeFile, rename, rm, open, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -25,6 +26,12 @@ try { descriptor=await open(lock,'wx',0o600); } catch(error) {
 }
 const instanceId = randomUUID(), token = randomBytes(32).toString('hex');
 await descriptor.writeFile(JSON.stringify({pid:process.pid,instanceId}));
+function logLifecycle(event, fields = {}) {
+  writeSync(1, `${JSON.stringify({timestamp:new Date().toISOString(),event,instanceId,...fields})}\n`);
+}
+let exitStatus='normal';
+let exitSignal=null;
+let bridgeExitLogged=false;
 const workspaceId = 'company-lite';
 const mime = {'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.woff2':'font/woff2'};
 const dist = path.join(root,'third_party/canvas/web/dist');
@@ -290,12 +297,16 @@ const server = createServer((req,res)=>void handleRequest(req,res).catch(()=>{if
 async function freePort() { const s=netServer(); await new Promise((resolve,reject)=>{s.on('error',reject);s.listen(0,'127.0.0.1',resolve);}); const port=s.address().port; await new Promise(r=>s.close(r));return port; }
 async function stop() {
   if (stopping) return; stopping=true;
-  if (child && child.exitCode === null) { child.kill('SIGTERM'); await new Promise(r=>child.once('exit',r)); }
+  if (child && child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(r=>child.once('exit',r)); }
   await new Promise(r=>server.close(r));
   await descriptor.close(); await rm(lock,{force:true}); await rm(path.join(data,'canvas-instance.json'),{force:true});
 }
-process.on('SIGTERM',()=>void stop());process.on('SIGINT',()=>void stop());
-process.once('exit',()=>{if(child&&child.exitCode===null)try{child.kill('SIGTERM');}catch{}});
+process.on('SIGTERM',()=>{exitSignal='SIGTERM';void stop();});process.on('SIGINT',()=>{exitSignal='SIGINT';void stop();});
+process.once('exit',code=>{
+  if(child&&child.exitCode===null&&child.signalCode===null)try{child.kill('SIGTERM');}catch{}
+  const exitCode=Number.isInteger(code)?code:0;
+  logLifecycle('exit',{status:exitStatus==='normal'&&exitCode===0?'normal':'abnormal',exitCode,signal:exitSignal});
+});
 try {
   await readFile(path.join(dist,'index.html'));
   const savedPort=await readFile(path.join(data,'canvas-web-port.json'),'utf8').then(JSON.parse).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
@@ -309,8 +320,18 @@ try {
     cwd:root,env:{PATH:process.env.PATH||'',HOME:process.env.HOME||'',TMPDIR:process.env.TMPDIR||'',LANG:process.env.LANG||'en_US.UTF-8',PORT:String(bridgePort),CANVAS_AGENT_TOKEN:token,CANVAS_AGENT_DATA_DIR:path.join(data,'bridge'),CANVAS_AGENT_INSTANCE_ID:instanceId,CANVAS_AGENT_ORIGIN:webUrl},stdio:['ignore',logs.fd,logs.fd],windowsHide:true,
   });
   await logs.close();
-  child.once('exit',()=>{ if (!stopping) void stop(); });
-  child.once('error',()=>void stop());
+  child.once('exit',(code,signal)=>{
+    if(bridgeExitLogged)return;
+    bridgeExitLogged=true;
+    logLifecycle('bridge_exit',{status:stopping?'normal':'abnormal',exitCode:code,signal});
+    if (!stopping) { exitStatus='abnormal'; process.exitCode=1; void stop(); }
+  });
+  child.once('error',()=>{
+    if(bridgeExitLogged)return;
+    bridgeExitLogged=true;
+    logLifecycle('bridge_exit',{status:'abnormal',exitCode:null,signal:null});
+    if (!stopping) { exitStatus='abnormal'; process.exitCode=1; void stop(); }
+  });
   bridgeUrl=`http://127.0.0.1:${bridgePort}`;
   let ready=false;
   for (let i=0;i<100;i++) {
@@ -320,6 +341,10 @@ try {
   }
   if (!ready) throw new Error('纯绘图桥接启动失败，检查数据目录 canvas-bridge.log');
   const instance={instanceId,token,workspaceId,webUrl,bridgeUrl,pid:process.pid,sourceRoot:root};
-  await writeFile(path.join(data,'canvas-instance.json'),JSON.stringify(instance,null,2),{mode:0o600});
-  console.log(JSON.stringify({ready:true,instanceId,webUrl,workspaceId}));
-} catch {console.error('Canvas 启动失败，请检查本地实例日志与锁状态'); await stop();process.exitCode=1;}
+  const instancePath = path.join(data, 'canvas-instance.json');
+  const pendingPath = `${instancePath}.${instanceId}.tmp`;
+  await writeFile(pendingPath, JSON.stringify(instance, null, 2), { mode: 0o600, flag: 'wx' });
+  try { await rename(pendingPath, instancePath); }
+  finally { await rm(pendingPath, { force: true }); }
+  logLifecycle('ready',{ready:true,webUrl,workspaceId});
+} catch {exitStatus='abnormal';process.exitCode=1;console.error('Canvas 启动失败，请检查本地实例日志与锁状态'); await stop();}

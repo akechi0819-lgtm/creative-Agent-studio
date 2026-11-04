@@ -32,6 +32,9 @@ jobs:
         run: node scripts/prepare.mjs
       - name: Install test browser on macOS and Windows
         run: npx playwright install chromium
+      - name: Run Canvas bridge tests
+        working-directory: third_party/canvas/canvas-agent
+        run: npm test
       - name: Run source tests
         run: npm test
         env:

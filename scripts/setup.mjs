@@ -11,6 +11,7 @@ import {
   saveAndVerifyMaterials,
   resolveMaterialBaseUrl,
   verifyImageApi,
+  verifyImageAcceptance,
 } from '../src/lite/setup.mjs';
 
 const [command = 'status', ...args] = process.argv.slice(2);
@@ -21,7 +22,7 @@ function output(value) {
 }
 
 function usage() {
-  return '用法：node scripts/setup.mjs [status|login-materials [远端 HTTPS 地址]|report-host connected <查询工具名> <下载工具名>|report-host failed|configure-image @JSON文件 [--key-from-clipboard]|check-image]';
+  return '用法：node scripts/setup.mjs [status|login-materials [远端 HTTPS 地址]|report-host connected <查询工具名> <下载工具名>|report-host failed|configure-image @JSON文件 [--key-from-clipboard]|check-image|verify-image <项目ID> <成图节点ID>]';
 }
 
 async function readPrivatePayload(argument, publicFieldsOnly = false) {
@@ -46,6 +47,11 @@ async function readPrivatePayload(argument, publicFieldsOnly = false) {
     if (error instanceof SyntaxError) throw new Error('图片配置载荷 JSON 格式无效');
     throw error;
   }
+}
+
+function imageConnectionPassed(status) {
+  const image = status.steps.find(step => step.id === 'image');
+  return image?.connectionVerified === true;
 }
 
 async function emitStatus() {
@@ -86,7 +92,12 @@ async function run() {
     if(clipboard)payload.image={...payload.image,apiKey:await readImageKeyFromClipboard()};
     const status = await saveAndVerifyImageConfig(payload, { root });
     output(status);
-    if (!status.steps.find((step) => step.id === 'image')?.complete) process.exitCode = 1;
+    if (!imageConnectionPassed(status)) process.exitCode = 1;
+    return;
+  }
+  if (command === 'verify-image') {
+    if (args.length !== 2) throw new Error(usage());
+    output(await verifyImageAcceptance({ projectId: args[0], imageNodeId: args[1] }, { root }));
     return;
   }
   if (command === 'check-image') {
@@ -94,7 +105,7 @@ async function run() {
     await verifyImageApi({ root });
     const status = await getSetupStatus({ root });
     output(status);
-    if (!status.steps.find((step) => step.id === 'image')?.complete) process.exitCode = 1;
+    if (!imageConnectionPassed(status)) process.exitCode = 1;
     return;
   }
   throw new Error(usage());

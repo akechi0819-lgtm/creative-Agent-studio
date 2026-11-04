@@ -9,10 +9,12 @@ import type { CanvasSnapshot } from "./types.js";
 
 type ClientTarget = { projectId: string; clientId: string };
 type ClientConnection = ClientTarget & { response: ServerResponse };
-type PendingRequest = { targetKey: string; resolve: (value: unknown) => void; reject: (error: Error) => void };
+type PendingRequest = { targetKey: string; toolName: ToolName; resolve: (value: unknown) => void; reject: (error: Error) => void };
 type ToolTarget = { projectId: unknown; clientId: unknown };
 
 export const PROTOCOL_VERSION = 1;
+const CANVAS_IMPORT_DECODE_FAILURE = "图片加载失败，无法读取像素数据";
+const CANVAS_IMPORT_INVALID_IMAGE = "导入图片无法解码，请确认原件是有效的 PNG、JPEG 或 WebP。";
 
 /** 带 HTTP 状态码的桥接请求错误。 */
 export class BridgeError extends Error {
@@ -129,6 +131,8 @@ export class CanvasSession {
         this.pending.delete(body.requestId!);
         if (body.error === "图片服务尚未配置，请回到宿主智能体配置图片 API。" || body.error === "该节点正在生成图片，请先查询 generation_get_status，完成后再生成。") {
             item.reject(new BridgeError(body.error, 409));
+        } else if (item.toolName === "canvas_import_image" && body.error === CANVAS_IMPORT_DECODE_FAILURE) {
+            item.reject(new BridgeError(CANVAS_IMPORT_INVALID_IMAGE, 422));
         } else if (body.error) {
             item.reject(new Error(body.error));
         } else {
@@ -210,6 +214,7 @@ export class CanvasSession {
             }, 30000);
             this.pending.set(requestId, {
                 targetKey,
+                toolName: name,
                 resolve: (value) => (clearTimeout(timer), resolve(value)),
                 reject: (error) => (clearTimeout(timer), reject(error)),
             });

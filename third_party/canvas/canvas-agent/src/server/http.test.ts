@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import { bridgeDiagnostic, createHttpApp, startHttpServer } from "./http.js";
 
-import { CanvasSession } from "../canvas/session.js";
+import { BridgeError, CanvasSession } from "../canvas/session.js";
 
 const config = {
     port: 0,
@@ -321,6 +321,37 @@ test("unexpected bridge failures expose a correlation ID without leaking payload
     assert.deepEqual(diagnostic.frames, ["session.ts:144:23"]);
     assert.doesNotMatch(JSON.stringify({ body, diagnostic }), /secret|private-prompt|employee/);
     assert.equal((await fetch(`${baseUrl}/health`)).status, 200);
+});
+
+test("corrupt image imports log a fixed reason with the returned bridge request ID", async (t) => {
+    const lines: string[] = [];
+    t.mock.method(console, "error", (line: string) => lines.push(line));
+    t.mock.method(CanvasSession.prototype, "callTool", async () => {
+        throw new BridgeError("导入图片无法解码，请确认原件是有效的 PNG、JPEG 或 WebP。", 422);
+    });
+    const { server, baseUrl } = await startApp();
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/tools`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+            name: "canvas_import_image",
+            input: { nodeId: "private-node", title: "private-title", dataUrl: "private-image-bytes" },
+            projectId: "project-1",
+            clientId: "client-1",
+        }),
+    });
+    assert.equal(response.status, 422);
+    const body = await response.json() as { requestId: string; error: string };
+    assert.equal(body.requestId, response.headers.get("x-canvas-request-id"));
+    assert.equal(body.error, "导入图片无法解码，请确认原件是有效的 PNG、JPEG 或 WebP。");
+    assert.equal(lines.length, 1);
+    const diagnostic = JSON.parse(lines[0]);
+    assert.equal(diagnostic.requestId, body.requestId);
+    assert.equal(diagnostic.reason, "invalid_image");
+    assert.equal(diagnostic.tool, "canvas_import_image");
+    assert.doesNotMatch(JSON.stringify({ body, diagnostic }), /private-node|private-title|private-image-bytes/);
 });
 
 test("diagnostics omit unknown routes and arbitrary error messages", () => {
