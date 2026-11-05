@@ -6,14 +6,16 @@
 
 ## 源码快速开始
 
+先按[宿主使用说明](docs/代理宿主使用.md#源码准备与依赖)确认安装目录。下面的首次克隆示例假设员工选了桌面的 Company Lite，且宿主已切换到系统实际桌面目录。已有正确仓库时直接打开复用；已搬迁的项目按[目录搬迁恢复步骤](docs/代理宿主使用.md#项目已经搬到新目录)重新接通两个 MCP。
+
 源码分支 `codex/company-lite` 已推送到 [GitHub 分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/codex/company-lite)。
 
 ```sh
 git --version
 node --version
 npm --version
-git clone --branch codex/company-lite https://github.com/akechi0819-lgtm/creative-Agent-studio.git CompanyLite
-cd CompanyLite
+git clone --branch codex/company-lite https://github.com/akechi0819-lgtm/creative-Agent-studio.git "Company Lite"
+cd "Company Lite"
 node scripts/setup.mjs status
 node scripts/prepare.mjs
 node scripts/setup.mjs status
