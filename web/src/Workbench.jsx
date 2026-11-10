@@ -137,11 +137,17 @@ export function Workbench({
   const currentExport = finalApproved
     ? exportResult?.sheetVersion === task.sheetVersion ? exportResult : task.exports?.at(-1)
     : null;
-  const video = task.video;
+  const video = Number.isSafeInteger(task.video?.version) && task.video.version > 0 ? task.video : null;
   const videoPlan = video?.plans?.find((item) => item.version === video.version) || null;
-  const videoExecution = video?.execution?.version === video?.version ? video.execution : null;
+  const videoExecution = video && video.execution?.version === video.version ? video.execution : null;
   const videoOutput = videoExecution?.output || null;
-  const videoApproved = Boolean(video?.approval?.version === video?.version && video?.approval?.sha256 === videoOutput?.sha256);
+  const videoApproved = Boolean(video
+    && videoExecution
+    && videoOutput
+    && typeof videoOutput.sha256 === 'string'
+    && /^[a-f0-9]{64}$/iu.test(videoOutput.sha256)
+    && video.approval?.version === video.version
+    && video.approval?.sha256 === videoOutput.sha256);
   const currentVideoExport = videoApproved
     ? videoExportResult?.videoVersion === video.version ? videoExportResult : [...(video?.exports || [])].reverse().find((record) => record.videoVersion === video.version && record.sha256 === videoOutput?.sha256)
     : null;
