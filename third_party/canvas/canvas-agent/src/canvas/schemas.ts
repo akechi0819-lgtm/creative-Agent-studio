@@ -16,6 +16,7 @@ export const toolNames = [
     "canvas_resample_image",
     "canvas_stitch_images",
     "canvas_compose_images",
+    "canvas_adapt_logo",
     "canvas_import_image",
     "canvas_get_state",
     "canvas_get_selection",
@@ -118,6 +119,16 @@ const pixelRectSchema = z.object({
     clear: pixelColorSchema.optional(),
     smoothing: z.enum(["nearest", "smooth"]).optional(),
 });
+const logoOutlineSchema = z.object({ color: pixelColorSchema, width: z.number().int().min(1).max(64) });
+const logoPlateSchema = z.object({ color: pixelColorSchema, padding: z.number().int().min(0).max(256), radius: z.number().int().min(0).max(8192) });
+const logoAdaptationSchema = z.object({
+    nodeId: nodeIdSchema,
+    foreground: z.string().regex(/^#[0-9a-fA-F]{6}$/, "foreground 必须是不透明 #RRGGBB，以保留原 Logo alpha").optional(),
+    outline: logoOutlineSchema.optional(),
+    plate: logoPlateSchema.optional(),
+}).refine(({ foreground, outline, plate }) => Boolean(foreground || outline || plate), {
+    message: "adapt-logo 至少需要 foreground、outline 或 plate 参数",
+});
 
 const importDataUrlSchema = z.string().regex(/^data:image\/(?:png|jpeg|webp);base64,(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/, "仅允许非空 PNG、JPEG 或 WebP 的 base64 data URL");
 
@@ -138,6 +149,7 @@ export const toolInputSchemas = {
         nodeId: nodeIdSchema,
         layers: z.array(pixelRectSchema).min(1).max(20),
     }),
+    canvas_adapt_logo: logoAdaptationSchema,
     canvas_import_image: z.object({ nodeId: nodeIdSchema, title: z.string().trim().min(1), dataUrl: importDataUrlSchema }),
     canvas_get_state: z.object({}).passthrough(),
     canvas_get_selection: z.object({}).passthrough(),
@@ -181,6 +193,7 @@ export const toolDescriptions: Record<ToolName, string> = {
     canvas_resample_image: "按指定算法调整图片长边像素数（最多 4096），并在画布创建结果子节点。",
     canvas_stitch_images: "按原始像素尺寸和给定顺序横向或纵向拼接 2–20 个图片节点，不缩放，输出一张 PNG。",
     canvas_compose_images: "复制底图原始像素，按顺序在指定像素矩形内贴入 1–20 张图片；支持 contain、cover、stretch、可选区域清除色和 nearest、smooth 插值。",
+    canvas_adapt_logo: "只对指定带透明背景的非空 Logo 做 Canvas2D 适配：可按原 alpha 轮廓重着色、添加外描边或圆角底牌；不会自动抠除白底或裁掉原图，结果以透明 PNG 新节点返回。",
     canvas_import_image: "将宿主提供的 nodeId、标题和 PNG/JPEG/WebP base64 data URL 导入当前画布，不调用 AI；同 ID 仅在已有图片字节完全相同时复用。",
     canvas_get_state: "读取当前网页画布的节点、连线、选区和视口。",
     canvas_get_selection: "读取当前网页画布选中的节点。",

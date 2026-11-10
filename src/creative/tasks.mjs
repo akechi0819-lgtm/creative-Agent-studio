@@ -157,11 +157,16 @@ function normalizeSheet(sheet) {
     if (!page || typeof page !== "object" || Array.isArray(page)) throw new Error(`制作单第 ${index + 1} 页必须是对象`);
     const number = page.page;
     if (!Number.isInteger(number) || number !== index + 1) throw new Error("制作单页码必须从 1 开始连续排列");
+    const quality = page.quality ?? "auto";
+    if (!new Set(["auto", "low", "medium", "high", "xhigh", "max"]).has(quality)) {
+      throw new Error(`第 ${number} 页图片质量必须是 auto、low、medium、high、xhigh 或 max`);
+    }
     return {
       page: number,
       copy: requiredText(page.copy, `第 ${number} 页准确文案`, 20000),
       prompt: requiredText(page.prompt, `第 ${number} 页绘图指令`, 20000),
       size: requiredText(page.size, `第 ${number} 页尺寸`, 40),
+      quality,
       sourceIds: normalizeSourceIds(page.sourceIds, `第 ${number} 页来源 ID`),
       referenceImages: normalizeReferenceImages(page.referenceImages, `第 ${number} 页参考图片`),
     };
@@ -372,6 +377,7 @@ export async function createTask({ title, brief }, root) {
     reviews: [],
     reviewHistory: [],
     finalApproval: null,
+    mechanicalAdoptions: [],
     exports: [],
   };
   await atomicWriteJson(path.join(directory, "task.json"), task);
@@ -709,7 +715,8 @@ function currentSheet(task, version = task.sheetVersion) {
   if (!isSheetAuthorized(task, version)) throw new Error("当前制作单版本尚未获得有效执行授权");
   const sheet = task.sheets.find((entry) => entry.version === version);
   if (!sheet) throw new Error(`缺少制作单版本 ${version}`);
-  if (sheet.pageEdit?.basis?.kind !== "uploaded-images") {
+  if (sheet.pageEdit?.basis?.kind !== "uploaded-images" && sheet.pageEdit?.basis?.kind !== "mechanical-output"
+    && sheet.mechanicalAdoption?.version !== version) {
     checkInputsConfirmed(task);
     if (task.sheetInputsRevision !== task.inputConfirmation.revision) throw new Error("当前制作单不属于已确认的需求和来源版本");
   }
@@ -730,6 +737,64 @@ function isCompleteSuccessfulExecution(task, version) {
     const actual = execution.pages.find((page) => page.page === expected.page);
     return actual?.status === "succeeded" && typeof actual.image?.path === "string" && /^[0-9a-f]{64}$/i.test(actual.image.sha256 || "");
   });
+}
+
+function isValidMechanicalAdoption(task, version) {
+  const sheet = task.sheets?.find((entry) => entry.version === version);
+  const adoption = sheet?.mechanicalAdoption;
+  const execution = findExecution(task, version);
+  if (!adoption || adoption.version !== version || adoption.workType !== "mechanical"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(adoption.requestId || "")
+    || !/^[0-9a-f]{64}$/i.test(adoption.fingerprint || "")
+    || !Number.isInteger(adoption.page) || adoption.page < 1
+    || typeof adoption.adoptionApproval?.by !== "string" || !adoption.adoptionApproval.by.trim()
+    || NON_HUMAN_ACTOR.test(adoption.adoptionApproval.by.trim())
+    || typeof adoption.adoptionApproval?.note !== "string" || !adoption.adoptionApproval.note.trim()
+    || typeof adoption.adoptionApproval?.authorizedAt !== "string"
+    || adoption.source?.type !== "canvas-operation"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(adoption.source.operationId || "")
+    || !Number.isInteger(adoption.source.imageIndex) || adoption.source.imageIndex < 0
+    || typeof adoption.source.nodeId !== "string" || !adoption.source.nodeId.trim()
+    || !/^[0-9a-f]{64}$/i.test(adoption.source.sha256 || "")
+    || !isCompleteSuccessfulExecution(task, version)) return false;
+  const page = execution.pages.find((entry) => entry.page === adoption.page);
+  const origin = page?.productOrigin;
+  return page?.status === "succeeded" && page.image?.sha256?.toLowerCase() === adoption.source.sha256.toLowerCase()
+    && origin?.type === "canvas-operation" && origin.operationId === adoption.source.operationId
+    && origin.imageIndex === adoption.source.imageIndex && origin.nodeId === adoption.source.nodeId
+    && origin.sha256?.toLowerCase() === adoption.source.sha256.toLowerCase();
+}
+
+export function isMechanicalOutputLineage(task, version, originVersion, adoptionFingerprint, seen = new Set()) {
+  if (!Number.isInteger(version) || version < originVersion || seen.has(version)) return false;
+  seen.add(version);
+  if (version === originVersion) {
+    return isValidMechanicalAdoption(task, version)
+      && sheetForMechanicalOutput(task, version)?.mechanicalAdoption?.fingerprint === adoptionFingerprint;
+  }
+  const sheet = task.sheets?.find((entry) => entry.version === version);
+  const edit = sheet?.pageEdit;
+  const sourceVersion = edit?.baselineEvidence?.sourceVersion;
+  const basis = edit?.basis;
+  const hasEditAuthorization = edit?.chatEdit?.kind === "chat-edit"
+    ? typeof edit.chatEdit.requestId === "string" && edit.chatEdit.requestId.trim().length > 0
+      && typeof edit.chatEdit.text === "string" && edit.chatEdit.text.trim().length > 0
+      && typeof edit.chatEdit.authorizedAt === "string"
+    : edit?.restore?.kind === "restore" && Number.isInteger(edit.restore.sourceVersion)
+      && edit.restore.sourceVersion > 0 && Number.isInteger(edit.restore.page)
+      && edit.restore.page > 0 && typeof edit.restore.authorizedAt === "string";
+  return sheet?.kind === "page-edit" && edit?.version === version
+    && hasEditAuthorization
+    && basis?.kind === "mechanical-output" && basis.originVersion === originVersion
+    && basis.adoptionFingerprint === adoptionFingerprint
+    && edit.baselineEvidence?.basis === "successful-mechanical-output"
+    && Number.isInteger(sourceVersion) && sourceVersion >= originVersion && sourceVersion < version
+    && isCompleteSuccessfulExecution(task, version)
+    && isMechanicalOutputLineage(task, sourceVersion, originVersion, adoptionFingerprint, seen);
+}
+
+function sheetForMechanicalOutput(task, version) {
+  return task.sheets?.find((entry) => entry.version === version) || null;
 }
 
 function hasSuccessfulPage(task, version) {
@@ -773,6 +838,7 @@ export function isSheetAuthorized(task, version = task?.sheetVersion) {
   if (!task || !Number.isInteger(version) || version < 1 || task.sheetVersion !== version) return false;
   const sheet = task.sheets?.find((entry) => entry.version === version);
   if (!sheet) return false;
+  if (isValidMechanicalAdoption(task, version)) return true;
   if (task.sheetConfirmation?.version === version && sheet.kind !== "page-edit") return true;
   if (sheet.kind !== "page-edit" || sheet.pageEdit?.version !== version) return false;
   const edit = sheet.pageEdit;
@@ -792,6 +858,14 @@ export function isSheetAuthorized(task, version = task?.sheetVersion) {
   if (basis?.kind === "uploaded-images") {
     return basis.inputFingerprint === taskInputFingerprint(task)
       && isUploadedLineageSheet(task, version, basis.inputFingerprint, basis);
+  }
+  if (basis?.kind === "mechanical-output") {
+    const sourceVersion = edit.baselineEvidence?.sourceVersion;
+    return Number.isInteger(basis.originVersion) && basis.originVersion > 0 && basis.originVersion < version
+      && /^[0-9a-f]{64}$/i.test(basis.adoptionFingerprint || "")
+      && edit.baselineEvidence?.basis === "successful-mechanical-output"
+      && Number.isInteger(sourceVersion) && sourceVersion >= basis.originVersion && sourceVersion < version
+      && isMechanicalOutputLineage(task, sourceVersion, basis.originVersion, basis.adoptionFingerprint);
   }
   if (basis?.kind !== "confirmed-output") return false;
   const sourceVersion = edit.baselineEvidence?.sourceVersion;
@@ -1178,7 +1252,10 @@ export async function exportTask(id, opts = {}) {
         finalApproval: cloneJson(draft.finalApproval),
         execution: {
           version: draft.execution.version,
-          pages: draft.execution.pages.map(({ page, status, nodeId, imageNodeId, attempt, submissionIntentAt, history }) => ({ page, status, nodeId, imageNodeId, attempt, submissionIntentAt, history })),
+          pages: draft.execution.pages.map(({ page, status, nodeId, imageNodeId, attempt, submissionIntentAt, history, productOrigin }) => ({
+            page, status, nodeId, imageNodeId, attempt, submissionIntentAt, history,
+            ...(productOrigin ? { productOrigin: cloneJson(productOrigin) } : {}),
+          })),
         },
         reviews: cloneJson(draft.reviews),
         sources: "sources.json",

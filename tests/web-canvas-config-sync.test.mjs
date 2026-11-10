@@ -22,6 +22,8 @@ async function listen(server) {
 test('an open Canvas refreshes the saved image key before generation and proxies without provider CORS', async (t) => {
   const oldKey = 'fixture-old-image-key-never-real';
   const newKey = 'fixture-new-image-key-never-real';
+  const videoKey = 'fixture-video-key-never-real';
+  const fakeMp4 = Buffer.from('fixture-mp4-content');
   const upstreamRequests = [];
   let providerCorsEnabled = false;
   let providerOrigin = '';
@@ -41,6 +43,7 @@ test('an open Canvas refreshes the saved image key before generation and proxies
       bodyHash: digest(requestBody),
       authorizedWithOldKey: request.headers.authorization === `Bearer ${oldKey}`,
       authorizedWithNewKey: request.headers.authorization === `Bearer ${newKey}`,
+      authorizedWithVideoKey: request.headers.authorization === `Bearer ${videoKey}`,
     });
     if (request.url === '/v1/images/edits') {
       response.writeHead(200, { 'content-type': 'image/png' });
@@ -51,6 +54,15 @@ test('an open Canvas refreshes the saved image key before generation and proxies
         : [{ url: resultUrl() }];
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ created: 1, data }));
+    } else if (request.url === '/v1/videos' && request.method === 'POST') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'task-fixture-video', status: 'queued' }));
+    } else if (request.url === '/v1/videos/task-fixture-video' && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'task-fixture-video', status: 'completed' }));
+    } else if (request.url === '/v1/videos/task-fixture-video/content' && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'video/mp4' });
+      response.end(fakeMp4);
     } else if (request.url === '/cdn/redirect.png?sig=fixture-redirect') {
       response.writeHead(302, { location: `${providerOrigin}/cdn/redirect-followed.png?sig=should-not-follow` });
       response.end();
@@ -142,6 +154,74 @@ test('an open Canvas refreshes the saved image key before generation and proxies
     assert.equal(generationRequest.authorizedWithNewKey, true, 'the request used the newly saved key');
     assert.equal(generationRequest.authorizedWithOldKey, false, 'the request did not use the prior key');
     assert.equal(providerCorsEnabled, false, 'the fake provider does not enable CORS');
+
+    const videoConfig = await fetch(`${instance.webUrl}/__studio/config`, {
+      method: 'POST',
+      headers: { origin: instance.webUrl, 'x-studio-token': instance.token, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        configRevision: 3,
+        imageConfig: { baseUrl: `${providerOrigin}/v1`, model: 'fixture-image', apiKey: newKey, apiFormat: 'openai' },
+        videoConfig: { baseUrl: providerOrigin, model: 'minimax_h3', apiKey: videoKey, apiFormat: 'openai' },
+      }),
+    });
+    assert.equal(videoConfig.status, 200, 'the private task session accepts an independent video channel');
+    const videoTarget = `${providerOrigin}/v1/videos`;
+    const videoRequestBody = JSON.stringify({ version: 'video.v1', model: 'minimax_h3', operation: 'text_to_video', prompt: 'local proxy fixture', duration_seconds: 4, resolution: '768', aspect_ratio: '16:9' });
+    const videoCreate = await fetch(`${instance.webUrl}/__studio/video-proxy/${encodeURIComponent(videoTarget)}`, {
+      method: 'POST',
+      headers: { origin: instance.webUrl, cookie: cookieHeader, authorization: 'Bearer attacker-key', 'content-type': 'application/json' },
+      body: videoRequestBody,
+    });
+    assert.equal(videoCreate.status, 200, 'video creation reaches only the configured local substitute');
+    assert.deepEqual(await videoCreate.json(), { id: 'task-fixture-video', status: 'queued' });
+    const videoCreateRequest = upstreamRequests.find((request) => request.path === '/v1/videos' && request.method === 'POST');
+    assert.equal(videoCreateRequest.authorizedWithVideoKey, true, 'the proxy injects only the saved task video key');
+    assert.equal(videoCreateRequest.authorizedWithOldKey || videoCreateRequest.authorizedWithNewKey, false);
+    assert.equal(videoCreateRequest.bodyHash, digest(Buffer.from(videoRequestBody)), 'the JSON request reaches the local substitute unchanged');
+
+    const videoStatus = await fetch(`${instance.webUrl}/__studio/video-proxy/${encodeURIComponent(`${providerOrigin}/v1/videos/task-fixture-video`)}`, {
+      headers: { origin: instance.webUrl, cookie: cookieHeader },
+    });
+    assert.deepEqual(await videoStatus.json(), { id: 'task-fixture-video', status: 'completed' });
+    const videoContent = await fetch(`${instance.webUrl}/__studio/video-proxy/${encodeURIComponent(`${providerOrigin}/v1/videos/task-fixture-video/content`)}`, {
+      headers: { origin: instance.webUrl, cookie: cookieHeader },
+    });
+    assert.equal(videoContent.headers.get('content-type'), 'video/mp4');
+    assert.deepEqual(Buffer.from(await videoContent.arrayBuffer()), fakeMp4, 'the video content proxy streams bytes unchanged');
+    const disallowedVideoPath = await fetch(`${instance.webUrl}/__studio/video-proxy/${encodeURIComponent(`${providerOrigin}/v1/models`)}`, {
+      headers: { origin: instance.webUrl, cookie: cookieHeader },
+    });
+    assert.equal(disallowedVideoPath.status, 403, 'the video proxy rejects unrelated provider paths');
+    const crossChannelPath = await fetch(`${instance.webUrl}/__studio/video-proxy/${encodeURIComponent(`${providerOrigin}/v1/images/generations`)}`, {
+      method: 'POST',
+      headers: { origin: instance.webUrl, cookie: cookieHeader, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(crossChannelPath.status, 403, 'the video proxy does not forward image requests');
+    await page.waitForFunction(() => {
+      const saved = JSON.parse(localStorage.getItem('infinite-canvas:ai_config_store') || '{}');
+      const config = saved?.state?.config;
+      return config?.videoModel === 'studio-video::minimax_h3'
+        && config.channels?.some((channel) => channel.id === 'studio-video')
+        && config.channels?.some((channel) => channel.id === 'studio-image');
+    }, { timeout: 10_000 });
+    const refreshedConfig = await page.evaluate(() => JSON.parse(localStorage.getItem('infinite-canvas:ai_config_store') || '{}').state.config);
+    assert.equal(refreshedConfig.imageModel, 'studio-image::fixture-image', 'video refresh keeps the image selection');
+    assert.equal(refreshedConfig.videoModel, 'studio-video::minimax_h3');
+    assert.doesNotMatch(JSON.stringify(refreshedConfig), /fixture-video-key-never-real/u, 'the video key is not persisted in browser storage');
+    configRecord = {
+      ...configRecord,
+      revision: 3,
+      video: { baseUrl: 'https://api.osodm.com', model: 'minimax_h3', apiKey: videoKey, apiFormat: 'openai' },
+    };
+    const refreshedModels = await manager.syncImageConfig({ revision: 4, image: configRecord.image, video: configRecord.video });
+    assert.equal(refreshedModels.status, 'synced', 'image-model refresh carries the independent saved video channel too');
+    configRecord = { ...configRecord, revision: 4 };
+    await page.waitForFunction(() => {
+      const saved = JSON.parse(localStorage.getItem('infinite-canvas:ai_config_store') || '{}');
+      const config = saved?.state?.config;
+      return config?.imageModel === 'studio-image::fixture-image' && config?.videoModel === 'studio-video::minimax_h3';
+    }, { timeout: 10_000 });
 
     const expectedResultUrl = resultUrl();
     const proxyGenerationUrl = `${instance.webUrl}/__studio/image-proxy/${encodeURIComponent(`${providerOrigin}/v1/images/generations`)}`;
@@ -251,7 +331,7 @@ test('an open Canvas refreshes the saved image key before generation and proxies
     assert.equal(restoredTarget.config.clientId, originalTarget.config.clientId, 'a healthy persisted clientId restores the original tab precisely');
     await secondPage.close();
 
-    t.diagnostic('Isolated browser used two fake keys; only key booleans and multipart content hashes are retained, and no provider credential or request body is logged.');
+    t.diagnostic('Isolated browser used three fake keys; only key booleans and request hashes are retained, and no provider credential or request body is logged.');
   } finally {
     await isolatedPage?.close().catch(() => {});
     await isolatedContext?.close().catch(() => {});

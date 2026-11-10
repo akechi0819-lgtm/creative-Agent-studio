@@ -6,7 +6,7 @@ import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
-import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, useConfigStore, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -31,9 +31,44 @@ export type VideoGenerationTaskState = { status: "pending" } | { status: "comple
 
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
 const pluginVideoResults = new Map<string, VideoGenerationResult>();
+const MINIMAX_H3_RESOLUTIONS = new Set(["768", "1080p", "2K", "4K"]);
+const MINIMAX_H3_ASPECT_RATIOS = new Set(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]);
 
 function aiApiUrl(config: AiConfig, path: string) {
     return buildApiUrl(config.baseUrl, path);
+}
+
+function videoApiUrl(config: AiConfig, path: string, model: string) {
+    if (isMinimaxH3(config, model)) {
+        const proxy = studioVideoProxyBase();
+        if (proxy) return `${proxy}/${encodeURIComponent(rawApiUrl(config.baseUrl, path))}`;
+    }
+    return buildApiUrl(config.baseUrl, path);
+}
+
+function rawApiUrl(baseUrl: string, path: string) {
+    const normalized = baseUrl.trim().replace(/\/+$/, "");
+    return `${/\/v1$/i.test(normalized) ? normalized : `${normalized}/v1`}${path}`;
+}
+
+function isMinimaxH3(config: Pick<AiConfig, "baseUrl" | "apiFormat">, model: string) {
+    let base: URL;
+    try { base = new URL(config.baseUrl); } catch { return false; }
+    return modelOptionName(model).trim() === "minimax_h3"
+        && config.apiFormat === "openai"
+        && base.origin === "https://api.osodm.com";
+}
+
+function studioVideoProxyBase() {
+    const config = useConfigStore.getState().config;
+    if (!config.proxyEnabled) return "";
+    try {
+        const proxy = new URL(config.proxyUrl);
+        if (!proxy.pathname.replace(/\/+$/, "").endsWith("/__studio/image-proxy")) return "";
+        return `${proxy.origin}/__studio/video-proxy`;
+    } catch {
+        return "";
+    }
 }
 
 function aiHeaders(config: AiConfig, contentType?: string) {
@@ -41,6 +76,13 @@ function aiHeaders(config: AiConfig, contentType?: string) {
         Authorization: `Bearer ${config.apiKey}`,
         ...(contentType ? { "Content-Type": contentType } : {}),
     };
+}
+
+function videoApiHeaders(config: AiConfig, model: string, contentType?: string) {
+    if (isMinimaxH3(config, model) && studioVideoProxyBase()) {
+        return contentType ? { "Content-Type": contentType } : {};
+    }
+    return aiHeaders(config, contentType);
 }
 
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: VideoMediaOptions): Promise<VideoGenerationResult> {
@@ -70,7 +112,7 @@ function videoTaskFailed(message: string) {
 }
 
 export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
-    const selectedModel = (config.model || config.videoModel).trim();
+    const selectedModel = (config.videoModel || config.model).trim();
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
@@ -147,6 +189,37 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    if (isMinimaxH3(config, model)) {
+        if (references.length || options?.videos?.length || options?.audios?.length) {
+            throw new Error(apiText("minimaxH3ReferencesUnsupported"));
+        }
+        assertVideoConfig(config, model);
+        const resolution = String(config.vquality || "").trim();
+        const aspectRatio = String(config.size || "").trim();
+        const duration = Number(config.videoSeconds);
+        if (!Number.isInteger(duration) || duration < 4 || duration > 15
+            || !MINIMAX_H3_RESOLUTIONS.has(resolution) || !MINIMAX_H3_ASPECT_RATIOS.has(aspectRatio)) {
+            throw new Error(apiText("minimaxH3ParametersUnsupported"));
+        }
+        const body = {
+            version: "video.v1",
+            model: modelOptionName(model),
+            operation: "text_to_video",
+            prompt,
+            duration_seconds: duration,
+            resolution,
+            aspect_ratio: aspectRatio,
+        };
+        try {
+            const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(videoApiUrl(config, "/videos", model), body, {
+                headers: videoApiHeaders(config, model, "application/json"), signal: options?.signal,
+            })).data);
+            if (!created.id) throw new Error(apiText("noVideoTaskId"));
+            return { id: created.id, provider: "openai", model };
+        } catch (error) {
+            throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+        }
+    }
     const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
@@ -192,11 +265,11 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
 
 async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     try {
-        const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data);
+        const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(videoApiUrl(config, `/videos/${task.id}`, task.model), { headers: videoApiHeaders(config, task.model), signal: options?.signal })).data);
         const url = videoResultUrl(video);
-        if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
+        if (url && !isMinimaxH3(config, task.model)) return { status: "completed", result: await videoResultFromUrl(url, options) };
         if (video.status === "completed") {
-            const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${task.id}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
+            const content = await axios.get<Blob>(videoApiUrl(config, `/videos/${task.id}/content`, task.model), { headers: videoApiHeaders(config, task.model), responseType: "blob", signal: options?.signal });
             await assertVideoBlob(content.data);
             return { status: "completed", result: { blob: content.data } };
         }

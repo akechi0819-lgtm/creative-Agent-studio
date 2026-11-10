@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createTask, readTask, withTask, attachTaskFiles, confirmInputs, setBrief, setSources, setSheet, confirmSheet, recordReview, approveFinal, exportTask, assertNoCredentials, isSheetAuthorized } from '../src/creative/tasks.mjs';
+import { createTask, readTask, withTask, attachTaskFiles, confirmInputs, setBrief, setSources, setSheet, confirmSheet, recordReview, approveFinal, exportTask, taskDirectory, assertNoCredentials, isSheetAuthorized } from '../src/creative/tasks.mjs';
 import { executeTask } from '../src/creative/executor.mjs';
 import { editTaskPages, restorePageEdit } from '../src/creative/page-edits.mjs';
+import { runCanvasOperation } from '../src/creative/canvas-operations.mjs';
+import { adoptCanvasResult } from '../src/creative/mechanical-products.mjs';
 
 const config = { projectId: 'fixture', webUrl: 'http://fixture', clientId: 'fixture' };
 const getHealth = async () => ({ targets: [{ hasCanvas: true, projectId: 'fixture', clientId: 'fixture' }] });
@@ -309,6 +311,165 @@ test('三页中局部改两项输入只生成目标页，旧成品和未改页�
   });
   assert.equal(replay.sheetVersion, 2);
   assert.equal(fixture.runs(), 4, '重复 requestId 不得再次生图');
+});
+
+test('连续两次局部改图只发送本次指令；省略文案时保留成品原文但不注入旧文案或旧参考', async t => {
+  const { root, id } = await setup(t, 3);
+  const fixture = canvas();
+  const baseline = await createReviewedBaseline(id, root, fixture);
+  const originalDefinition = baseline.sheets.at(-1).pages[1];
+  const firstInstruction = '第一次修改：把背景调成暖色';
+  const first = await editTaskPages(id, {
+    edits: [{ page: 2, instruction: firstInstruction }],
+    authorization: { requestId: 'successive-edit-001', text: '请第一次把第2页背景调成暖色。' },
+    expectedRevision: baseline.revision,
+    root,
+    config,
+    getHealth,
+    ...fixture,
+  });
+  const firstDefinition = first.sheets.at(-1).pages[1];
+  assert.equal(firstDefinition.prompt, firstInstruction);
+  assert.equal(firstDefinition.copy, originalDefinition.copy, '沿用原始准确文案供任务追溯与导出');
+  assert.equal(firstDefinition.copyMode, 'preserve-source-text');
+  assert.deepEqual(firstDefinition.referenceImages, [], '不再携带基线制作单的旧参考图');
+  const firstText = fixture.nodes.find(node => node.id === first.execution.pages.find(page => page.page === 2).textNodeId).metadata.content;
+  assert.match(firstText, /第一次修改：把背景调成暖色/);
+  assert.doesNotMatch(firstText, new RegExp(originalDefinition.prompt));
+  assert.doesNotMatch(firstText, new RegExp(originalDefinition.copy));
+
+  const secondInstruction = '第二次修改：将背景改成夜景';
+  const second = await editTaskPages(id, {
+    edits: [{ page: 2, instruction: secondInstruction, stylePages: [1] }],
+    authorization: { requestId: 'successive-edit-002', text: '再把第2页背景改成夜景，并参考第1页风格。' },
+    expectedRevision: first.revision,
+    root,
+    config,
+    getHealth,
+    ...fixture,
+  });
+  const secondDefinition = second.sheets.at(-1).pages[1];
+  assert.equal(secondDefinition.prompt, secondInstruction);
+  assert.equal(secondDefinition.copy, originalDefinition.copy, '无新文案时仍保留成品的原始准确文案记录');
+  assert.equal(secondDefinition.copyMode, 'preserve-source-text');
+  assert.deepEqual(secondDefinition.referenceImages, []);
+  const secondText = fixture.nodes.find(node => node.id === second.execution.pages.find(page => page.page === 2).textNodeId).metadata.content;
+  assert.match(secondText, /第二次修改：将背景改成夜景/);
+  assert.doesNotMatch(secondText, /第一次修改：把背景调成暖色/);
+  assert.doesNotMatch(secondText, new RegExp(originalDefinition.prompt));
+  assert.doesNotMatch(secondText, new RegExp(originalDefinition.copy));
+  assert.deepEqual(second.sheets.at(-1).outputReferences.map(reference => [reference.page, reference.role]), [[2, 'edit-base'], [1, 'style']]);
+  assert.deepEqual(second.execution.pages.find(page => page.page === 2).referenceNodes.map(reference => [reference.page, reference.role]), [[2, 'edit-base'], [1, 'style']]);
+  assert.equal(fixture.runs(), 5, '两次局部修改各新增一次，不重新生成未改页');
+  let reviewed = await recordReview(id, {
+    page: 2,
+    sha256: second.execution.pages.find(page => page.page === 2).image.sha256,
+    decision: 'pass',
+    reviewer: 'test reviewer',
+    notes: '仅核验导出保留准确文案合同',
+  }, { root, expectedRevision: second.revision });
+  const approved = await approveFinal(id, {
+    version: second.sheetVersion,
+    images: second.execution.pages.map(page => ({ page: page.page, sha256: page.image.sha256 })),
+    by: 'test reviewer',
+    note: '隔离测试确认',
+  }, { root, expectedRevision: reviewed.revision });
+  const exported = await exportTask(id, { root, expectedRevision: approved.revision });
+  const exportDirectory = path.join(taskDirectory(id, root), exported.export.relativePath);
+  assert.deepEqual(JSON.parse(await readFile(path.join(exportDirectory, 'copy.json'), 'utf8')).pages.map(page => page.copy), [
+    '基线文案 1', originalDefinition.copy, '基线文案 3',
+  ], '省略新文案时导出仍保留原成品准确文案');
+});
+
+test('机械采用成品可直接进入局部改图并在后续编辑和恢复中保留机械谱系', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'studio-mechanical-page-edit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let task = await createTask({ title: '机械成品局部改图', brief: '采用画布机械处理结果后局部调整' }, root);
+  const operationId = randomUUID();
+  const imageHash = digest(png);
+  await runCanvasOperation({
+    root,
+    taskId: task.id,
+    operationId,
+    requestId: randomUUID(),
+    callId: randomUUID(),
+    userText: '裁切并采用这张画布结果。',
+    expectedRevision: task.revision,
+    operation: 'compose',
+    nodeId: 'mechanical-source',
+    input: { layers: [] },
+    run: async ({ imagesDirectory, markSubmitted }) => {
+      await markSubmitted({ canvasInstanceId: 'fixture-instance', canvasClientId: 'fixture-client' });
+      await mkdir(imagesDirectory, { recursive: true });
+      await writeFile(path.join(imagesDirectory, 'image-001.png'), png, { flag: 'wx', mode: 0o600 });
+      return {
+        result: { operation: 'compose', images: [{ nodeId: 'mechanical-image', width: 1, height: 1, sha256: imageHash }] },
+        attachments: [{
+          nodeId: 'mechanical-image',
+          width: 1,
+          height: 1,
+          sha256: imageHash,
+          name: 'canvas-compose-01.png',
+          mimeType: 'image/png',
+          size: png.length,
+          relativePath: 'images/image-001.png',
+        }],
+      };
+    },
+  });
+  const adopted = await adoptCanvasResult(task.id, {
+    operationId,
+    imageIndex: 0,
+    requestId: randomUUID(),
+    workType: 'mechanical',
+    authorization: { by: '测试用户', note: '明确采用此画布机械结果作为本次成品。' },
+    expectedRevision: task.revision,
+  }, { root });
+  task = adopted.task;
+  assert.equal(task.inputConfirmation, null, '机械采用不补造输入确认');
+  assert.equal(isSheetAuthorized(task, task.sheetVersion), true);
+
+  const fixture = canvas();
+  const first = await editTaskPages(task.id, {
+    edits: [{ page: 1, instruction: '只把背景调成暖色' }],
+    authorization: { requestId: 'mechanical-edit-001', text: '请把采用的图改成暖色背景。' },
+    expectedRevision: task.revision,
+    root,
+    config,
+    getHealth,
+    ...fixture,
+  });
+  const firstSheet = first.sheets.at(-1);
+  assert.equal(firstSheet.pageEdit.basis.kind, 'mechanical-output');
+  assert.equal(firstSheet.pageEdit.basis.originVersion, adopted.task.sheetVersion);
+  assert.equal(firstSheet.pageEdit.basis.adoptionFingerprint, adopted.adoption.fingerprint);
+  assert.equal(firstSheet.pageEdit.baselineEvidence.basis, 'successful-mechanical-output');
+  assert.equal(firstSheet.pageEdit.baselineEvidence.sourceVersion, adopted.task.sheetVersion);
+  assert.equal(firstSheet.inputs.confirmation, null);
+  assert.equal(firstSheet.pages[0].prompt, '只把背景调成暖色');
+  assert.deepEqual(firstSheet.outputReferences.map(reference => [reference.page, reference.role]), [[1, 'edit-base']]);
+  assert.equal(isSheetAuthorized(first, first.sheetVersion), true);
+
+  const second = await editTaskPages(task.id, {
+    edits: [{ page: 1, instruction: '接着把装饰移到右下角' }],
+    authorization: { requestId: 'mechanical-edit-002', text: '再把装饰移到右下角。' },
+    expectedRevision: first.revision,
+    root,
+    config,
+    getHealth,
+    ...fixture,
+  });
+  assert.equal(second.sheets.at(-1).pageEdit.basis.kind, 'mechanical-output');
+  assert.equal(second.sheets.at(-1).pageEdit.basis.originVersion, adopted.task.sheetVersion);
+  assert.equal(second.sheets.at(-1).pageEdit.baselineEvidence.sourceVersion, first.sheetVersion);
+  assert.equal(isSheetAuthorized(second, second.sheetVersion), true);
+
+  const restored = await restorePageEdit(task.id, { page: 1, expectedRevision: second.revision, root });
+  assert.equal(restored.sheets.at(-1).pageEdit.basis.kind, 'mechanical-output');
+  assert.equal(restored.sheets.at(-1).pageEdit.basis.originVersion, adopted.task.sheetVersion);
+  assert.equal(restored.sheets.at(-1).pageEdit.baselineEvidence.basis, 'successful-mechanical-output');
+  assert.equal(isSheetAuthorized(restored, restored.sheetVersion), true);
+  assert.equal(fixture.runs(), 2, '两次局部生图各执行一次，恢复不调用生图');
 });
 
 test('生成失败保留原成品；重复同一请求只查询失败节点，不会再次收费', async t => {

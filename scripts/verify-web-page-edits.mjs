@@ -938,12 +938,12 @@ try {
         };
         const imported = [];
         for (const file of files) {
-          const outcome = await perform({ operation: 'import', image: { sourceId: source.id, fileOrder: file.order } });
+          const outcome = await perform({ operation: 'import', image: { sourceKind: 'task-upload', sourceId: source.id, fileOrder: file.order } });
           assert.deepEqual(outcome.attachments, [], 'import must add a source node without creating a chat attachment');
           assert.equal(outcome.result.images.length, 1, 'each import should return exactly one imported node descriptor');
           imported[file.order] = outcome.result.images[0];
         }
-        const duplicateImport = await perform({ operation: 'import', image: { sourceId: source.id, fileOrder: 1 } });
+        const duplicateImport = await perform({ operation: 'import', image: { sourceKind: 'task-upload', sourceId: source.id, fileOrder: 1 } });
         assert.deepEqual(duplicateImport.attachments, [], 're-importing a source must not duplicate its image attachment');
         assert.equal(duplicateImport.result.images[0].nodeId, imported[1].nodeId, 're-import must resolve to the stable imported node');
         const stateAfterImport = await input.canvasState({ expectedRevision: input.expectedRevision });

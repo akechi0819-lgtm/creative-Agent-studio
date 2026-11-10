@@ -1,4 +1,4 @@
-import { useConfigStore } from "@/stores/use-config-store";
+import { STUDIO_H3_VIDEO_DEFAULTS, STUDIO_H3_VIDEO_MODEL, useConfigStore } from "@/stores/use-config-store";
 import { useCanvasToolStore } from "@/stores/use-canvas-tool-store";
 
 type StudioSession = {
@@ -9,6 +9,7 @@ type StudioSession = {
     bridgeUrl?: string;
     bridgeToken?: string;
     imageConfig?: { baseUrl?: string; model?: string; apiKey?: string; apiFormat?: "openai" | "gemini" } | null;
+    videoConfig?: { baseUrl?: string; model?: string; apiKey?: string; apiFormat?: "openai" | "gemini" } | null;
 };
 
 let studioProjectId: string | null = null;
@@ -20,60 +21,57 @@ function taskProjectId() {
     return routeId || new URLSearchParams(window.location.search).get("projectId");
 }
 
-function imageAiConfig(image: StudioSession["imageConfig"]) {
+function studioChannelConfig(session: StudioSession, current: ReturnType<typeof useConfigStore.getState>["config"]) {
+    const image = session.imageConfig;
+    const video = session.videoConfig;
     const model = image?.model?.trim() || "";
-    const baseUrl = image?.baseUrl?.trim() || "";
-    const apiKey = image?.apiKey || "";
-    const selected = model ? `studio-image::${model}` : "";
-    const channels = model && baseUrl && apiKey ? [{
-        id: "studio-image",
-        name: "Studio 图片模型",
-        baseUrl,
-        apiKey,
-        apiFormat: image?.apiFormat === "gemini" ? "gemini" as const : "openai" as const,
-        models: [{ name: model, capability: "image" as const }],
-    }] : [];
-    const current = useConfigStore.getState().config;
+    const videoModel = video?.model?.trim() || "";
+    const imageBaseUrl = image?.baseUrl?.trim() || "";
+    const videoBaseUrl = video?.baseUrl?.trim() || "";
+    const imageSelected = model && imageBaseUrl && image?.apiKey ? `studio-image::${model}` : "";
+    const videoSelected = videoModel && videoBaseUrl && video?.apiKey ? `studio-video::${videoModel}` : "";
+    const channels = [
+        imageSelected ? {
+            id: "studio-image",
+            name: "Studio 图片模型",
+            baseUrl: imageBaseUrl,
+            apiKey: image?.apiKey || "",
+            apiFormat: image?.apiFormat === "gemini" ? "gemini" as const : "openai" as const,
+            models: [{ name: model, capability: "image" as const }],
+        } : null,
+        videoSelected ? {
+            id: "studio-video",
+            name: "Studio 视频模型",
+            baseUrl: videoBaseUrl,
+            apiKey: video?.apiKey || "",
+            apiFormat: video?.apiFormat === "gemini" ? "gemini" as const : "openai" as const,
+            models: [{ name: videoModel, capability: "video" as const }],
+        } : null,
+    ].filter((channel): channel is NonNullable<typeof channel> => channel !== null);
+    const modelOptions = channels.flatMap((channel) => channel.models.map((item) => `${channel.id}::${item.name}`));
+    const imageSelection = imageSelected && modelOptions.includes(current.imageModel) ? current.imageModel : imageSelected;
+    const videoSelection = videoSelected && modelOptions.includes(current.videoModel) ? current.videoModel : videoSelected;
+    const newlySelectedH3Video = videoSelection === STUDIO_H3_VIDEO_MODEL && current.videoModel !== STUDIO_H3_VIDEO_MODEL;
+    const selectedModel = modelOptions.includes(current.model) ? current.model : imageSelection || videoSelection;
     return {
         ...current,
         channelMode: "local" as const,
-        baseUrl,
+        baseUrl: imageBaseUrl || videoBaseUrl,
         apiKey: "",
-        apiFormat: image?.apiFormat === "gemini" ? "gemini" as const : "openai" as const,
+        apiFormat: "openai" as const,
         channels,
-        model: selected,
-        imageModel: selected,
-        models: selected ? [selected] : [],
+        model: selectedModel,
+        imageModel: imageSelection,
+        videoModel: videoSelection,
+        ...(newlySelectedH3Video ? {
+            size: STUDIO_H3_VIDEO_DEFAULTS.size,
+            vquality: STUDIO_H3_VIDEO_DEFAULTS.vquality,
+            videoSeconds: STUDIO_H3_VIDEO_DEFAULTS.videoSeconds,
+        } : {}),
+        models: modelOptions,
         proxyEnabled: true,
         proxyUrl: `${window.location.origin}/__studio/image-proxy`,
         canvasImageCount: "1",
-    };
-}
-
-function imageChannelConfig(image: StudioSession["imageConfig"]) {
-    const model = image?.model?.trim() || "";
-    const baseUrl = image?.baseUrl?.trim() || "";
-    const apiKey = image?.apiKey || "";
-    const selected = model ? `studio-image::${model}` : "";
-    const channels = model && baseUrl && apiKey ? [{
-        id: "studio-image",
-        name: "Studio 图片模型",
-        baseUrl,
-        apiKey,
-        apiFormat: image?.apiFormat === "gemini" ? "gemini" as const : "openai" as const,
-        models: [{ name: model, capability: "image" as const }],
-    }] : [];
-    return {
-        channelMode: "local" as const,
-        baseUrl,
-        apiKey: "",
-        apiFormat: image?.apiFormat === "gemini" ? "gemini" as const : "openai" as const,
-        channels,
-        model: selected,
-        imageModel: selected,
-        models: selected ? [selected] : [],
-        proxyEnabled: true,
-        proxyUrl: `${window.location.origin}/__studio/image-proxy`,
     };
 }
 
@@ -84,11 +82,12 @@ function applyStudioSession(session: StudioSession) {
     if (studioProjectId && studioProjectId !== session.projectId) return false;
     if (session.configRevision! > appliedConfigRevision) {
         const current = useConfigStore.getState().config;
-        useConfigStore.setState({ config: { ...current, ...imageChannelConfig(session.imageConfig) } });
+        useConfigStore.setState({ config: studioChannelConfig(session, current) });
         appliedConfigRevision = session.configRevision!;
     }
     if (!studioProjectId) {
-        useConfigStore.setState({ config: imageAiConfig(session.imageConfig) });
+        const current = useConfigStore.getState().config;
+        useConfigStore.setState({ config: studioChannelConfig(session, current) });
         studioProjectId = session.projectId;
         appliedConfigRevision = session.configRevision!;
         useCanvasToolStore.setState({
@@ -105,24 +104,24 @@ function applyStudioSession(session: StudioSession) {
     return true;
 }
 
-/** Read the same-origin private session and apply only a newer image-config revision. */
+/** Read the same-origin private session and apply only a newer image/video-config revision. */
 export async function refreshStudioCanvasConfig() {
     if (!window.location.pathname.startsWith("/canvas")) return false;
     let response: Response;
     try {
         response = await fetch("/__studio/session", { cache: "no-store", credentials: "same-origin" });
     } catch {
-        if (studioProjectId) throw new Error("图片配置同步检查失败，本次生成已停止；请检查工作台同步状态后重试。");
+        if (studioProjectId) throw new Error("模型配置同步检查失败，本次生成已停止；请检查工作台同步状态后重试。");
         return false;
     }
     if (!response.ok) {
-        if (studioProjectId) throw new Error("无法确认当前图片配置，本次生成已停止；请重新连接任务画布后重试。");
+        if (studioProjectId) throw new Error("无法确认当前模型配置，本次生成已停止；请重新连接任务画布后重试。");
         return false;
     }
     let session: StudioSession;
     try { session = await response.json() as StudioSession; }
     catch {
-        if (studioProjectId) throw new Error("图片配置响应无效，本次生成已停止；请重试。");
+        if (studioProjectId) throw new Error("模型配置响应无效，本次生成已停止；请重试。");
         return false;
     }
     if (!applyStudioSession(session)) {

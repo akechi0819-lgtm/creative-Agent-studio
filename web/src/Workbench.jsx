@@ -58,6 +58,9 @@ function jobLabel(kind) {
     resume: '继续绘图',
     'asset-clean': '素材清洗',
     'dna-organize': 'DNA 草稿整理',
+    'video-confirm-and-execute': '确认镜头并生成视频',
+    'video-execute': '生成视频',
+    'video-resume': '查询原视频任务',
   })[kind] || kind;
 }
 
@@ -81,14 +84,17 @@ export function Workbench({
   onCancelJob,
   onRetryCleanup,
   onRetryChat,
+  onSaveLogoVariant,
 }) {
   const [objectCollapsed, setObjectCollapsed] = useState(false);
   const [exportResult, setExportResult] = useState(null);
+  const [videoExportResult, setVideoExportResult] = useState(null);
   const [actionBusy, setActionBusy] = useState(false);
   const conversationScrollRef = useRef(null);
   const followConversationRef = useRef(true);
 
   useEffect(() => { setExportResult(null); }, [task?.id, task?.sheetVersion]);
+  useEffect(() => { setVideoExportResult(null); }, [task?.id, task?.video?.version]);
 
   const answersByQuestionMessage = useMemo(() => new Map((task?.conversation || [])
     .filter((message) => message.role === 'user' && message.answers?.messageId && (!message.clientStatus || message.clientStatus === 'accepted'))
@@ -131,6 +137,14 @@ export function Workbench({
   const currentExport = finalApproved
     ? exportResult?.sheetVersion === task.sheetVersion ? exportResult : task.exports?.at(-1)
     : null;
+  const video = task.video;
+  const videoPlan = video?.plans?.find((item) => item.version === video.version) || null;
+  const videoExecution = video?.execution?.version === video?.version ? video.execution : null;
+  const videoOutput = videoExecution?.output || null;
+  const videoApproved = Boolean(video?.approval?.version === video?.version && video?.approval?.sha256 === videoOutput?.sha256);
+  const currentVideoExport = videoApproved
+    ? videoExportResult?.videoVersion === video.version ? videoExportResult : [...(video?.exports || [])].reverse().find((record) => record.videoVersion === video.version && record.sha256 === videoOutput?.sha256)
+    : null;
 
   function sendMessage(text, answers, attachments) {
     followConversationRef.current = true;
@@ -139,6 +153,8 @@ export function Workbench({
       sheetVersion: task.sheetVersion,
       referenceProposalId: latestProposalId,
       ...(canDeliver ? {images:deliveryImages} : {}),
+      videoVersion: video?.version || 0,
+      videoSha: videoOutput?.sha256 || null,
     });
   }
 
@@ -151,6 +167,17 @@ export function Workbench({
         if (result.export.downloadUrl) {
           const download = document.createElement('a');
           download.href = result.export.downloadUrl;
+          download.download = '';
+          document.body.appendChild(download);
+          download.click();
+          download.remove();
+        }
+      }
+      if (action === 'video-approve-and-export' && result?.export) {
+        setVideoExportResult({ ...result.export, videoVersion: payload.version });
+        if (result.export.videoUrl) {
+          const download = document.createElement('a');
+          download.href = result.export.videoUrl;
           download.download = '';
           document.body.appendChild(download);
           download.click();
@@ -192,6 +219,7 @@ export function Workbench({
             answerDisabled={actionDisabled}
             proposalStale={message.referenceProposal?.revision !== task.revision || latestProposalId !== message.id}
             onConfirmProposal={() => sendMessage('确认参考方案并继续')}
+            onSaveLogoVariant={onSaveLogoVariant}
           />)}
           {activeSheet && !sheetAuthorized(task) && <SchemeDecisionCard
             task={task}
@@ -203,6 +231,20 @@ export function Workbench({
               note: `用户在左侧确认制作单 v${activeSheet.version} 并开始绘图`,
             })}
           />}
+          {videoPlan && <VideoPlanCard
+            plan={videoPlan}
+            execution={videoExecution}
+            approved={videoApproved}
+            busy={actionDisabled}
+            onConfirmAndExecute={() => act('video-confirm-and-execute', { version: video.version, expectedRevision: task.revision, note: `用户在工作台确认视频镜头 v${video.version} 并开始生成。` })}
+            onExecute={() => act('video-execute', { version: video.version, expectedRevision: task.revision })}
+            onResume={() => act('video-resume', { version: video.version, expectedRevision: task.revision })}
+          />}
+          {videoExecution?.status === 'succeeded' && videoOutput?.sha256 && !videoApproved && <section className="dialogue-object video-delivery-decision" aria-label="视频交付确认">
+            <h3>视频已完成</h3>
+            <p>请在右侧实际播放并检查当前视频 v{video.version}。确认后会记录“用户确认当前展示视频用于交付”，并导出 MP4 与清单。</p>
+            <button className="button primary" disabled={actionDisabled} onClick={() => act('video-approve-and-export', { expectedRevision: task.revision, version: video.version, sha256: videoOutput.sha256 })}>{actionBusy ? '正在准备视频交付…' : '确认视频交付并下载'}</button>
+          </section>}
           {executionSucceeded && !finalApproved && <section className="dialogue-object delivery-decision" aria-label="成品交付确认">
             <h3>{finalApproved ? '交付已确认' : '成品已完成'}</h3>
             <p>{finalApproved
@@ -236,7 +278,18 @@ export function Workbench({
       </section>
       <section className="object-panel" aria-label="当前任务预览">
         <div className="object-header"><div><span className="eyebrow">当前任务预览</span><div className="object-title-row"><h2>{hasCurrentOutput ? '成品预览' : activeSheet ? '方案预览' : '任务预览'}</h2>{activeSheet && <span className={`version-chip ${sheetAuthorized(task) ? 'confirmed' : 'pending'}`}>v{activeSheet.version} · {sheetAuthorized(task) ? '已确认' : '待确认'}</span>}</div></div></div>
-        <div className="object-content"><ObjectPreview task={task} sheet={activeSheet} executionSucceeded={executionSucceeded} hasCurrentOutput={hasCurrentOutput} /></div>
+        <div className="object-content">
+          <ObjectPreview task={task} sheet={activeSheet} executionSucceeded={executionSucceeded} hasCurrentOutput={hasCurrentOutput} />
+          {videoOutput?.videoUrl && <section className="video-preview" aria-label="独立视频预览">
+            <div className="video-preview-head"><h3>视频预览 · v{video.version}</h3><span className={`version-chip ${videoApproved ? 'confirmed' : 'pending'}`}>{videoApproved ? '已确认交付' : videoExecution?.status || '待执行'}</span></div>
+            <video controls preload="metadata" src={videoOutput.videoUrl} aria-label={`视频方案 v${video.version} 预览`} />
+            <small>{videoOutput.width} × {videoOutput.height} · {(videoOutput.durationMs / 1000).toFixed(1)} 秒 · SHA-256 {videoOutput.sha256}</small>
+            {currentVideoExport && <div className="video-export-links">
+              <a className="button outline small" href={currentVideoExport.videoUrl} download>下载 MP4</a>
+              <a className="text-button" href={currentVideoExport.manifestUrl} target="_blank" rel="noreferrer">查看交付清单</a>
+            </div>}
+          </section>}
+        </div>
         <div className="object-footer">
           <span>{currentExport ? `版本 v${activeSheet?.version} · 素材包已就绪` : '图片预览与版本信息显示在这里；修改意见直接发在左侧对话。'}</span>
           {currentExport?.downloadUrl && <a className="button outline small" href={currentExport.downloadUrl} download>下载素材包</a>}
@@ -244,6 +297,24 @@ export function Workbench({
       </section>
     </div>
   </div>;
+}
+
+function VideoPlanCard({ plan, execution, approved, busy, onConfirmAndExecute, onExecute, onResume }) {
+  const submitted = Boolean(execution?.submitted || execution?.submissionIntentAt);
+  const confirmed = Boolean(plan.confirmedAt);
+  const failed = execution?.status === 'failed';
+  const succeeded = execution?.status === 'succeeded';
+  return <section className="dialogue-object video-plan-card" aria-label="视频镜头方案">
+    <div className="video-preview-head"><h3>视频镜头方案 v{plan.version}</h3><span className={`version-chip ${confirmed ? 'confirmed' : 'pending'}`}>{confirmed ? '已确认' : '待确认'}</span></div>
+    <p>{plan.prompt}</p>
+    <small>{plan.seconds} 秒 · {plan.ratio} · {plan.resolution}</small>
+    {succeeded ? <p className="video-plan-status">视频已生成，可在右侧播放检查。</p>
+      : failed ? <p className="video-plan-status">此版本明确失败；如需重试，请整理新的视频方案并重新确认。</p>
+        : submitted ? <div><p className="video-plan-status">请求已提交，恢复只查询原 Canvas 视频节点。</p><button type="button" className="button outline small" disabled={busy} onClick={onResume}>查询原任务</button></div>
+          : confirmed ? <button type="button" className="button primary" disabled={busy} onClick={onExecute}>按此镜头生成</button>
+            : <button type="button" className="button primary" disabled={busy} onClick={onConfirmAndExecute}>按此镜头生成</button>}
+    {approved && <small>当前视频已确认交付。</small>}
+  </section>;
 }
 
 function formatLabel(brief) {
@@ -255,8 +326,10 @@ function formatLabel(brief) {
   return '创作任务';
 }
 
-function Message({ proposalStale, onConfirmProposal,  message, sources = [], onRetryChat, answeredAnswers, onSubmitAnswers, answerDisabled }) {
+function Message({ proposalStale, onConfirmProposal, message, sources = [], onRetryChat, answeredAnswers, onSubmitAnswers, answerDisabled, onSaveLogoVariant }) {
   const [localPreviewUrls, setLocalPreviewUrls] = useState([]);
+  const [savingLogo, setSavingLogo] = useState(false);
+  const [savedLogo, setSavedLogo] = useState(false);
   const role = message.role;
   const text = message.text;
   const questions = Array.isArray(message.questions) ? message.questions : [];
@@ -289,10 +362,18 @@ function Message({ proposalStale, onConfirmProposal,  message, sources = [], onR
         const href = file.fileUrl || file.imageUrl || preview || '';
         const image = isImageFile(file) || isImageFile(localFile);
         const name = file.name || localFile?.name || '附件';
+        const logoOperation = file.operation === 'adapt-logo'
+          ? String(file.fileUrl || '').match(/\/canvas-operations\/([0-9a-f-]{36})\/images\/(\d+)(?:\?|$)/iu)
+          : null;
         return <div className="message-attachment" key={`${file.sourceId || ''}-${file.order ?? index}-${name}`}>
           {image && href ? <a href={href} target="_blank" rel="noreferrer" title={`打开附件：${name}`}><img src={href} alt={`${name} 预览`} /></a> : <span className="message-attachment-type">{attachmentType(file.name ? file : localFile)}</span>}
           {href && !preview ? <a className="message-attachment-name" href={href} target="_blank" rel="noreferrer" title={name}>{name}</a> : <span className="message-attachment-name" title={name}>{name}</span>}
           {file.downloadUrl && <a className="message-attachment-name" href={file.downloadUrl} download={name} aria-label={`下载附件：${name}`}>下载</a>}
+          {logoOperation && onSaveLogoVariant && <button type="button" className="text-button" disabled={answerDisabled || savingLogo || savedLogo} onClick={async () => {
+            setSavingLogo(true);
+            try { await onSaveLogoVariant(logoOperation[1], Number(logoOperation[2])); setSavedLogo(true); }
+            finally { setSavingLogo(false); }
+          }}>{savedLogo ? '已保存为素材草稿' : savingLogo ? '正在保存…' : '保存为 Logo 素材草稿'}</button>}
         </div>;
       })}</div>}
       {message.referenceProposal && <div className="brief-card">

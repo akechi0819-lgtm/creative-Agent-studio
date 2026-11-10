@@ -18,14 +18,17 @@ import {
   setSources,
   applyDna,
   attachTaskFiles,
+  assertNoCredentials,
   taskDirectory,
   setReferences,
   withTask,
   isSheetAuthorized,
 } from '../creative/tasks.mjs';
 import { executeTask } from '../creative/executor.mjs';
-import { readCanvasOperationImage } from '../creative/canvas-operations.mjs';
+import { readCanvasOperationImage, saveLogoVariant } from '../creative/canvas-operations.mjs';
 import { editTaskPages, restorePageEdit } from '../creative/page-edits.mjs';
+import { adoptCanvasResult } from '../creative/mechanical-products.mjs';
+import { approveVideo, confirmVideoPlan, executeVideoTask, exportVideoTask, readVideoOutput, recordVideoReview, writeVideoPlan } from '../creative/video.mjs';
 import {
   confirmAsset,
   deleteAsset,
@@ -356,6 +359,12 @@ function assertUuid(id, label = '任务 ID') {
   return value;
 }
 
+function mechanicalAdoptionRequestId(chatRequestId, operationId, imageIndex, page) {
+  const hash = crypto.createHash('sha256').update([chatRequestId, operationId, imageIndex, page].join('\u0000')).digest('hex');
+  const variant = ((Number.parseInt(hash[16], 16) & 0x03) | 0x08).toString(16);
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-${variant}${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+
 function isInside(parent, candidate) {
   const relative = path.relative(parent, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -642,6 +651,28 @@ function publicTask(task) {
     downloadUrl: `/api/tasks/${rootTaskId}/exports/${encodeURIComponent(record.version)}`,
     files: (record.files || []).map(({ path: _path, ...file }) => file),
   }));
+  if (result.video) {
+    const video = result.video;
+    const version = Number.isInteger(video.version) ? video.version : null;
+    const output = video.execution?.output;
+    if (output) {
+      delete output.relativePath;
+      delete output.storageKey;
+      delete output.nodeId;
+      output.videoUrl = `/api/tasks/${rootTaskId}/video-output/current?version=${version}&sha256=${encodeURIComponent(output.sha256 || '')}`;
+    }
+    video.exports = (video.exports || []).map((record) => ({
+      sequence: record.sequence,
+      version: record.version,
+      videoVersion: record.videoVersion,
+      sha256: record.sha256,
+      manifestSha256: record.manifestSha256,
+      generatedAt: record.generatedAt,
+      videoUrl: `/api/tasks/${rootTaskId}/video-exports/${encodeURIComponent(record.version)}/video`,
+      manifestUrl: `/api/tasks/${rootTaskId}/video-exports/${encodeURIComponent(record.version)}/manifest`,
+    }));
+    if (video.execution) delete video.execution.outputPath;
+  }
   return result;
 }
 
@@ -889,6 +920,52 @@ export function createStudioServer({
     return {task:result.task,assistantMessage,export:{...result.export,downloadUrl:`/api/tasks/${encodeURIComponent(id)}/exports/${encodeURIComponent(result.export.version)}`}};
   }
 
+  async function approveAndExportVideo(taskId, body) {
+    if (Object.keys(body).some((key) => !['expectedRevision', 'version', 'sha256'].includes(key))) {
+      throw error('ERR_VIDEO_DELIVERY_INPUT', '视频交付字段无效');
+    }
+    requiredRevision(body.expectedRevision);
+    if (!Number.isInteger(body.version) || body.version < 1 || !/^[a-f0-9]{64}$/i.test(body.sha256 || '')) {
+      throw error('ERR_VIDEO_DELIVERY_INPUT', '视频交付版本或 SHA-256 无效');
+    }
+    let task = await readTask(taskId, data);
+    if (task.revision !== body.expectedRevision) {
+      const stale = error('ERR_TASK_REVISION_CONFLICT', '任务版本已更新，请重新读取', 409);
+      stale.expectedRevision = body.expectedRevision;
+      stale.actualRevision = task.revision;
+      throw stale;
+    }
+    if (task.video?.version !== body.version || task.video?.execution?.version !== body.version
+      || task.video.execution.status !== 'succeeded') throw error('ERR_VIDEO_DELIVERY_STALE', '当前视频版本尚未完成或已变化，请重新查看预览。', 409);
+    const output = await readVideoOutput(taskId, { root: data });
+    if (output.version !== body.version || output.sha256 !== body.sha256.toLowerCase()) {
+      throw error('ERR_VIDEO_DELIVERY_STALE', '展示的视频 SHA-256 已变化，请重新查看预览。', 409);
+    }
+    task = await recordVideoReview(taskId, {
+      sha256: output.sha256,
+      decision: 'pass',
+      reviewer: '本机用户',
+      notes: '用户确认当前展示视频用于交付',
+    }, { root: data, expectedRevision: task.revision });
+    task = await approveVideo(taskId, {
+      version: body.version,
+      sha256: output.sha256,
+      by: '本机用户',
+      note: `用户在工作台确认当前视频 v${body.version} 并交付。`,
+    }, { root: data, expectedRevision: task.revision });
+    const result = await exportVideoTask(taskId, { root: data, expectedRevision: task.revision });
+    const encodedId = encodeURIComponent(taskId);
+    return {
+      task: publicTask(result.task),
+      export: {
+        ...result.export,
+        videoUrl: `/api/tasks/${encodedId}/video-exports/${encodeURIComponent(result.export.version)}/video`,
+        manifestUrl: `/api/tasks/${encodedId}/video-exports/${encodeURIComponent(result.export.version)}/manifest`,
+        downloadUrl: `/api/tasks/${encodedId}/video-exports/${encodeURIComponent(result.export.version)}/video`,
+      },
+    };
+  }
+
   function sameApproval(left, right) {
     return Boolean(left && right
       && left.version === right.version
@@ -986,6 +1063,121 @@ export function createStudioServer({
 
   async function actionTask(taskId, action, body) {
     const { id } = await requireTask(taskId);
+    if (action === 'adopt-canvas-result') {
+      const allowedFields = new Set(['expectedRevision', 'requestId', 'userText', 'operationId', 'imageIndex', 'page']);
+      if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+        throw error('ERR_MECHANICAL_ADOPTION_INPUT', '机械成品采用字段无效');
+      }
+      const expectedRevision = requiredRevision(body.expectedRevision);
+      const requestId = assertUuid(body.requestId, 'requestId');
+      const operationId = assertUuid(body.operationId, 'operationId');
+      if (!Number.isInteger(body.imageIndex) || body.imageIndex < 0
+        || !Number.isInteger(body.page) || body.page < 1
+        || typeof body.userText !== 'string' || !body.userText.trim() || body.userText.length > 20000) {
+        throw error('ERR_MECHANICAL_ADOPTION_INPUT', '机械成品采用字段无效');
+      }
+      assertNoCredentials(body.userText, '机械成品采用授权');
+      return jobs.withMutation(`task:${id}`, async () => {
+        const adopted = await adoptCanvasResult(id, {
+          expectedRevision,
+          requestId,
+          operationId,
+          imageIndex: body.imageIndex,
+          page: body.page,
+          workType: 'mechanical',
+          authorization: { by: '本机用户', note: body.userText },
+        }, { root: data });
+        return { ...adopted, task: publicTask(adopted.task) };
+      });
+    }
+    if (action === 'save-logo-variant') {
+      const allowed = new Set(['expectedRevision', 'operationId', 'imageIndex', 'title']);
+      if (Object.keys(body).some((key) => !allowed.has(key)) || !Number.isInteger(body.expectedRevision)
+        || !UUID.test(body.operationId || '') || !Number.isInteger(body.imageIndex) || body.imageIndex < 0
+        || (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim()))) {
+        throw error('ERR_LOGO_VARIANT_INPUT', 'Logo 素材保存字段无效');
+      }
+      const result = await jobs.withMutation(`task:${id}`, () => saveLogoVariant(id, body, { root: data }));
+      return { asset: publicAsset(result.asset), replayed: result.replayed };
+    }
+    if (action === 'write-video-plan') {
+      const allowed = new Set(['expectedRevision', 'plan']);
+      if (Object.keys(body).some((key) => !allowed.has(key)) || !Number.isInteger(body.expectedRevision)
+        || !body.plan || typeof body.plan !== 'object' || Array.isArray(body.plan)) {
+        throw error('ERR_VIDEO_PLAN_INPUT', '视频方案字段无效');
+      }
+      const current = await readTask(id, data);
+      if (current.revision !== body.expectedRevision) {
+        const stale = error('ERR_TASK_REVISION_CONFLICT', '任务版本已更新，请重新读取', 409);
+        stale.expectedRevision = body.expectedRevision; stale.actualRevision = current.revision; throw stale;
+      }
+      if (typeof canvas?.videoModelInfo !== 'function') throw error('ERR_CANVAS_VIDEO_CONFIG', '视频模型配置不可用', 503);
+      const provider = await canvas.videoModelInfo(id);
+      if (!provider.model || !provider.providerFingerprint) throw error('ERR_CANVAS_VIDEO_CONFIG', '请先配置 MiniMax H3 视频模型服务地址。');
+      const task = await jobs.withMutation(`task:${id}`, () => writeVideoPlan(id, body.plan, {
+        root: data, expectedRevision: body.expectedRevision,
+        model: provider.model, providerFingerprint: provider.providerFingerprint,
+      }));
+      return { task: publicTask(task) };
+    }
+    if (['video-confirm-and-execute', 'video-execute', 'video-resume'].includes(action)) {
+      const allowed = new Set(['expectedRevision', 'version', 'note']);
+      if (Object.keys(body).some((key) => !allowed.has(key)) || !Number.isInteger(body.expectedRevision)
+        || !Number.isInteger(body.version) || body.version < 1
+        || (body.note !== undefined && typeof body.note !== 'string')) throw error('ERR_VIDEO_EXECUTION_INPUT', '视频执行字段无效');
+      let current = await readTask(id, data);
+      if (current.revision !== body.expectedRevision) {
+        const stale = error('ERR_TASK_REVISION_CONFLICT', '任务版本已更新，请重新读取', 409);
+        stale.expectedRevision = body.expectedRevision; stale.actualRevision = current.revision; throw stale;
+      }
+      const video = current.video;
+      const plan = video?.plans?.find((item) => item.version === body.version);
+      const execution = video?.execution;
+      if (!plan || video.version !== body.version || execution?.version !== body.version) {
+        throw error('ERR_VIDEO_EXECUTION_STALE', '视频方案不是当前版本，请重新读取当前镜头方案。', 409);
+      }
+      if (action === 'video-confirm-and-execute') {
+        if (plan.confirmedAt || execution.submitted) throw error('ERR_VIDEO_EXECUTION_STATE', '当前视频方案已确认或已提交；请根据任务状态选择执行或恢复。', 409);
+      } else if (!plan.confirmedAt) throw error('ERR_VIDEO_PLAN_UNCONFIRMED', '视频镜头尚未获得人工确认。');
+      if (action === 'video-execute' && execution.submitted) throw error('ERR_VIDEO_ALREADY_SUBMITTED', '视频请求已提交；请使用恢复操作查询原任务。', 409);
+      if (action === 'video-resume' && !execution.submitted) throw error('ERR_VIDEO_NOT_SUBMITTED', '视频方案尚未提交生成；请确认镜头后执行。', 409);
+      if (typeof canvas?.videoModelInfo !== 'function' || typeof canvas?.videoExecutionOptions !== 'function') {
+        throw error('ERR_CANVAS_VIDEO_UNAVAILABLE', 'Canvas 视频执行配置不可用', 503);
+      }
+      const provider = await canvas.videoModelInfo(id);
+      if (!provider.apiKeyConfigured) throw error('ERR_CANVAS_VIDEO_CONFIG', '请先配置视频 API Key，再继续执行。');
+      return jobs.start({
+        taskId: id,
+        kind: action,
+        run: async ({ signal, onEvent }) => {
+          if (action === 'video-confirm-and-execute') {
+            current = await confirmVideoPlan(id, {
+              version: body.version,
+              by: '本机用户',
+              note: body.note?.trim() || `用户在工作台确认视频镜头 v${body.version} 并开始生成。`,
+            }, { root: data, expectedRevision: body.expectedRevision });
+          } else {
+            current = await readTask(id, data);
+            if (current.revision !== body.expectedRevision) {
+              const stale = error('ERR_TASK_REVISION_CONFLICT', '任务版本已更新，请重新读取后恢复', 409);
+              stale.expectedRevision = body.expectedRevision; stale.actualRevision = current.revision; throw stale;
+            }
+            if (current.video?.version !== body.version || current.video.execution?.version !== body.version
+              || !current.video.plans?.find((item) => item.version === body.version)?.confirmedAt) {
+              throw error('ERR_VIDEO_EXECUTION_STALE', '已确认的视频方案已变化，请重新读取。', 409);
+            }
+          }
+          const options = await canvas.videoExecutionOptions(id, { target: current.video.execution.target });
+          await onEvent({ type: 'status', text: action === 'video-resume' ? '正在查询原视频任务状态；不会重复提交生成。' : '视频方案已确认，正在任务 Canvas 执行。' });
+          return executeVideoTask(id, {
+            ...options, version: body.version, expectedRevision: current.revision,
+            root: data, signal,
+          });
+        },
+        resultView: (result) => ({ taskRevision: result.revision, videoVersion: result.video?.version, videoStatus: result.video?.execution?.status }),
+      });
+    }
+    if (action === 'video-approve-and-export') return approveAndExportVideo(id, body);
     if (action === 'reconcile-canvas') {
       const expectedRevision = requiredRevision(body.expectedRevision);
       if (!canvas || typeof canvas.state !== 'function' || typeof canvas.assertFresh !== 'function') {
@@ -1353,6 +1545,35 @@ export function createStudioServer({
             if (humanIntent === 'delivery') {
               return approveAndExport(taskId, {expectedRevision:currentTask.revision,version:body.displayed.sheetVersion,images:body.displayed.images});
             }
+            if (humanIntent === 'video-plan') {
+              if (typeof canvas?.videoModelInfo !== 'function' || typeof canvas?.videoExecutionOptions !== 'function') {
+                throw error('ERR_CANVAS_VIDEO_UNAVAILABLE', 'Canvas 视频执行配置不可用', 503);
+              }
+              const provider = await canvas.videoModelInfo(taskId);
+              if (!provider.apiKeyConfigured) throw error('ERR_CANVAS_VIDEO_CONFIG', '请先配置视频 API Key，再确认并生成。');
+              currentTask = await confirmVideoPlan(taskId, {
+                version: body.displayed.videoVersion,
+                by: '本机用户',
+                note: `用户对展示的视频镜头方案 v${body.displayed.videoVersion} 明确回复：${body.text}`,
+              }, { root: data, expectedRevision: currentTask.revision });
+              const options = await canvas.videoExecutionOptions(taskId, { target: currentTask.video.execution.target });
+              await onEvent({ type: 'status', text: '已确认当前视频镜头，正在提交到任务 Canvas。' });
+              const generated = await executeVideoTask(taskId, {
+                ...options, version: currentTask.video.version, expectedRevision: currentTask.revision,
+                root: data, signal,
+              });
+              const assistantMessage = await appendConversation(taskId, { role: 'assistant', text: `已按你确认的视频镜头方案 v${generated.video.version} 执行，请在右侧播放检查。` }, data);
+              return { assistantMessage, task: generated };
+            }
+            if (humanIntent === 'video-delivery') {
+              const delivered = await approveAndExportVideo(taskId, {
+                expectedRevision: currentTask.revision,
+                version: body.displayed.videoVersion,
+                sha256: body.displayed.videoSha,
+              });
+              const assistantMessage = await appendConversation(taskId, { role: 'assistant', text: '已按你的确认完成当前视频交付，可下载 MP4 与清单。' }, data);
+              return { ...delivered, assistantMessage };
+            }
             if (humanIntent === 'sheet') {
               if (typeof canvas?.executionOptions !== 'function') throw error('ERR_CANVAS_UNAVAILABLE', 'Canvas 当前不可用', 503);
               const options = await canvas.executionOptions(taskId, {target:currentTask.execution?.target});
@@ -1426,7 +1647,7 @@ export function createStudioServer({
               if (!canvas || typeof canvas.mechanicalOperation !== 'function') throw error('ERR_CANVAS_UNAVAILABLE', 'Canvas 当前不可用', 503);
               const artifactCount = arguments_.operation === 'split'
                 ? (Number.isInteger(arguments_.rows) && Number.isInteger(arguments_.columns) ? arguments_.rows * arguments_.columns : 0)
-                : ['crop', 'resample', 'stitch', 'compose'].includes(arguments_.operation) ? 1 : 0;
+                : ['crop', 'resample', 'stitch', 'compose', 'adapt-logo'].includes(arguments_.operation) ? 1 : 0;
               if (mechanicalAttachments.size + artifactCount > 200) {
                 throw error('ERR_CANVAS_OPERATION_INPUT', '本轮机械图片附件数量超过上限。');
               }
@@ -1440,7 +1661,11 @@ export function createStudioServer({
               const outcome = await canvas.mechanicalOperation(taskId, {
                 operation: arguments_.operation,
                 ...(arguments_.nodeId === undefined ? {} : { nodeId: arguments_.nodeId }),
-                ...(arguments_.image === undefined ? {} : { image: arguments_.image }),
+                ...(arguments_.image === undefined ? {} : { image: {
+                  sourceKind: arguments_.image.sourceKind,
+                  sourceId: arguments_.image.sourceId,
+                  fileOrder: arguments_.image.fileOrder,
+                } }),
                 ...(arguments_.nodeIds === undefined ? {} : { nodeIds: arguments_.nodeIds }),
                 ...(arguments_.direction === undefined ? {} : { direction: arguments_.direction }),
                 ...(arguments_.gap === undefined ? {} : { gap: arguments_.gap }),
@@ -1455,6 +1680,9 @@ export function createStudioServer({
                 ...(arguments_.y === undefined ? {} : { y: arguments_.y }),
                 ...(arguments_.width === undefined ? {} : { width: arguments_.width }),
                 ...(arguments_.height === undefined ? {} : { height: arguments_.height }),
+                ...(arguments_.foreground === undefined ? {} : { foreground: arguments_.foreground }),
+                ...(arguments_.outline === undefined ? {} : { outline: arguments_.outline }),
+                ...(arguments_.plate === undefined ? {} : { plate: arguments_.plate }),
                 ...(expectedSourceHashes.length ? { expectedSourceHashes } : {}),
                 expectedRevision: arguments_.expectedRevision,
                 operationId,
@@ -1474,8 +1702,59 @@ export function createStudioServer({
                 }
                 mechanicalAttachments.set(attachment.fileUrl, attachment);
               }
-              return outcome;
+              const images = Array.isArray(outcome.result.images)
+                ? outcome.result.images.map((image, imageIndex) => ({ ...image, imageIndex }))
+                : undefined;
+              return {
+                ...outcome,
+                operationId,
+                result: { ...outcome.result, operationId, ...(images ? { images } : {}) },
+              };
             };
+            const canvasAdopt = async ({ operationId, imageIndex, page, expectedRevision } = {}) => {
+              if (!UUID.test(operationId || '') || !Number.isInteger(imageIndex) || imageIndex < 0
+                || !Number.isInteger(page) || page < 1 || !Number.isInteger(expectedRevision) || expectedRevision < 1) {
+                throw error('ERR_MECHANICAL_ADOPTION_INPUT', '机械成品采用字段无效');
+              }
+              const adopted = await adoptCanvasResult(taskId, {
+                expectedRevision,
+                requestId: mechanicalAdoptionRequestId(requestId, operationId, imageIndex, page),
+                operationId,
+                imageIndex,
+                page,
+                workType: 'mechanical',
+                authorization: { by: '本机用户', note: userMessage.text },
+              }, { root: data });
+              currentTask = adopted.task;
+              await onEvent({ type: 'status', text: `已将第 ${page} 页机械结果登记为可复核成品；仍需按正常流程逐页检查和确认。` });
+              return adopted;
+            };
+            const writeVideoPlanCallback = async ({ plan, expectedRevision } = {}) => {
+              if (!canvas || typeof canvas.videoModelInfo !== 'function') throw error('ERR_CANVAS_VIDEO_CONFIG', '视频模型配置不可用', 503);
+              const latest = await readTask(taskId, data);
+              if (!Number.isInteger(expectedRevision) || latest.revision !== expectedRevision) {
+                const stale = error('ERR_TASK_REVISION_CONFLICT', '任务版本已更新，请重新读取', 409);
+                stale.expectedRevision = expectedRevision; stale.actualRevision = latest.revision; throw stale;
+              }
+              const provider = await canvas.videoModelInfo(taskId);
+              if (!provider.model || !provider.providerFingerprint) throw error('ERR_CANVAS_VIDEO_CONFIG', '请先配置 MiniMax H3 视频模型服务地址。');
+              const planned = await writeVideoPlan(taskId, plan, {
+                root: data, expectedRevision, model: provider.model, providerFingerprint: provider.providerFingerprint,
+              });
+              currentTask = planned;
+              return { task: planned };
+            };
+            const normalizedUserText = userMessage.text.replace(/\s+/gu, '');
+            const explicitLogoSaveIntent = /(?:素材库|入库|存入)/u.test(normalizedUserText)
+              && !/(?:不要|别|不必|无需|暂不).{0,8}(?:素材库|入库|存入)/u.test(normalizedUserText);
+            const saveLogoVariantCallback = explicitLogoSaveIntent ? async ({ operationId, imageIndex, title, expectedRevision } = {}) => {
+              const latest = await readTask(taskId, data);
+              if (!Number.isInteger(expectedRevision) || latest.revision !== expectedRevision) {
+                const stale = error('ERR_TASK_REVISION_CONFLICT', '任务版本已更新，请重新读取', 409);
+                stale.expectedRevision = expectedRevision; stale.actualRevision = latest.revision; throw stale;
+              }
+              return saveLogoVariant(taskId, { operationId, imageIndex, title, expectedRevision }, { root: data });
+            } : undefined;
             const result = await agent.chat({
               taskId,
               text: humanIntent ? `${userMessage.text}。宿主已记录本次人工需求和参考确认，请继续整理制作单等待人工确认。` : userMessage.text,
@@ -1489,6 +1768,9 @@ export function createStudioServer({
               canvasOperation,
               canvasPreview,
               canvasRegions,
+              canvasAdopt,
+              writeVideoPlan: writeVideoPlanCallback,
+              ...(saveLogoVariantCallback ? { saveLogoVariant: saveLogoVariantCallback } : {}),
             });
             if (typeof result?.text !== 'string') throw error('ERR_AGENT_RESULT', 'Agent 没有返回可显示消息', 500);
             const assistantMessage = await appendConversation(taskId, {
@@ -1500,7 +1782,7 @@ export function createStudioServer({
             }, data);
             return { assistantMessage, task: result.task || await readTask(taskId, data) };
           },
-          resultView: (result) => ({ text: result.assistantMessage.text, taskRevision: result.task?.revision ?? null, ...(result.export ? {downloadUrl:result.export.downloadUrl} : {}) }),
+          resultView: (result) => ({ text: result.assistantMessage.text, taskRevision: result.task?.revision ?? null, ...(result.export ? {downloadUrl:result.export.downloadUrl,videoUrl:result.export.videoUrl,manifestUrl:result.export.manifestUrl} : {}) }),
         });
         return json(response, 202, { job });
       }
@@ -1623,6 +1905,47 @@ export function createStudioServer({
       const type = mimeForFile(record.image.path, 'image/png');
       if (!type.startsWith('image/')) throw error('ERR_IMAGE_TYPE', '当前文件不是图片', 415);
       return sendFile(response, resolved.filePath, { name: `page-${pageNumber}${path.extname(record.image.path) || '.png'}`, type, inline: true, expectedSha: record.image.sha256 });
+    }
+
+    if (segments[1] === 'tasks' && segments.length === 5 && method === 'GET'
+      && segments[3] === 'video-output' && segments[4] === 'current') {
+      const { id, task } = await requireTask(segments[2]);
+      const version = Number(url.searchParams.get('version'));
+      const expectedSha = url.searchParams.get('sha256') || '';
+      if (!Number.isInteger(version) || version < 1 || !/^[a-f0-9]{64}$/i.test(expectedSha)
+        || task.video?.version !== version || task.video?.execution?.version !== version) {
+        throw error('ERR_VIDEO_OUTPUT_STALE', '当前视频展示版本已变化，请重新读取任务。', 409);
+      }
+      const output = await readVideoOutput(id, { root: data });
+      if (output.version !== version || output.sha256 !== expectedSha.toLowerCase()) {
+        throw error('ERR_VIDEO_OUTPUT_STALE', '当前视频文件 SHA-256 已变化，请重新读取任务。', 409);
+      }
+      return sendFile(response, output.path, { name: `video-v${version}.mp4`, type: 'video/mp4', inline: true, expectedSha: output.sha256 });
+    }
+
+    if (segments[1] === 'tasks' && segments.length === 6 && method === 'GET'
+      && segments[3] === 'video-exports') {
+      const { id, task } = await requireTask(segments[2]);
+      const version = segments[4];
+      const fileKind = segments[5];
+      const record = /^export-\d{3,}$/.test(version) ? task.video?.exports?.find((item) => item.version === version) : null;
+      if (!record || !['video', 'manifest'].includes(fileKind)) throw error('ERR_VIDEO_EXPORT_NOT_FOUND', '视频导出不存在', 404);
+      const expectedRelative = fileKind === 'video'
+        ? `videos/exports/${version}/video.mp4`
+        : `videos/exports/${version}/manifest.json`;
+      const recordedRelative = fileKind === 'video' ? record.videoRelativePath : record.manifestRelativePath;
+      const expectedSha = fileKind === 'video' ? record.sha256 : record.manifestSha256;
+      if (recordedRelative !== expectedRelative || !/^[a-f0-9]{64}$/i.test(expectedSha || '')) {
+        throw error('ERR_VIDEO_EXPORT_NOT_FOUND', '视频导出记录无效', 404);
+      }
+      const resolved = await safeFilePath(data, path.posix.join('tasks', id, expectedRelative), path.join('tasks', id));
+      if (await hashFile(resolved.filePath) !== expectedSha.toLowerCase()) throw error('ERR_VIDEO_EXPORT_HASH', '视频导出文件校验失败', 409);
+      return sendFile(response, resolved.filePath, {
+        name: fileKind === 'video' ? `${version}.mp4` : `${version}-manifest.json`,
+        type: fileKind === 'video' ? 'video/mp4' : 'application/json',
+        inline: fileKind === 'manifest',
+        expectedSha: expectedSha.toLowerCase(),
+      });
     }
 
     if (segments[1] === 'tasks' && segments.length === 7 && method === 'GET'

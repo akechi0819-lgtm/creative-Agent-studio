@@ -65,7 +65,7 @@ export function CanvasToolPanel() {
             onConnectionRecovered: () => setConnectionError(""),
             onToolCall: event => {
                 const call = JSON.parse(event.data) as ToolCall;
-                if (confirmRef.current && ["canvas_apply_ops", "canvas_crop_image", "canvas_split_image", "canvas_resample_image", "canvas_stitch_images", "canvas_compose_images", "canvas_import_image", "workbench_image_generate"].includes(call.name)) {
+                if (confirmRef.current && ["canvas_apply_ops", "canvas_crop_image", "canvas_split_image", "canvas_resample_image", "canvas_stitch_images", "canvas_compose_images", "canvas_adapt_logo", "canvas_import_image", "workbench_image_generate"].includes(call.name)) {
                     if (pendingRef.current) { void post("/canvas/result", {requestId:call.requestId,error:"已有待确认操作"}).catch(() => {}); return; }
                     pendingRef.current=call; setPending(call);
                 } else void runRef.current?.(call);
@@ -85,7 +85,7 @@ export function CanvasToolPanel() {
                     if (!node || node.type !== "image") throw new Error("图片节点不存在");
                     const dataUrl = await imageToDataUrl({storageKey:node.metadata?.storageKey, url:node.metadata?.content});
                     result = {nodeId:node.id, dataUrl, width:node.metadata?.naturalWidth, height:node.metadata?.naturalHeight};
-                } else if (call.name === "canvas_crop_image" || call.name === "canvas_split_image" || call.name === "canvas_resample_image" || call.name === "canvas_stitch_images" || call.name === "canvas_compose_images" || call.name === "canvas_import_image") {
+                } else if (call.name === "canvas_crop_image" || call.name === "canvas_split_image" || call.name === "canvas_resample_image" || call.name === "canvas_stitch_images" || call.name === "canvas_compose_images" || call.name === "canvas_adapt_logo" || call.name === "canvas_import_image") {
                     result = await context.runImageOperation(toCanvasImageOperationRequest(call));
                     await connection.writeState(context.getSnapshot());
                 } else throw new Error("未知绘图工具：" + call.name);
@@ -145,6 +145,15 @@ function toCanvasImageOperationRequest(call: ToolCall): CanvasImageOperationRequ
     }
     if (call.name === "canvas_compose_images") {
         return { operation: "compose", nodeId: String(input.nodeId || ""), layers: Array.isArray(input.layers) ? input.layers as Extract<CanvasImageOperationRequest, { operation: "compose" }>['layers'] : [] };
+    }
+    if (call.name === "canvas_adapt_logo") {
+        return {
+            operation: "adapt-logo",
+            nodeId: String(input.nodeId || ""),
+            ...(typeof input.foreground === "string" ? { foreground: input.foreground } : {}),
+            ...(input.outline && typeof input.outline === "object" ? { outline: input.outline as Extract<CanvasImageOperationRequest, { operation: "adapt-logo" }>['outline'] } : {}),
+            ...(input.plate && typeof input.plate === "object" ? { plate: input.plate as Extract<CanvasImageOperationRequest, { operation: "adapt-logo" }>['plate'] } : {}),
+        };
     }
     return { operation: "import", nodeId: String(input.nodeId || ""), title: String(input.title || ""), dataUrl: String(input.dataUrl || "") };
 }

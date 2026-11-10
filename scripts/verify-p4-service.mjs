@@ -309,7 +309,7 @@ try {
   const operationId = randomUUID();
   const imported = await canvasManager.mechanicalOperation(task.id, {
     operation: 'import',
-    image: { sourceId: imageSource.id, fileOrder: 1 },
+    image: { sourceKind: 'task-upload', sourceId: imageSource.id, fileOrder: 1 },
     expectedRevision: uploadedTask.revision,
     operationId,
     requestId: randomUUID(),

@@ -5,12 +5,13 @@ import {mkdtemp,rm,writeFile,readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import {createTask,readTask,confirmInputs,setSheet,confirmSheet,attachTaskFiles,setSources,withTask} from '../src/creative/tasks.mjs';
+import {createTask,readTask,confirmInputs,setSheet,confirmSheet,attachTaskFiles,setSources,setReferences,withTask} from '../src/creative/tasks.mjs';
 import {cleanAsset,confirmAsset,importAsset} from '../src/assets/library.mjs';
 import {createAssistantMessage,createSystemMessage,createToolResultMessage,createUserMessage} from '../adapters/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js';
 import {createDshContext,createStudioAgent} from '../adapters/dsh/runtime.mjs';
+import {writeVideoPlan} from '../src/creative/video.mjs';
 
-async function fixture(t,{fail=false,slow=false,duplicateReview=false,askQuestions=false,searchQuery=null,duplicateSearch=false,maxRequestBytes}={}){
+async function fixture(t,{fail=false,slow=false,duplicateReview=false,askQuestions=false,searchQuery=null,duplicateSearch=false,videoPlan=false,maxRequestBytes}={}){
   const root=await mkdtemp(os.tmpdir()+'/studio-p3-dsh-');
   const requests=[];
   const requestSizes=[];
@@ -27,11 +28,13 @@ async function fixture(t,{fail=false,slow=false,duplicateReview=false,askQuestio
     const review=body.tools.some(x=>x.function.name==='studio_record_image_review');
     const ask=askQuestions&&body.tools.some(x=>x.function.name==='studio_ask_questions');
     const search=Boolean(searchQuery)&&body.tools.some(x=>x.function.name==='studio_search_assets');
+    const writeVideo=videoPlan&&body.tools.some(x=>x.function.name==='studio_write_video_plan');
     res.writeHead(200,{'content-type':'text/event-stream'});
     const payload=review?{decision:'revise',notes:{文字:'测试替身固定返回待核，未模拟通过',可读性:'不可判断，需修改',一致性:'待核',主题:'待核',修改位置:'整页'}}:{audience:'亲子家庭',format:'三页图文',topic:'阅读指南'};
     const questionPayload={questions:[{id:'audience',question:'内容主要面向谁？',options:[{id:'parents',label:'家长'},{id:'students',label:'学生'}],allowOther:true}]};
-    const toolName=check?'studio_connection_probe':review?'studio_record_image_review':ask?'studio_ask_questions':search?'studio_search_assets':'studio_update_brief';
-    const argumentsValue=check?JSON.stringify({colors:'绿色背景、红色方块'}):search?JSON.stringify({query:searchQuery}):JSON.stringify({payload:JSON.stringify(ask?questionPayload:payload)});
+    const toolName=check?'studio_connection_probe':review?'studio_record_image_review':ask?'studio_ask_questions':search?'studio_search_assets':writeVideo?'studio_write_video_plan':'studio_update_brief';
+    const videoPlanValue={prompt:'由窗口移向桌面，手翻开书页',seconds:6,ratio:'16:9',resolution:'1080p'};
+    const argumentsValue=check?JSON.stringify({colors:'绿色背景、红色方块'}):search?JSON.stringify({query:searchQuery}):writeVideo?JSON.stringify(videoPlanValue):JSON.stringify({payload:JSON.stringify(ask?questionPayload:payload)});
     const delta=resultSeen?{content:ask?'请在上方点选回答即可。':'已整理需求，请在工作台检查后确认。'}:{tool_calls:[{index:0,id:'mock-call-1',type:'function',function:{name:toolName,arguments:argumentsValue}}]};
     if(duplicateSearch&&search&&!resultSeen)delta.tool_calls.push({...structuredClone(delta.tool_calls[0]),index:1,id:'mock-call-2'});
     if(duplicateReview&&review&&!resultSeen){delta.tool_calls.push({...structuredClone(delta.tool_calls[0]),index:1,id:'mock-call-2'});}
@@ -106,6 +109,59 @@ test('DSH emits structured question events through its real tool loop',async t=>
   assert.ok(f.requests[0].tools.some(tool=>tool.function.name==='studio_ask_questions'));
   assert.ok(f.requests.some(request=>request.messages.some(message=>message.role==='tool')));
   assert.equal((await readTask(task.id,f.root)).inputConfirmation,null);
+});
+
+test('DSH video tool only writes a pending storyboard; host callback records H3 identity and cannot confirm or execute',async t=>{
+  const f=await fixture(t,{videoPlan:true});
+  const task=await createTask({title:'独立视频镜头',brief:'短视频镜头方案'},f.root);
+  let callbackCount=0;
+  const result=await f.agent.chat({
+    taskId:task.id,
+    text:'请把这段需求整理成视频镜头方案，先不要生成。',
+    expectedRevision:task.revision,
+    writeVideoPlan:async({plan,expectedRevision})=>{
+      callbackCount++;
+      return {task:await writeVideoPlan(task.id,plan,{root:f.root,expectedRevision,model:'studio-video::minimax_h3',providerFingerprint:'a'.repeat(64)})};
+    },
+  });
+  assert.equal(callbackCount,1);
+  const saved=await readTask(task.id,f.root);
+  assert.equal(saved.video.version,1);
+  assert.equal(saved.video.plans[0].prompt,'由窗口移向桌面，手翻开书页');
+  assert.equal(saved.video.plans[0].confirmedAt,null);
+  assert.equal(saved.video.execution.submitted,false);
+  const registered=f.requests[0].tools.map(item=>item.function.name);
+  assert.ok(registered.includes('studio_write_video_plan'));
+  assert.equal(registered.some(name=>/video.*(?:confirm|execute|review|approve|export)/iu.test(name)),false);
+  assert.equal(typeof result.text,'string');
+});
+
+test('DSH canvas tool schema exposes only the selected logo and frozen reference fields',async t=>{
+  const f=await fixture(t);
+  let task=await createTask({title:'机械工具 schema',brief:'透明 Logo 适配'},f.root);
+  const asset=await confirmedKetAsset(f.root,88);
+  task=await setReferences(task.id,[{kind:'asset',assetId:asset.id,assetRevision:asset.revision,purpose:'用户保留的Logo原件',factBoundary:'仅用作Logo适配原件',decision:'retained'}],{root:f.root,expectedRevision:task.revision});
+  await f.agent.chat({
+    taskId:task.id,text:'请整理当前Logo任务。',expectedRevision:task.revision,
+    canvasState:async()=>({nodes:[],selection:[]}),
+    canvasOperation:async()=>({task:await readTask(task.id,f.root),result:{images:[]},attachments:[]}),
+    writeVideoPlan:async()=>({task:await readTask(task.id,f.root)}),
+    saveLogoVariant:async()=>({asset:{id:asset.id,title:asset.title,revision:asset.revision,status:asset.status,files:[]},replayed:false}),
+  });
+  const tools=f.requests[0].tools.map(item=>item.function);
+  const mechanical=tools.find(item=>item.name==='studio_canvas_operation');
+  assert.ok(mechanical);
+  assert.ok(mechanical.parameters.properties.operation.description.includes('adapt-logo'));
+  assert.deepEqual(mechanical.parameters.properties.image.properties.sourceKind.enum,['task-upload','task-reference']);
+  assert.ok(mechanical.parameters.properties.image.required.includes('sourceKind'));
+  assert.ok(mechanical.parameters.properties.image.properties.sourceKind.description.includes('availableReferenceImages'));
+  assert.ok(mechanical.parameters.properties.foreground.description.includes('保留 alpha'));
+  const taskContext=JSON.stringify(f.requests[0].messages);
+  assert.ok(taskContext.includes('availableReferenceImages'));
+  assert.ok(taskContext.includes(asset.id));
+  assert.ok(tools.some(item=>item.name==='studio_write_video_plan'));
+  assert.ok(tools.some(item=>item.name==='studio_save_logo_variant'));
+  assert.ok(!tools.some(item=>/video.*(?:execute|approve|export)/iu.test(item.name)));
 });
 
 test('DSH search falls back from a phrase, stages five pending assets once, and keeps library payloads out of model context',async t=>{

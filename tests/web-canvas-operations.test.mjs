@@ -5,8 +5,10 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { attachTaskFiles, createTask, readTask, setSources } from '../src/creative/tasks.mjs';
-import { runCanvasOperation } from '../src/creative/canvas-operations.mjs';
+import { createCanvas } from '@napi-rs/canvas';
+import { attachTaskFiles, createTask, readTask, setAssetSources, setSources } from '../src/creative/tasks.mjs';
+import { runCanvasOperation, saveLogoVariant } from '../src/creative/canvas-operations.mjs';
+import { cleanAsset, confirmAsset, deleteAsset, listAssets } from '../src/assets/library.mjs';
 import { appendConversation, readConversation } from '../src/web/jobs.mjs';
 import { createCanvasManager } from '../src/web/canvas.mjs';
 import { listenStudioServer } from '../src/web/server.mjs';
@@ -115,6 +117,26 @@ async function createFixture(t, { secondTask = false, regionDetector, agent } = 
       });
       const operation = name === 'canvas_crop_image' ? 'crop' : name === 'canvas_split_image' ? 'split' : 'resample';
       const response = { operation, sourceNodeId: input.nodeId, images };
+      return overrides.has(name) ? overrides.get(name)(response) : response;
+    }
+    if (name === 'canvas_adapt_logo') {
+      imageOperations.push({ name, projectId: config.projectId, input: structuredClone(input) });
+      const source = state.nodes.find((candidate) => candidate.id === input.nodeId && candidate.type === 'image');
+      const padding = (input.outline?.width || 0) + (input.plate?.padding || 0);
+      const width = source.metadata.naturalWidth + padding * 2;
+      const height = source.metadata.naturalHeight + padding * 2;
+      const output = createCanvas(width, height);
+      const context = output.getContext('2d');
+      if (input.plate) {
+        context.fillStyle = input.plate.color;
+        context.fillRect(0, 0, width, height);
+      }
+      context.fillStyle = input.foreground || input.outline?.color || '#12814c';
+      context.fillRect(padding + 1, padding + 1, Math.max(1, width - 2 * padding - 2), Math.max(1, height - 2 * padding - 2));
+      const nodeId = `derived-logo-${imageOperations.length}`;
+      const bytes = output.toBuffer('image/png');
+      state.nodes.push({ id: nodeId, type: 'image', title: 'Logo 变体', position: { x: 500, y: 20 }, width, height, metadata: { content: dataUrl(bytes), naturalWidth: width, naturalHeight: height } });
+      const response = { operation: 'adapt-logo', sourceNodeId: input.nodeId, images: [{ nodeId, width, height, padding }] };
       return overrides.has(name) ? overrides.get(name)(response) : response;
     }
     if (name === 'canvas_stitch_images') {
@@ -228,6 +250,21 @@ async function addUploadedPng(f, task = f.task) {
     title: '本轮上传图片',
   }, { root: f.root, expectedRevision: task.revision });
   return { task: updated, source: updated.sources.at(-1) };
+}
+
+async function createCropOperation(f, task, userText = '裁切机械候选图。') {
+  const operationId = crypto.randomUUID();
+  const result = await f.canvas.mechanicalOperation(task.id, {
+    operation: 'crop',
+    nodeId: `image-${task.id}`,
+    crop: { x: 0, y: 0, width: 1, height: 1 },
+    expectedRevision: task.revision,
+    operationId,
+    requestId: crypto.randomUUID(),
+    callId: crypto.randomUUID(),
+    userText,
+  });
+  return { operationId, result };
 }
 
 test('agentState returns only enumerated node status without Canvas error details or metadata', async (t) => {
@@ -369,6 +406,254 @@ test('Web mechanical crop returns only task-local hashed artifacts with preview,
   const splitDownload = await f.request(assistantMessage.attachments[4].downloadUrl);
   assert.equal(splitDownload.response.status, 200);
   assert.deepEqual(Buffer.from(splitDownload.data), PNG_BLUE);
+});
+
+test('adapt-logo result can be cleaned, human confirmed and imported by retained reference in another task', async (t) => {
+  const f = await createFixture(t, { secondTask: true });
+  const opaqueOperationId = crypto.randomUUID();
+  await assert.rejects(f.canvas.mechanicalOperation(f.task.id, {
+    operation: 'adapt-logo',
+    nodeId: `image-${f.task.id}`,
+    foreground: '#14834a',
+    expectedRevision: f.task.revision,
+    operationId: opaqueOperationId,
+    requestId: crypto.randomUUID(),
+    callId: crypto.randomUUID(),
+    userText: '保留透明度并适配 Logo。',
+  }), (error) => error.code === 'ERR_CANVAS_OPERATION_INPUT' && /透明原件/.test(error.message));
+  assert.equal(f.imageOperations.some((entry) => entry.name === 'canvas_adapt_logo'), false);
+  const failedLedger = JSON.parse(await fs.readFile(path.join(f.root, 'tasks', f.task.id, 'canvas-operations', `${opaqueOperationId}.json`), 'utf8'));
+  assert.equal(failedLedger.status, 'failed');
+  assert.match(failedLedger.error.message, /透明原件/);
+
+  const logoCanvas = createCanvas(6, 6);
+  const logoContext = logoCanvas.getContext('2d');
+  logoContext.fillStyle = '#21a45d';
+  logoContext.fillRect(2, 2, 2, 2);
+  const logoBytes = logoCanvas.toBuffer('image/png');
+  const logoNodeId = 'transparent-logo-source';
+  f.canvases.get(f.task.id).nodes.push({
+    id: logoNodeId,
+    type: 'image',
+    title: '透明 Logo 原件',
+    position: { x: 80, y: 120 },
+    width: 6,
+    height: 6,
+    metadata: { content: dataUrl(logoBytes), naturalWidth: 6, naturalHeight: 6 },
+  });
+  const operationId = crypto.randomUUID();
+  const operation = await f.canvas.mechanicalOperation(f.task.id, {
+    operation: 'adapt-logo',
+    nodeId: logoNodeId,
+    foreground: '#14834a',
+    outline: { color: '#ffffff', width: 2 },
+    expectedRevision: f.task.revision,
+    operationId,
+    requestId: crypto.randomUUID(),
+    callId: crypto.randomUUID(),
+    userText: '保留透明度，将绿色 Logo 加细白边。',
+  });
+  assert.equal(operation.result.operation, 'adapt-logo');
+  assert.equal(operation.result.images[0].padding, 2);
+  assert.equal(operation.result.images[0].width, 10);
+  assert.equal(operation.result.images[0].height, 10);
+  assert.deepEqual(f.imageOperations.at(-1), {
+    name: 'canvas_adapt_logo',
+    projectId: f.task.id,
+    input: { nodeId: logoNodeId, foreground: '#14834a', outline: { color: '#ffffff', width: 2 } },
+  });
+
+  const saved = await saveLogoVariant(f.task.id, {
+    operationId,
+    imageIndex: 0,
+    expectedRevision: f.task.revision,
+    title: '透明绿标白边',
+  }, { root: f.root });
+  assert.equal(saved.asset.status, 'staged');
+  assert.equal(saved.asset.confirmation, null);
+  assert.equal(saved.asset.source.kind, 'logo-variant');
+  assert.equal(saved.asset.source.taskId, f.task.id);
+  assert.equal(saved.asset.source.operationId, operationId);
+  assert.equal(saved.asset.source.imageIndex, 0);
+  assert.equal(saved.asset.source.originalSha256, digest(logoBytes));
+  assert.deepEqual(saved.asset.source.parameters, { foreground: '#14834a', outline: { color: '#ffffff', width: 2 } });
+  assert.equal(saved.asset.source.outputSha256, operation.result.images[0].sha256);
+  assert.equal(saved.asset.files[0].sha256, operation.result.images[0].sha256);
+
+  const replay = await saveLogoVariant(f.task.id, {
+    operationId,
+    imageIndex: 0,
+    expectedRevision: f.task.revision,
+    title: '标题不改变同一操作的复用身份',
+  }, { root: f.root });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.asset.id, saved.asset.id);
+  assert.equal((await listAssets({}, { root: f.root }))
+    .filter((asset) => asset.source?.kind === 'logo-variant' && asset.source.operationId === operationId).length, 1);
+
+  let reviewedLogo = await cleanAsset(saved.asset.id, {
+    root: f.root,
+    expectedRevision: saved.asset.revision,
+    cleaner: async ({ title, body }) => ({ title, body, summary: '隔离测试 Logo 变体', tags: ['测试'], fileResults: [] }),
+  });
+  assert.equal(reviewedLogo.status, 'needs_review');
+  const confirmedLogo = await confirmAsset(saved.asset.id, {
+    by: '测试用户', note: '已人工核对 Logo 变体内容与文件。',
+  }, { root: f.root, expectedRevision: reviewedLogo.revision });
+  assert.equal(confirmedLogo.status, 'confirmed');
+
+  const downstream = f.tasks[1];
+  let referenceTask = await setAssetSources(downstream.id, [{
+    assetId: confirmedLogo.id,
+    assetRevision: confirmedLogo.revision,
+    decision: 'pending',
+    purpose: '跨任务复用已确认的 Logo 变体',
+    factBoundary: '仅使用冻结图片原件，不推断品牌事实。',
+  }], { root: f.root, expectedRevision: downstream.revision });
+  const reference = referenceTask.sources[0];
+  const importReference = (expectedRevision, operationId = crypto.randomUUID()) => f.canvas.mechanicalOperation(downstream.id, {
+    operation: 'import',
+    image: { sourceKind: 'task-reference', sourceId: reference.id, fileOrder: 1 },
+    expectedRevision,
+    operationId,
+    requestId: crypto.randomUUID(),
+    callId: operationId,
+    userText: '将已保留的 Logo 参考导入画布。',
+  });
+  await assert.rejects(importReference(referenceTask.revision), (error) => error.code === 'ERR_CANVAS_OPERATION_INPUT');
+
+  referenceTask = await setAssetSources(downstream.id, [{
+    assetId: confirmedLogo.id,
+    assetRevision: confirmedLogo.revision,
+    decision: 'retained',
+    purpose: '跨任务复用已确认的 Logo 变体',
+    factBoundary: '仅使用冻结图片原件，不推断品牌事实。',
+  }], { root: f.root, expectedRevision: referenceTask.revision });
+  const retainedReference = referenceTask.sources[0];
+  const importOperationId = crypto.randomUUID();
+  const imported = await f.canvas.mechanicalOperation(downstream.id, {
+    operation: 'import',
+    image: { sourceKind: 'task-reference', sourceId: retainedReference.id, fileOrder: 1 },
+    expectedRevision: referenceTask.revision,
+    operationId: importOperationId,
+    requestId: crypto.randomUUID(),
+    callId: importOperationId,
+    userText: '将已保留的 Logo 参考导入画布。',
+  });
+  assert.equal(f.imageOperations.at(-1).projectId, downstream.id);
+  assert.equal(f.imageOperations.at(-1).name, 'canvas_import_image');
+  assert.equal(f.imageOperations.at(-1).input.dataUrlSha256, confirmedLogo.files[0].sha256);
+  const importLedger = JSON.parse(await fs.readFile(
+    path.join(f.root, 'tasks', downstream.id, 'canvas-operations', `${importOperationId}.json`), 'utf8',
+  ));
+  assert.deepEqual(importLedger.sourceBinding, {
+    type: 'task-reference', sourceId: retainedReference.id, fileOrder: 1, sha256: confirmedLogo.files[0].sha256,
+  });
+  assert.deepEqual(imported.result.images.map(({ nodeId }) => nodeId), [imported.result.sourceNodeId]);
+
+  const composeOperationId = crypto.randomUUID();
+  const composed = await f.canvas.mechanicalOperation(downstream.id, {
+    operation: 'compose',
+    nodeId: `image-${downstream.id}`,
+    layers: [{ nodeId: imported.result.sourceNodeId, x: 0, y: 0, width: 1, height: 1 }],
+    expectedRevision: referenceTask.revision,
+    operationId: composeOperationId,
+    requestId: crypto.randomUUID(),
+    callId: composeOperationId,
+    userText: '把导入的 Logo 贴到当前画布底图。',
+  });
+  assert.equal(composed.result.operation, 'compose');
+  assert.deepEqual(composed.result.sourceNodeIds, [`image-${downstream.id}`, imported.result.sourceNodeId]);
+
+  await deleteAsset(saved.asset.id, { root: f.root, expectedRevision: confirmedLogo.revision });
+  const deletedReplay = await saveLogoVariant(f.task.id, {
+    operationId,
+    imageIndex: 0,
+    expectedRevision: f.task.revision,
+  }, { root: f.root });
+  assert.equal(deletedReplay.replayed, true);
+  assert.equal(deletedReplay.asset.status, 'deleted');
+  assert.equal((await listAssets({ includeDeleted: true }, { root: f.root }))
+    .filter((asset) => asset.source?.kind === 'logo-variant' && asset.source.operationId === operationId).length, 1);
+});
+
+test('chat adoption binds current user text, request and expected revision, then exposes the adopted preview', async (t) => {
+  const requestId = crypto.randomUUID();
+  const userText = '请把刚才的机械裁切结果采用为第1页候选成品。';
+  let callbackArguments;
+  const agent = {
+    chat: async ({ taskId, text, expectedRevision, canvasOperation, canvasAdopt }) => {
+      assert.equal(text, userText);
+      const operationId = crypto.randomUUID();
+      const operation = await canvasOperation({
+        operation: 'crop',
+        nodeId: `image-${taskId}`,
+        crop: { x: 0, y: 0, width: 1, height: 1 },
+        expectedRevision,
+        operationId,
+      });
+      assert.equal(operation.operationId, operationId);
+      assert.equal(operation.result.images[0].imageIndex, 0);
+      callbackArguments = { operationId, imageIndex: 0, page: 1, expectedRevision };
+      const adopted = await canvasAdopt(callbackArguments);
+      return { text: '已登记为候选成品，尚需人工复核。', task: adopted.task };
+    },
+  };
+  const f = await createFixture(t, { agent });
+  const before = await readTask(f.task.id, f.root);
+  const started = await f.request(`/api/tasks/${f.task.id}/chat`, {
+    method: 'POST',
+    json: { requestId, expectedRevision: before.revision, model: 'fixture-model', text: userText },
+  });
+  assert.equal(started.response.status, 202);
+  const job = await waitFor(async () => {
+    const current = await f.request(`/api/jobs/${started.data.job.id}`);
+    return ['succeeded', 'failed', 'cancelled'].includes(current.data.job.status) ? current.data.job : null;
+  }, 'chat mechanical adoption job did not finish');
+  assert.equal(job.status, 'succeeded', JSON.stringify(job.error));
+  assert.deepEqual(callbackArguments, {
+    operationId: callbackArguments.operationId,
+    imageIndex: 0,
+    page: 1,
+    expectedRevision: before.revision,
+  });
+
+  const detail = await f.request(`/api/tasks/${f.task.id}`);
+  const adopted = detail.data.task;
+  const adoption = adopted.sheets.at(-1).mechanicalAdoption;
+  assert.equal(adoption.adoptionApproval.by, '本机用户');
+  assert.equal(adoption.adoptionApproval.note, userText);
+  assert.match(adoption.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  assert.notEqual(adoption.requestId, requestId, 'each result adoption uses a stable child request ID');
+  assert.equal(adopted.inputConfirmation, null);
+  assert.equal(adopted.finalApproval, null);
+  assert.equal(adopted.sheetAuthorized, true);
+  assert.equal(adopted.execution.pages[0].productOrigin.operationId, callbackArguments.operationId);
+  const preview = await f.request(adopted.execution.pages[0].image.imageUrl);
+  assert.equal(preview.response.status, 200);
+  assert.deepEqual(Buffer.from(preview.data), PNG_BLUE);
+  assert.equal(f.generationCalls.length, 0, 'adopting the mechanical image does not call image generation');
+});
+
+test('adopt-canvas-result action fixes the actor and rejects caller-supplied authorization fields', async (t) => {
+  const f = await createFixture(t);
+  const before = await readTask(f.task.id, f.root);
+  const { operationId } = await createCropOperation(f, before, '裁切结果供用户检查。');
+  const requestId = crypto.randomUUID();
+  const userText = '采用裁切结果作为第1页候选。';
+  const adopted = await f.request(`/api/tasks/${f.task.id}/adopt-canvas-result`, {
+    method: 'POST',
+    json: { expectedRevision: before.revision, requestId, userText, operationId, imageIndex: 0, page: 1 },
+  });
+  assert.equal(adopted.response.status, 200, JSON.stringify(adopted.data));
+  assert.equal(adopted.data.task.sheets[0].mechanicalAdoption.adoptionApproval.by, '本机用户');
+  assert.equal(adopted.data.task.sheets[0].mechanicalAdoption.adoptionApproval.note, userText);
+  const rejected = await f.request(`/api/tasks/${f.task.id}/adopt-canvas-result`, {
+    method: 'POST',
+    json: { expectedRevision: adopted.data.task.revision, requestId: crypto.randomUUID(), userText, operationId, imageIndex: 0, page: 1, by: 'Codex Agent' },
+  });
+  assert.equal(rejected.response.status, 400);
+  assert.equal(rejected.data.error.code, 'ERR_MECHANICAL_ADOPTION_INPUT');
 });
 
 test('image-region results are image-only, scoped to the current task, and rechecked after detection', async (t) => {
@@ -624,7 +909,7 @@ test('import is task scoped, hash bound, stable across repeats, and does not cre
   const { task, source } = await addUploadedPng(f);
   const importOperationId = crypto.randomUUID();
   const importPayload = {
-    operation: 'import', image: { sourceId: source.id, fileOrder: 1 }, expectedRevision: task.revision,
+    operation: 'import', image: { sourceKind: 'task-upload', sourceId: source.id, fileOrder: 1 }, expectedRevision: task.revision,
     operationId: importOperationId, requestId: crypto.randomUUID(), callId: importOperationId,
     userText: '把本轮上传图片导入当前画布。',
   };
