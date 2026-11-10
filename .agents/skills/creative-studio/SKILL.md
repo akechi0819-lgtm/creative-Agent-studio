@@ -1,26 +1,27 @@
 ---
 name: creative-studio
-description: 在本仓库使用共享 CLI 完成经用户确认的单张海报或多页图文任务；当前阶段与版本边界以工程进度为准；设备体验和上游模型能力按证据范围记录。
+description: 在本仓库使用共享 CLI 完成经用户确认的图文、机械标识或独立短视频任务；当前阶段与版本边界以工程进度为准；设备体验和上游模型能力按证据范围记录。
 ---
 
-当前为公司版，先读 `docs/公司版接入.md`。公司素材检索使用 `node scripts/company.mjs search @payload.json`，含 taskId、expectedRevision、query 及明确标签／必需条件；候选进入待选区，不代表人工保留。用户保留时通过共享 `studio set-references` 下载本次原件并冻结来源。公司库未配置、无权限、无结果时如实说明，不拿本机结果替代。只有用户明确选择本机素材才用 assets CLI。连接配置使用 company CLI 的 config-show/config-save，凭据输入保存在仓库外，不读取或覆盖旧全局凭据。Canvas 与个人版共用本地实现，由任务启动器准备，不连接远端画布。基础／生图 API 均在本机公司工作台配置；本地 Canvas 自动使用已保存图片配置，不要求第二次填写。词库辅助检查使用 `company check-copy`，命中逐项交由用户判断，不自动批准。
+当前为公司版，先读 `docs/公司版接入.md`。公司素材检索使用 `node scripts/company.mjs search @payload.json`，含 taskId、expectedRevision、query 及明确标签／必需条件；候选进入待选区，不代表人工保留。用户保留时通过共享 `studio set-references` 下载本次原件并冻结来源。公司库未配置、无权限、无结果时如实说明，不拿本机结果替代。只有用户明确选择本机素材才用 assets CLI。连接配置使用 company CLI 的 config-show/config-save，凭据输入保存在仓库外，不读取或覆盖旧全局凭据。Canvas 与个人版共用本地实现，由任务启动器准备，不连接远端画布。基础／图片 API 在本机公司工作台配置，可选视频 API 作为独立渠道配置；本地 Canvas 自动使用已保存的图片配置，不要求第二次填写。词库辅助检查使用 `company check-copy`，命中逐项交由用户判断，不自动批准。
 
+先读 `docs/代理宿主使用.md`，阶段状态与版本差异见 `docs/工程进度.md`。P0—P5主体按各报告范围验收，后续Mac隔离启动修复及普通设备待测单独记录；不把历史测试扩张成所有模型或账号能力。首次准备从仓库根目录使用 `./Start.command prepare`（Windows PowerShell 使用 `.\Start.cmd prepare`），不启动Web UI。代理宿主提供对话与推理，本地Canvas使用项目已保存的图片／独立视频API；不调用宿主内置生图，也不通过命令另启第二个代理会话。
 
-先读 `docs/代理宿主使用.md`，阶段状态与版本差异见 `docs/工程进度.md`。P0—P5主体按各报告范围验收，后续Mac隔离启动修复及普通设备待测单独记录；不把历史测试扩张成所有模型或账号能力。首次准备从仓库根目录使用 `./Start.command prepare`（Windows PowerShell 使用 `.\Start.cmd prepare`），不启动Web UI。代理宿主提供对话与推理，本地Canvas使用项目已保存的生图API；不调用宿主内置生图，也不通过命令另启第二个代理会话。
-
-代理宿主入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过 `@payload.json` 文件提供，不要把 JSON 内嵌到 shell 命令。先用 `list` 或 `show TASK_ID` 恢复任务；确认成功后再执行状态变更。基本链路为：
+代理宿主入口的所有任务操作使用 `node scripts/studio.mjs`。输入通过 `@payload.json` 文件提供，不要把 JSON 内嵌到 shell 命令。先用 `list` 或 `show TASK_ID` 恢复任务；确认成功后再执行状态变更。图文创作基本链路如下；独立视频直接按下文“标识变体与独立视频”的镜头方案合同推进，不伪造图文制作单：
 
 1. `create` 创建任务，以 `set-brief` 和 `set-sources` 保存需求及来源决定。
 2. 用户明确确认需求和来源后，读取最新 revision，运行 `confirm-inputs`；再生成制作单、读取当前版本，由用户明确确认后运行 `confirm-sheet`。
 3. 用户授权生成后先运行 `canvas-open TASK_ID` 准备并打开任务专属 Canvas。页面连接后，以最新 revision 运行 `canvas-state TASK_ID @payload.json`；该命令成功返回才表示当前任务 Canvas 已就绪，然后运行 `execute`。`canvas-open` 若返回 `clientConnected:false`，只表示已尝试打开页面，不代表 Canvas 已就绪。`execute`、`resume`、`edit-pages` 和 `select-image` 使用该任务的固定 Canvas 实例与已保存图片配置；CLI 会在启动 Canvas 前核对 revision 和制作单授权。中断后用同一版本调用 `resume`，只查询并续接原节点；不得自动重发状态未知的收费请求。只有确认页面失败时才显式传 `retryPage`。
-4. 用实际读图工具打开当前成品，逐页检查准确文案、手机可读性、品牌一致性、主题对应和修改位置，然后运行 `record-review`。用户修改或 `select-image` 更新当前文件后，必须重新打开并审核；修改和选图会使旧审核与最终确认失效。
+4. 用实际读图工具打开当前成品，逐页检查准确文案、手机可读性、构图与文字层级、色彩质感、参考贴合、品牌一致性和修改位置，记录具体观察后运行 `record-review`。用户修改、机械采用或 `select-image` 更新当前文件后，必须重新打开并审核；修改和选图会使旧审核与最终确认失效。
 5. 等用户明确确认最终成品后才运行 `approve-final`，再运行 `export`。
 
 ## 状态变更版本与人工确认合同
 
 ### 已有图片的局部修改
 
-用户明确要求修改已有图片时，使用 `edit-pages TASK_ID @payload.json`，不重写全量制作单、不重置素材决定、不要求再次完整确认。payload 为 `{expectedRevision,requestId,instruction:用户本次明确修改原话,edits:[{page,instruction,copy?,stylePages?:[page]}]}`。原图和指定风格页由共享核心实际读图校验并传入 Canvas；未改页的成品与审核保留。仅讨论方案或询问能力时不得调用。
+用户明确要求修改已有图片时，使用 `edit-pages TASK_ID @payload.json`，不重写全量制作单、不重置素材决定、不要求再次完整确认。payload 为 `{expectedRevision,requestId,instruction:用户本次明确修改原话,edits:[{page,instruction,copy?,stylePages?:[page]}]}`。只写本次短指令，不追加整段历史提示词；原图和指定风格页由共享核心实际读图校验并传入 Canvas，不携带无关旧参考。省略 copy 时保留原文记录供导出，并让模型保留图中文字；不是把原文再次注入生图。未改页的成品与审核保留。仅讨论方案或询问能力时不得调用。
+
+新画面仍需将要绘制的准确文案交给模型，prompt 写构图、媒材、光影、字体气质及参考关系；不要默认扁平、纯色或禁止渐变。每页可选 quality，默认 auto；auto 在原生图片请求中省略 quality 由服务决定，显式质量按页记录，不自动提高到 high。
 
 上传已有图片改图时可传 `mode:'uploaded-images'`，条目为 `{page,image:{sourceId,fileOrder},instruction,styleImages?:[{sourceId,fileOrder}],copy?}`，只使用用户实际上传且未排除的本任务图片；不伪造生成历史、不自动确认来源或入库。`restore-page TASK_ID @payload.json` 接收 `{expectedRevision,page}`，恢复本页旧图与文案，不发起生图。
 
@@ -44,9 +45,23 @@ description: 在本仓库使用共享 CLI 完成经用户确认的单张海报�
 
 使用 `canvas-state TASK_ID @payload.json` 读取节点清单，payload 为 `{"expectedRevision":当前任务revision}`。节点状态仅返回 `idle/loading/success/error` 枚举，缺失或非法值为 `null`；不会返回原始错误详情、配置或节点元数据。`canvas-read-image` 使用 `{"nodeId":"当前任务图片节点ID","expectedRevision":当前任务revision}`，返回带 SHA-256 的本机临时 `filePath`；用宿主读图工具打开真实图片，不打印 base64。`canvas-detect-regions` 接收同样字段，可选 `kinds:["text","barcode","rectangle"]`，结果中的来源 SHA 要随操作一起核对。
 
-`canvas-operation TASK_ID @payload.json` 只接受共享 Canvas manager 的 `import`、`stitch`、`compose`、`crop`、`split`、`resample`、`move`、`resize` 枚举字段。除操作参数外必须带当前 `expectedRevision`、三个新的 UUID（`operationId`、`requestId`、`callId`）和用户本次原话 `userText`；用区域检测结果进行像素操作时附带 `expectedSourceHashes`。源图变化、跨任务节点、旧 revision 或未知结果会被拒绝。未知结果先重新读取状态，不要自动重提或另建 ID 重放。
+`canvas-operation TASK_ID @payload.json` 只接受共享 Canvas manager 的 `import`、`stitch`、`compose`、`adapt-logo`、`crop`、`split`、`resample`、`move`、`resize` 枚举字段。除操作参数外必须带当前 `expectedRevision`、三个新的 UUID（`operationId`、`requestId`、`callId`）和用户本次原话 `userText`；用区域检测结果进行像素操作时附带 `expectedSourceHashes`。源图变化、跨任务节点、旧 revision 或未知结果会被拒绝。未知结果先重新读取状态，不要自动重提或另建 ID 重放。
+
+`import` 的 `image` 必须显式带 `{sourceKind:"task-upload"|"task-reference",sourceId,fileOrder}`。前者只读取本任务已上传且未排除的原件，后者只读取本任务已人工保留并冻结、SHA 可核验的素材引用；不接受任意文件路径、其他任务或待选择素材。正式库标识在新任务中先 `set-asset-sources` 并保留，再按 task-reference 导入。
 
 这些命令调用 `src/web/canvas.mjs` 的任务隔离实现；不经 `scripts/canvas.mjs` 透传低层工具。机械操作不会调用生图，也不自动替换成品、复审或批准。读状态／读图／检测虽不改任务 JSON，仍要使用最新 revision。`canvas-open` 输出不包含一次性浏览器连接地址或实例 token。
+
+用户明确要求把机械结果用作正式页成品时，调用 `canvas-adopt TASK_ID @payload.json`：`{expectedRevision,requestId,userText,operationId,imageIndex,page}`。requestId 是本次采用请求 UUID，userText 是用户原话；operationId 与从 0 开始的 imageIndex 取自 `canvas-operation` 的明确返回字段，不能猜路径或提供任意 SHA。已有套图指定目标 page，无制作单时填 1。采用会产生新成品版本，核验原始操作账本与真实字节，保留未改页，撤销受影响审核和整套最终批准。随后实际看新图、记录复审，再由用户确认交付。采用本身不批准，也不补造完整创作确认；仅让你裁切或查看附件时不要自行采用。已采用的机械成品可继续 `edit-pages` 或恢复，同一谱系追溯到原采用记录。
+
+## 标识变体与独立视频
+
+`adapt-logo` 是确定性像素操作，只用于已有透明标识，支持 `foreground:'#RRGGBB'`、`outline:{color,width}`、`plate:{color,padding,radius}`；至少给一项。不重绘字形，不自动抠取不透明图片。实际尺寸会随描边和底板留白扩大，采用或合成前读取真实结果。用户要保存复用时运行 `save-logo-variant TASK_ID @payload.json`，字段为 `{expectedRevision,operationId,imageIndex,title?}`；只接受已核验的 adapt-logo 操作结果。结果是现有素材库的 staged 草稿，仍需清洗及人工确认，不能当作已确认素材。
+
+视频与图文制作单、执行、复审及批准分别存储。当前只接 Octiva `https://api.osodm.com` 的 `minimax_h3` 文生视频；供应商支持公网参考素材 URL，但 Studio 首版尚未接入该输入，不自动上传本机原件。不要套用图片的 `execute`、`record-review` 或 `approve-final`。
+
+所有视频 payload 带最新 `expectedRevision`。`video-plan` 另带 `{prompt,seconds?,ratio?,resolution?}`，默认 4 秒、16:9、768；时长为 4—15 秒整数，比例为 21:9、16:9、4:3、1:1、3:4、9:16，分辨率为字符串 768、1080p、2K、4K。先向用户展示完整镜头方案与收费参数，明确同意后运行 `video-confirm`，带 `{version,by,note}`。准备任务 Canvas 并核验已连接，再用 `video-execute` 带 `{version}`。未知或中断结果仅以同版本 `video-resume` 查询原节点，不能另建请求重发；明确失败后也需新方案及新的人工确认。
+
+实际播放当前 MP4 并检查内容后，用 `video-review` 带 `{sha256,decision:'pass'|'revise',reviewer,notes}`，只记录实际观察；不能用图片预览冒充动态／声音复审。用户明确确认当前视频交付后，`video-approve` 带 `{version,sha256,by,note}`，再 `video-export` 导出 MP4 与 manifest。当前视频文件、版本或 SHA 变化均需重新复审与人工确认；不要修改图文最终批准。
 
 ## P2 素材与 DNA
 
