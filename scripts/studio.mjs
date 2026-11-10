@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import {
   approveFinal,
   applyDna,
+  assertNoCredentials,
   clearTaskLock,
   confirmInputs,
   confirmSheet,
@@ -23,9 +24,12 @@ import {
   taskDirectory,
   isSheetAuthorized,
 } from '../src/creative/tasks.mjs';
+import { saveLogoVariant } from '../src/creative/canvas-operations.mjs';
 import { taskEntryStatus, clearTaskEntry } from '../src/creative/entry.mjs';
 import { executeTask, selectImage } from '../src/creative/executor.mjs';
 import { editTaskPages, restorePageEdit } from '../src/creative/page-edits.mjs';
+import { adoptCanvasResult } from '../src/creative/mechanical-products.mjs';
+import { approveVideo, confirmVideoPlan, executeVideoTask, exportVideoTask, recordVideoReview, writeVideoPlan } from '../src/creative/video.mjs';
 import { createCanvasManager } from '../src/web/canvas.mjs';
 import { readConfigRecord } from '../src/web/config.mjs';
 
@@ -55,6 +59,15 @@ const USAGE = `用法：
   node scripts/studio.mjs canvas-read-image TASK_ID @payload.json
   node scripts/studio.mjs canvas-detect-regions TASK_ID @payload.json
   node scripts/studio.mjs canvas-operation TASK_ID @payload.json
+  node scripts/studio.mjs save-logo-variant TASK_ID @payload.json
+  node scripts/studio.mjs canvas-adopt TASK_ID @payload.json
+  node scripts/studio.mjs video-plan TASK_ID @payload.json
+  node scripts/studio.mjs video-confirm TASK_ID @payload.json
+  node scripts/studio.mjs video-execute TASK_ID @payload.json
+  node scripts/studio.mjs video-resume TASK_ID @payload.json
+  node scripts/studio.mjs video-review TASK_ID @payload.json
+  node scripts/studio.mjs video-approve TASK_ID @payload.json
+  node scripts/studio.mjs video-export TASK_ID @payload.json
   node scripts/studio.mjs record-review TASK_ID @payload.json
   node scripts/studio.mjs approve-final TASK_ID @payload.json
   node scripts/studio.mjs export TASK_ID @payload.json
@@ -79,6 +92,7 @@ const CANVAS_OPERATION_FIELDS = Object.freeze({
   resample: ['nodeId', 'targetLongEdge', 'algorithm'],
   move: ['nodeId', 'x', 'y'],
   resize: ['nodeId', 'width', 'height'],
+  'adapt-logo': ['nodeId', 'foreground', 'outline', 'plate'],
 });
 const CANVAS_OPERATION_IDENTITY_FIELDS = ['operation', 'expectedRevision', 'operationId', 'requestId', 'callId', 'userText', 'expectedSourceHashes'];
 
@@ -575,7 +589,113 @@ async function dispatch(action, args) {
         if (typeof payload[key] !== 'string' || !UUID.test(payload[key])) throw usageError();
       }
       if (typeof payload.userText !== 'string' || !payload.userText.trim()) throw usageError();
-      return runWithCancellation((signal) => canvasManager.mechanicalOperation(id, { ...payload, signal }));
+      return runWithCancellation(async (signal) => {
+        const outcome = await canvasManager.mechanicalOperation(id, { ...payload, signal });
+        const images = Array.isArray(outcome.result?.images)
+          ? outcome.result.images.map((image, imageIndex) => ({ ...image, imageIndex }))
+          : undefined;
+        return {
+          ...outcome,
+          operationId: payload.operationId,
+          result: { ...outcome.result, operationId: payload.operationId, ...(images ? { images } : {}) },
+        };
+      });
+    }
+    case 'canvas-adopt': {
+      hasFields(payload, ['expectedRevision', 'requestId', 'userText', 'operationId', 'imageIndex', 'page']);
+      hasOnlyFields(payload, ['expectedRevision', 'requestId', 'userText', 'operationId', 'imageIndex', 'page']);
+      requireExpectedRevision(payload.expectedRevision);
+      if (!UUID.test(payload.requestId || '') || !UUID.test(payload.operationId || '')
+        || !Number.isInteger(payload.imageIndex) || payload.imageIndex < 0
+        || !Number.isInteger(payload.page) || payload.page < 1
+        || typeof payload.userText !== 'string' || !payload.userText.trim()) throw usageError();
+      assertNoCredentials(payload.userText, '机械成品采用授权');
+      return adoptCanvasResult(id, {
+        expectedRevision: payload.expectedRevision,
+        requestId: payload.requestId,
+        operationId: payload.operationId,
+        imageIndex: payload.imageIndex,
+        page: payload.page,
+        workType: 'mechanical',
+        authorization: { by: '用户', note: payload.userText },
+      }, { root: TASK_ROOT });
+    }
+    case 'save-logo-variant': {
+      hasFields(payload, ['expectedRevision', 'operationId', 'imageIndex']);
+      hasOnlyFields(payload, ['expectedRevision', 'operationId', 'imageIndex', 'title']);
+      requireExpectedRevision(payload.expectedRevision);
+      if (!UUID.test(payload.operationId || '') || !Number.isInteger(payload.imageIndex) || payload.imageIndex < 0
+        || (payload.title !== undefined && (typeof payload.title !== 'string' || !payload.title.trim()))) throw usageError();
+      return saveLogoVariant(id, payload, { root: TASK_ROOT });
+    }
+    case 'video-plan': {
+      hasFields(payload, ['expectedRevision', 'prompt']);
+      hasOnlyFields(payload, ['expectedRevision', 'prompt', 'seconds', 'ratio', 'resolution']);
+      requireExpectedRevision(payload.expectedRevision);
+      const task = await requireCurrentTask(id, payload.expectedRevision);
+      const provider = await canvasManager.videoModelInfo(id);
+      if (!provider.model || !provider.providerFingerprint) throw new Error('请先配置 MiniMax H3 视频 API 地址与模型。');
+      return writeVideoPlan(id, {
+        prompt: payload.prompt,
+        ...(payload.seconds === undefined ? {} : { seconds: payload.seconds }),
+        ...(payload.ratio === undefined ? {} : { ratio: payload.ratio }),
+        ...(payload.resolution === undefined ? {} : { resolution: payload.resolution }),
+      }, { root: TASK_ROOT, expectedRevision: task.revision, model: provider.model, providerFingerprint: provider.providerFingerprint });
+    }
+    case 'video-confirm': {
+      requireHumanConfirmation(payload, ['expectedRevision', 'version', 'by', 'note']);
+      hasOnlyFields(payload, ['expectedRevision', 'version', 'by', 'note']);
+      if (!Number.isInteger(payload.version) || payload.version < 1) throw usageError();
+      requireExpectedRevision(payload.expectedRevision);
+      return confirmVideoPlan(id, payload, { root: TASK_ROOT, expectedRevision: payload.expectedRevision });
+    }
+    case 'video-execute':
+    case 'video-resume': {
+      hasFields(payload, ['expectedRevision', 'version']);
+      hasOnlyFields(payload, ['expectedRevision', 'version']);
+      requireExpectedRevision(payload.expectedRevision);
+      if (!Number.isInteger(payload.version) || payload.version < 1) throw usageError();
+      return runWithCancellation(async (signal) => {
+        const task = await requireCurrentTask(id, payload.expectedRevision);
+        const plan = task.video?.plans?.find((item) => item.version === payload.version);
+        if (!plan || task.video?.version !== payload.version || !plan.confirmedAt || task.video?.execution?.version !== payload.version) {
+          const error = new Error('视频方案必须是已确认的当前版本');
+          error.code = 'ERR_VIDEO_PLAN_UNCONFIRMED';
+          throw error;
+        }
+        const execution = task.video.execution;
+        if (action === 'video-execute' && execution.submitted) throw new Error('该视频方案已提交；请使用 video-resume 查询原任务。');
+        if (action === 'video-resume' && !execution.submitted) throw new Error('该视频方案尚未提交生成；请先运行 video-execute。');
+        const provider = await canvasManager.videoModelInfo(id);
+        if (!provider.apiKeyConfigured) throw new Error('请先配置视频 API Key，再继续执行。');
+        const executionOptions = await canvasManager.videoExecutionOptions(id, { target: execution.target });
+        return executeVideoTask(id, {
+          ...executionOptions,
+          version: payload.version,
+          expectedRevision: payload.expectedRevision,
+          root: TASK_ROOT,
+          signal,
+        });
+      });
+    }
+    case 'video-review': {
+      hasFields(payload, ['expectedRevision', 'sha256', 'decision', 'reviewer', 'notes']);
+      hasOnlyFields(payload, ['expectedRevision', 'sha256', 'decision', 'reviewer', 'notes']);
+      requireExpectedRevision(payload.expectedRevision);
+      return recordVideoReview(id, payload, { root: TASK_ROOT, expectedRevision: payload.expectedRevision });
+    }
+    case 'video-approve': {
+      requireHumanConfirmation(payload, ['expectedRevision', 'version', 'sha256', 'by', 'note']);
+      hasOnlyFields(payload, ['expectedRevision', 'version', 'sha256', 'by', 'note']);
+      if (!Number.isInteger(payload.version) || payload.version < 1) throw usageError();
+      requireExpectedRevision(payload.expectedRevision);
+      return approveVideo(id, payload, { root: TASK_ROOT, expectedRevision: payload.expectedRevision });
+    }
+    case 'video-export': {
+      hasFields(payload, ['expectedRevision']);
+      hasOnlyFields(payload, ['expectedRevision']);
+      requireExpectedRevision(payload.expectedRevision);
+      return exportVideoTask(id, { root: TASK_ROOT, expectedRevision: payload.expectedRevision });
     }
     case 'record-review':
       requireReviewPayload(payload);
@@ -610,6 +730,7 @@ function errorMessage(error) {
     case 'ERR_TASK_LOCKED': return '任务正被其他进程占用；请核对锁进程状态。';
     case 'ERR_TASK_REVISION_CONFLICT': return '任务已更新，本次写入已停止；请重新读取任务。';
     case 'ERR_STUDIO_EXECUTION_NOT_AUTHORIZED': return '当前 revision 或已授权执行版本不匹配；请重新 show 并核对制作单授权。';
+    case 'ERR_VIDEO_PLAN_UNCONFIRMED': return '当前视频镜头尚未确认；未启动 Canvas。';
     case 'ERR_STUDIO_RETRY_NOT_CONFIRMED': return '该页未被核实为失败，未启动 Canvas；请先读取任务与 Canvas 状态。';
     case 'ERR_STUDIO_UNLOCK': return '未清理任务锁；请核实锁文件中的 PID 与进程状态。';
     case 'ERR_STUDIO_ABORTED': return '已停止等待；已提交到 Canvas 的生成不保证撤销。';

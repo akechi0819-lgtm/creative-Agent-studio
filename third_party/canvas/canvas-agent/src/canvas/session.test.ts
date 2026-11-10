@@ -70,6 +70,7 @@ test("pixel tools validate inputs and forward only their bounded operation argum
         { name: "canvas_resample_image", input: { nodeId: "image-1", targetLongEdge: 2048, algorithm: "high" } },
         { name: "canvas_stitch_images", input: { nodeIds: ["image-1", "image-1", "image-2"], direction: "horizontal", gap: 12, background: "#ffffff80" } },
         { name: "canvas_compose_images", input: { nodeId: "image-1", layers: [{ nodeId: "image-2", x: 12, y: 18, width: 64, height: 32, fit: "contain", clear: "#00000000", smoothing: "nearest" }] } },
+        { name: "canvas_adapt_logo", input: { nodeId: "logo-1", foreground: "#14834a", outline: { color: "#ffffff", width: 2 }, plate: { color: "#006633", padding: 6, radius: 8 } } },
         { name: "canvas_import_image", input: { nodeId: "host-image-1", title: "宿主附件", dataUrl: "data:image/png;base64,aW1n" } },
     ] as const;
 
@@ -84,6 +85,8 @@ test("pixel tools validate inputs and forward only their bounded operation argum
                 ? { operation: "compose", sourceNodeId: "image-1", sourceNodeIds: ["image-1", "image-2"], images: [{ nodeId: "child-1", width: 20, height: 30 }] }
                 : name === "canvas_import_image"
                     ? { operation: "import", sourceNodeId: "host-image-1", images: [{ nodeId: "host-image-1", width: 20, height: 30 }] }
+                    : name === "canvas_adapt_logo"
+                        ? { operation: "adapt-logo", sourceNodeId: "logo-1", images: [{ nodeId: "child-1", width: 24, height: 34, padding: 7 }] }
                     : { operation: name.replace("canvas_", "").replace("_image", ""), sourceNodeId: "image-1", images: [{ nodeId: "child-1", width: 20, height: 30 }] };
         assert.equal(session.resolveResult("project-1", "client-1", { requestId: call?.requestId as string, result: operationResult }), true);
         assert.deepEqual(await result, operationResult);
@@ -98,6 +101,10 @@ test("pixel tools validate inputs and forward only their bounded operation argum
         ["canvas_stitch_images", { nodeIds: ["image-1"], direction: "horizontal" }],
         ["canvas_stitch_images", { nodeIds: ["image-1", "image-2"], direction: "vertical", gap: -1 }],
         ["canvas_compose_images", { nodeId: "image-1", layers: [{ nodeId: "image-2", x: 0, y: 0, width: 0, height: 3 }] }],
+        ["canvas_adapt_logo", { nodeId: "logo-1" }],
+        ["canvas_adapt_logo", { nodeId: "logo-1", foreground: "#ffffff80" }],
+        ["canvas_adapt_logo", { nodeId: "logo-1", outline: { color: "#ffffff", width: 65 } }],
+        ["canvas_adapt_logo", { nodeId: "logo-1", plate: { color: "#006633", padding: 257, radius: 8 } }],
         ["canvas_import_image", { nodeId: "host-image-1", title: "附件", dataUrl: "https://example.test/image.png" }],
     ] as const;
 

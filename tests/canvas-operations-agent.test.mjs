@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {mkdtemp,mkdir,rm,readFile,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import {createTask,withTask,readTask} from '../src/creative/tasks.mjs';
+import {createTask,taskDirectory,withTask,readTask} from '../src/creative/tasks.mjs';
 import {createStudioAgent} from '../adapters/dsh/runtime.mjs';
 
 async function fixture(t,calls){
@@ -43,7 +44,29 @@ test('聊天机械工具读取真实索引、绑定宿主版本、重复操作�
   assert.equal(tool.function.parameters.properties.operationId,undefined);
   const outputs=f.requests.at(-1).messages.filter(message=>message.role==='tool');
   assert.ok(outputs.some(message=>JSON.stringify(message).includes('crop-node')));
+  const operationResult=outputs.find(message=>JSON.stringify(message).includes('crop-node'));
+  assert.match(JSON.stringify(operationResult),/operationId/);
+  assert.match(JSON.stringify(operationResult),/imageIndex/);
   assert.equal((await readTask(f.task.id,f.root)).sheetVersion,0);
+});
+
+test('机械结果采用工具仅接操作ID、图片序号和页码，宿主回调绑定其余身份',async t=>{
+  const operationId='e4c6f6a2-4608-4a12-9764-eaf6f7b65b31';
+  const f=await fixture(t,[{name:'studio_adopt_canvas_result',args:{operationId,imageIndex:0,page:1}}]);
+  const calls=[];
+  const result=await f.agent.chat({taskId:f.task.id,text:'把刚才的机械图作为第1页正式候选。',expectedRevision:f.task.revision,
+    canvasState:async()=>({nodes:[]}),
+    canvasOperation:async()=>{throw new Error('该用例不应执行 Canvas 操作');},
+    canvasAdopt:async args=>{calls.push(args);return {task:await withTask(f.task.id,draft=>{draft.revisionMarker='adopted';},{root:f.root,expectedRevision:f.task.revision}),adoption:{version:1,page:1,workType:'mechanical',source:{type:'canvas-operation',operationId,imageIndex:0,sha256:'a'.repeat(64)}},replayed:false};},
+  });
+  assert.deepEqual(calls,[{operationId,imageIndex:0,page:1,expectedRevision:f.task.revision}]);
+  assert.equal(result.task.revision,f.task.revision+1);
+  const tool=f.requests[0].tools.find(value=>value.function.name==='studio_adopt_canvas_result');
+  assert.deepEqual(Object.keys(tool.function.parameters.properties).sort(),['imageIndex','operationId','page']);
+  assert.equal(tool.function.parameters.additionalProperties,false);
+  assert.doesNotMatch(JSON.stringify(tool.function.parameters),/expectedRevision|requestId|authorization|userText|by/);
+  const output=f.requests.at(-1).messages.find(message=>message.role==='tool');
+  assert.match(JSON.stringify(output),/尚未批准或导出/);
 });
 
 test('机械操作拒绝模型伪造宿主字段，失败不重提且不能回退全量制作单',async t=>{
@@ -62,12 +85,20 @@ test('机械操作拒绝模型伪造宿主字段，失败不重提且不能回�
 
 test('附件导入、真实画布预览与像素合成的参数和图像块能够完整往返主对话',async t=>{
   const f=await fixture(t,[
-    {name:'studio_canvas_operation',args:{operation:'import',image:{sourceId:'uploaded-source',fileOrder:1}}},
+    {name:'studio_canvas_operation',args:{operation:'import',image:{sourceKind:'task-upload',sourceId:'uploaded-source',fileOrder:1}}},
     {name:'studio_canvas_read_image',args:{nodeId:'base-poster'}},
     {name:'studio_canvas_operation',args:{operation:'compose',nodeId:'base-poster',layers:[{nodeId:'new-image',x:64,y:64,width:32,height:32,fit:'contain',clear:'#ffffff',smoothing:'nearest'}]}},
     {name:'studio_canvas_read_image',args:{nodeId:'composed-poster'}},
   ]);
+  await withTask(f.task.id,draft=>{
+    draft.sources=[{id:'uploaded-source',type:'current_attachment',decision:'pending',files:[{order:1,name:'logo.png',mimeType:'image/png',sha256:'a'.repeat(64),relativePath:'sources/uploaded-source/logo.png'}]}];
+  },{root:f.root,expectedRevision:f.task.revision});
+  f.task=await readTask(f.task.id,f.root);
   const bytes=await readFile(new URL('../adapters/dsh/connection-check.png',import.meta.url));
+  await mkdir(path.join(taskDirectory(f.task.id,f.root),'sources/uploaded-source'),{recursive:true});
+  await writeFile(path.join(taskDirectory(f.task.id,f.root),'sources/uploaded-source/logo.png'),bytes);
+  await withTask(f.task.id,draft=>{draft.sources[0].files[0].sha256=createHash('sha256').update(bytes).digest('hex');},{root:f.root,expectedRevision:f.task.revision});
+  f.task=await readTask(f.task.id,f.root);
   const calls=[];const previews=[];
   await f.agent.chat({taskId:f.task.id,text:'把海报右下角的旧图换成新上传的图，别重画。',expectedRevision:f.task.revision,
     canvasState:async()=>({nodes:[]}),
@@ -75,12 +106,44 @@ test('附件导入、真实画布预览与像素合成的参数和图像块能�
     canvasPreview:async args=>{previews.push(args.nodeId);return {bytes,mimeType:'image/png',sha256:'a'.repeat(64),width:128,height:128};},
   });
   assert.deepEqual(calls.map(value=>value.operation),['import','compose']);
-  assert.deepEqual(calls[0].image,{sourceId:'uploaded-source',fileOrder:1});
+  assert.deepEqual(calls[0].image,{sourceKind:'task-upload',sourceId:'uploaded-source',fileOrder:1});
   assert.equal(calls[0].nodeId,undefined);
   assert.deepEqual(previews,['base-poster','composed-poster']);
   assert.equal(calls[1].layers[0].clear,'#ffffff');
   assert.ok(f.requests.at(-1).messages.some(message=>Array.isArray(message.content)&&message.content.some(block=>block.type==='image_url'&&block.image_url?.url.startsWith('data:image/'))),'后续模型必须收到真实图像块而不是图片文字占位');
   assert.equal((await readTask(f.task.id,f.root)).sheetVersion,0);
+});
+
+test('DSH import 显式传递task-upload/task-reference，拒绝不在当前任务可用索引中的来源',async t=>{
+  const f=await fixture(t,[
+    {name:'studio_canvas_operation',args:{operation:'import',image:{sourceKind:'task-upload',sourceId:'upload-1',fileOrder:1}}},
+    {name:'studio_canvas_operation',args:{operation:'import',image:{sourceKind:'task-reference',sourceId:'asset-1',fileOrder:1}}},
+    {name:'studio_canvas_operation',args:{operation:'import',image:{sourceKind:'task-reference',sourceId:'other-task-asset',fileOrder:1}}},
+  ]);
+  const bytes=await readFile(new URL('../adapters/dsh/connection-check.png',import.meta.url));
+  const sha256=createHash('sha256').update(bytes).digest('hex');
+  await withTask(f.task.id,draft=>{
+    draft.sources=[
+      {id:'upload-1',type:'current_attachment',decision:'pending',files:[{order:1,name:'uploaded.png',mimeType:'image/png',sha256,relativePath:'sources/upload-1/uploaded.png'}]},
+      {id:'asset-1',type:'library_asset',decision:'retained',files:[{order:1,name:'logo.png',mimeType:'image/png',sha256,relativePath:'sources/asset-1/logo.png'}]},
+    ];
+  },{root:f.root,expectedRevision:f.task.revision});
+  f.task=await readTask(f.task.id,f.root);
+  for(const sourceId of ['upload-1','asset-1']){
+    await mkdir(path.join(taskDirectory(f.task.id,f.root),`sources/${sourceId}`),{recursive:true});
+    await writeFile(path.join(taskDirectory(f.task.id,f.root),`sources/${sourceId}/${sourceId==='upload-1'?'uploaded.png':'logo.png'}`),bytes);
+  }
+  const calls=[];
+  await f.agent.chat({taskId:f.task.id,text:'导入本次上传图和本任务已保留的Logo图。',expectedRevision:f.task.revision,
+    canvasState:async()=>({nodes:[]}),
+    canvasOperation:async args=>{calls.push(args);return {task:await readTask(f.task.id,f.root),result:{operation:'import',images:[{nodeId:`import-${calls.length}`,width:128,height:128}]}};},
+  });
+  assert.deepEqual(calls.map(item=>item.image),[
+    {sourceKind:'task-upload',sourceId:'upload-1',fileOrder:1},
+    {sourceKind:'task-reference',sourceId:'asset-1',fileOrder:1},
+  ]);
+  const toolMessages=f.requests.at(-1).messages.filter(message=>message.role==='tool');
+  assert.ok(toolMessages.some(message=>JSON.stringify(message).includes('task-reference 必须指向本任务已保留且冻结的真实素材图索引')),'cross-task reference must be rejected before Canvas callback');
 });
 
 test('拼接不需要伪造单个主节点，保留输入次序且未知结果不会退回AI重画',async t=>{

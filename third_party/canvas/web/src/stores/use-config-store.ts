@@ -7,6 +7,15 @@ import i18n from "@/i18n";
 
 export type ApiCallFormat = "openai" | "gemini";
 export type ModelCapability = "image" | "video" | "text" | "audio";
+
+export const STUDIO_H3_VIDEO_MODEL = "studio-video::minimax_h3";
+export const STUDIO_H3_VIDEO_DEFAULTS = { size: "16:9", vquality: "768", videoSeconds: "4" } as const;
+
+export function videoNodeModelSelectionPatch(model: string) {
+    return model === STUDIO_H3_VIDEO_MODEL
+        ? { model, size: STUDIO_H3_VIDEO_DEFAULTS.size, vquality: STUDIO_H3_VIDEO_DEFAULTS.vquality, seconds: STUDIO_H3_VIDEO_DEFAULTS.videoSeconds }
+        : { model };
+}
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
 
 export type ChannelModel = {
@@ -224,6 +233,11 @@ export const useConfigStore = create<ConfigStore>()(
                     config: {
                         ...state.config,
                         [key]: value,
+                        ...(key === "videoModel" && value === STUDIO_H3_VIDEO_MODEL ? {
+                            size: STUDIO_H3_VIDEO_DEFAULTS.size,
+                            vquality: STUDIO_H3_VIDEO_DEFAULTS.vquality,
+                            videoSeconds: STUDIO_H3_VIDEO_DEFAULTS.videoSeconds,
+                        } : {}),
                     },
                 })),
             importChannelCredentials: (input) => {

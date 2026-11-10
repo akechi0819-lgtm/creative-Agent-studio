@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { importAsset, listAssets, readAsset } from '../assets/library.mjs';
 import { taskDirectory, withTask } from './tasks.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -87,10 +88,10 @@ function validateIdentity({ taskId, operationId, requestId, callId, userText, ex
   if (typeof root !== 'string' || !root.trim() || !UUID.test(taskId || '') || !UUID.test(operationId || '')
     || !UUID.test(requestId || '') || !UUID.test(callId || '') || typeof userText !== 'string'
     || !userText.trim() || userText.length > 20_000 || !Number.isInteger(expectedRevision) || expectedRevision < 1
-    || typeof operation !== 'string' || !['import', 'stitch', 'compose', 'crop', 'split', 'resample', 'move', 'resize'].includes(operation)
+    || typeof operation !== 'string' || !['import', 'stitch', 'compose', 'adapt-logo', 'crop', 'split', 'resample', 'move', 'resize'].includes(operation)
     || typeof nodeId !== 'string' || !nodeId.trim() || nodeId.length > 300 || typeof run !== 'function'
     || (sourceBinding != null && (!sourceBinding || typeof sourceBinding !== 'object' || Array.isArray(sourceBinding)
-      || sourceBinding.type !== 'task-upload' || typeof sourceBinding.sourceId !== 'string' || !sourceBinding.sourceId.trim()
+      || !['task-upload', 'task-reference'].includes(sourceBinding.type) || typeof sourceBinding.sourceId !== 'string' || !sourceBinding.sourceId.trim()
       || sourceBinding.sourceId.length > 300 || !Number.isInteger(sourceBinding.fileOrder) || sourceBinding.fileOrder < 1
       || (sourceBinding.sha256 !== undefined && !SHA256.test(sourceBinding.sha256 || ''))))
     || (operation === 'import' && (!sourceBinding || !SHA256.test(sourceBinding.sha256 || '')))) {
@@ -159,7 +160,7 @@ export async function runCanvasOperation({
       operation,
       sourceNodeId: nodeId,
       ...(sourceBinding ? { sourceBinding: {
-        type: 'task-upload', sourceId: sourceBinding.sourceId, fileOrder: sourceBinding.fileOrder,
+        type: sourceBinding.type, sourceId: sourceBinding.sourceId, fileOrder: sourceBinding.fileOrder,
         ...(sourceBinding.sha256 ? { sha256: sourceBinding.sha256.toLowerCase() } : {}),
       } } : {}),
       input,
@@ -199,12 +200,12 @@ export async function runCanvasOperation({
         if (!valid) throw operationError('ERR_CANVAS_OPERATION_INPUT', '机械操作的源图片哈希清单无效或超过 21 个唯一来源。');
         safeProvenance.sourceBindings = sources.map((source) => ({ nodeId: source.nodeId, sha256: source.sha256.toLowerCase() }));
       }
-      if (provenance.sourceBinding?.type === 'task-upload' && typeof provenance.sourceBinding.sourceId === 'string'
+      if (['task-upload', 'task-reference'].includes(provenance.sourceBinding?.type) && typeof provenance.sourceBinding.sourceId === 'string'
         && provenance.sourceBinding.sourceId.trim() && provenance.sourceBinding.sourceId.length <= 300
         && Number.isInteger(provenance.sourceBinding.fileOrder) && provenance.sourceBinding.fileOrder > 0
         && SHA256.test(provenance.sourceBinding.sha256 || '')) {
         safeProvenance.sourceBinding = {
-          type: 'task-upload', sourceId: provenance.sourceBinding.sourceId,
+          type: provenance.sourceBinding.type, sourceId: provenance.sourceBinding.sourceId,
           fileOrder: provenance.sourceBinding.fileOrder, sha256: provenance.sourceBinding.sha256.toLowerCase(),
         };
       }
@@ -271,7 +272,13 @@ export async function readCanvasOperationImage(taskId, operationId, index, { roo
   }
   const image = record.attachments[index];
   if (typeof image.relativePath !== 'string' || !/^images\/image-\d{3}\.(?:png|jpg|webp)$/.test(image.relativePath)
-    || path.isAbsolute(image.relativePath) || !SHA256.test(image.sha256 || '')) {
+    || path.isAbsolute(image.relativePath) || !SHA256.test(image.sha256 || '')
+    || typeof image.nodeId !== 'string' || !image.nodeId.trim()
+    || record.result?.operation !== record.operation || !Array.isArray(record.result?.images)) {
+    throw operationError('ERR_CANVAS_OPERATION_IMAGE_NOT_FOUND', '机械图片附件不存在。');
+  }
+  const resultImage = record.result.images[index];
+  if (!resultImage || resultImage.nodeId !== image.nodeId || resultImage.sha256?.toLowerCase() !== image.sha256.toLowerCase()) {
     throw operationError('ERR_CANVAS_OPERATION_IMAGE_NOT_FOUND', '机械图片附件不存在。');
   }
   const base = path.resolve(directoryFor(taskId, root), operationId, 'images');
@@ -288,6 +295,90 @@ export async function readCanvasOperationImage(taskId, operationId, index, { roo
   }
   const bytes = await fs.readFile(resolved);
   if (sha256(bytes) !== image.sha256) throw operationError('ERR_CANVAS_OPERATION_IMAGE_HASH', '机械图片附件校验失败。');
-  return { ...image, filePath: resolved };
+  return {
+    ...image,
+    operation: record.operation,
+    taskId: record.taskId,
+    operationId: record.operationId,
+    imageIndex: index,
+    input: record.input,
+    sourceSha256: record.sourceSha256,
+    sourceBindings: record.sourceBindings,
+    canvasInstanceId: record.canvasInstanceId,
+    canvasClientId: record.canvasClientId,
+    filePath: resolved,
+  };
+}
+
+/** Save one verified adapt-logo result to the existing library as a staged derived item. */
+export async function saveLogoVariant(taskId, {
+  operationId,
+  imageIndex,
+  expectedRevision,
+  title,
+} = {}, { root } = {}) {
+  if (!UUID.test(taskId || '') || !UUID.test(operationId || '') || !Number.isInteger(imageIndex) || imageIndex < 0
+    || !Number.isInteger(expectedRevision) || expectedRevision < 1) {
+    throw operationError('ERR_LOGO_VARIANT_INPUT', 'Logo 变体保存请求无效。');
+  }
+  if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.trim().length > 500)) {
+    throw operationError('ERR_LOGO_VARIANT_INPUT', '素材标题必须是 1–500 个字符。');
+  }
+
+  let asset;
+  let replayed = false;
+  await withTask(taskId, async () => {
+    const image = await readCanvasOperationImage(taskId, operationId, imageIndex, { root });
+    if (image.operation !== 'adapt-logo' || !SHA256.test(image.sourceSha256 || '') || !image.input || typeof image.input !== 'object') {
+      throw operationError('ERR_LOGO_VARIANT_SOURCE', '只能保存具有原件 SHA 的已完成 adapt-logo 结果。');
+    }
+    const parameters = Object.fromEntries(['foreground', 'outline', 'plate']
+      .filter((key) => Object.hasOwn(image.input, key))
+      .map((key) => [key, image.input[key]]));
+    const source = {
+      kind: 'logo-variant',
+      taskId,
+      operationId,
+      imageIndex,
+      originalSha256: image.sourceSha256.toLowerCase(),
+      parameters,
+      outputSha256: image.sha256.toLowerCase(),
+    };
+
+    const matches = [];
+    for (let offset = 0; ; offset += 500) {
+      const page = await listAssets({ offset, limit: 500, includeDeleted: true }, { root });
+      matches.push(...page.filter((candidate) => candidate.source?.kind === 'logo-variant'
+        && candidate.source.taskId === taskId
+        && candidate.source.operationId === operationId
+        && candidate.source.imageIndex === imageIndex));
+      if (page.length < 500) break;
+    }
+    if (matches.length > 1) throw operationError('ERR_LOGO_VARIANT_DUPLICATE', '同一机械 Logo 产物已存在多条素材记录，无法确定可复用项。');
+    if (matches.length === 1) {
+      const existing = matches[0];
+      if (existing.source.outputSha256 !== source.outputSha256
+        || existing.source.originalSha256 !== source.originalSha256
+        || JSON.stringify(existing.source.parameters) !== JSON.stringify(source.parameters)) {
+        throw operationError('ERR_LOGO_VARIANT_CONFLICT', '同一机械 Logo 产物已保存，但输出或参数与当前账本不一致。');
+      }
+      asset = await readAsset(existing.id, { root });
+      if (!asset.files?.some((file) => file.sha256?.toLowerCase() === source.outputSha256)) {
+        throw operationError('ERR_LOGO_VARIANT_CONFLICT', '已保存 Logo 变体的原件 SHA 与机械操作输出不一致。');
+      }
+      replayed = true;
+      return;
+    }
+
+    const actualBytes = await fs.readFile(image.filePath);
+    if (sha256(actualBytes) !== source.outputSha256) throw operationError('ERR_CANVAS_OPERATION_IMAGE_HASH', 'Logo 变体附件校验失败，未写入素材库。');
+    asset = await importAsset({
+      title: title?.trim() || `Logo 变体 ${source.outputSha256.slice(0, 12)}`,
+      body: '',
+      source,
+      files: [{ path: image.filePath, name: image.name, mimeType: image.mimeType }],
+    }, { root });
+  }, { root, expectedRevision });
+  return { asset, replayed };
 }
 

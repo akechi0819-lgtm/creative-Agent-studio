@@ -2,7 +2,7 @@ import path from 'node:path';
 import {
   withTask, readTask, requiredRevision, taskDirectory, readTaskOutputImageBytes,
   readTaskReferenceImageBytes, readTaskUploadedImageBytes, taskInputFingerprint,
-  isSheetAuthorized, assertNoCredentials,
+  isSheetAuthorized, isMechanicalOutputLineage, assertNoCredentials,
 } from './tasks.mjs';
 import { executeTask } from './executor.mjs';
 import { latestReviewForSnapshot } from './reviews.mjs';
@@ -104,10 +104,21 @@ function hasConfirmedInputSnapshot(sheet) {
   return Number.isInteger(sheet?.inputsRevision) && sheet.inputs?.confirmation?.revision === sheet.inputsRevision;
 }
 
-function selectConfirmedBaseline(task, requestedVersion) {
+function isMechanicalOutputBaseline(task, version) {
+  const sheet = sheetFor(task, version);
+  const directAdoption = sheet?.mechanicalAdoption;
+  if (directAdoption) return isMechanicalOutputLineage(task, version, version, directAdoption.fingerprint);
+  const basis = sheet?.pageEdit?.basis;
+  return basis?.kind === 'mechanical-output'
+    && isMechanicalOutputLineage(task, version, basis.originVersion, basis.adoptionFingerprint);
+}
+
+function selectConfirmedBaseline(task, requestedVersion, lineage = null) {
   const successes = executionsFor(task)
     .filter((execution) => completeExecution(task, execution))
-    .filter((execution) => hasConfirmedInputSnapshot(sheetFor(task, execution.version)))
+    .filter((execution) => hasConfirmedInputSnapshot(sheetFor(task, execution.version))
+      || isMechanicalOutputBaseline(task, execution.version))
+    .filter((execution) => !lineage || belongsToSnapshotLineage(task, execution.version, lineage))
     .sort((a, b) => b.version - a.version);
   const selected = requestedVersion == null
     ? successes[0]
@@ -152,7 +163,9 @@ async function successfulPageSnapshots(taskId, task, root, { maxVersion = task.s
 async function verifyExecutionImages(taskId, task, execution, root) {
   const complete = completeExecution(task, execution);
   if (!complete) throw new Error(`制作单版本 ${execution?.version ?? '?'} 没有完整成功的执行结果`);
-  if (!hasConfirmedInputSnapshot(complete.sheet)) throw new Error(`成功基线 v${execution.version} 缺少其原始输入确认记录`);
+  if (!hasConfirmedInputSnapshot(complete.sheet) && !isMechanicalOutputBaseline(task, execution.version)) {
+    throw new Error(`成功基线 v${execution.version} 缺少其原始输入确认记录或有效机械成品谱系`);
+  }
   const images = new Map();
   for (const page of complete.sheet.pages) {
     const record = complete.pages.get(page.page);
@@ -252,15 +265,31 @@ function belongsToSnapshotLineage(task, version, lineage) {
   if (!lineage) return true;
   if (lineage.kind === 'uploaded-images') return belongsToUploadedLineage(task, version, lineage);
   if (lineage.kind === 'confirmed-output') return belongsToConfirmedOutputBranch(task, version, lineage.proofVersion);
+  if (lineage.kind === 'mechanical-output') {
+    return isMechanicalOutputLineage(task, version, lineage.originVersion, lineage.adoptionFingerprint);
+  }
   return false;
 }
 
 function lineageFromCurrent(task) {
   const current = sheetFor(task, task.sheetVersion);
+  if (!current || !isSheetAuthorized(task, current.version)) return null;
+  if (current.mechanicalAdoption) {
+    const lineage = {
+      kind: 'mechanical-output',
+      originVersion: current.version,
+      adoptionFingerprint: current.mechanicalAdoption.fingerprint,
+    };
+    return isMechanicalOutputLineage(task, current.version, lineage.originVersion, lineage.adoptionFingerprint)
+      ? lineage
+      : null;
+  }
   const basis = current?.pageEdit?.basis;
+  if (basis?.kind === 'mechanical-output' && isMechanicalOutputLineage(task, current.version, basis.originVersion, basis.adoptionFingerprint)) {
+    return structuredClone(basis);
+  }
   if (basis?.kind !== 'uploaded-images' || basis.inputFingerprint !== taskInputFingerprint(task)
     || !Array.isArray(basis.uploadedImages) || !basis.uploadedImages.length) return null;
-  if (!isSheetAuthorized(task, current.version)) return null;
   return structuredClone(basis);
 }
 
@@ -360,20 +389,20 @@ async function createUploadedEdit(id, task, { authorization, edits, root }) {
 
 async function createOutputEdit(id, task, { authorization, edits, baseVersion, root }) {
   const currentSources = new Set(task.sources.filter((source) => source.decision === 'retained').map((source) => source.id));
-  const uploadedLineage = !task.inputConfirmation ? lineageFromCurrent(task) : null;
-  if (uploadedLineage) {
-    // A one-off uploaded-image branch remains authorized through later local edits as long as its input fingerprint is unchanged.
+  const currentLineage = lineageFromCurrent(task);
+  const uploadedLineage = currentLineage?.kind === 'uploaded-images' ? currentLineage : null;
+  const mechanicalLineage = currentLineage?.kind === 'mechanical-output' ? currentLineage : null;
+  if (uploadedLineage || mechanicalLineage) {
+    // Uploaded and adopted mechanical outputs retain their own source lineage across local edits.
   } else if (!task.inputConfirmation || task.sheetInputsRevision !== task.inputConfirmation.revision
     || task.sources.some((source) => !['retained', 'excluded'].includes(source.decision))) {
     throw new Error('需求和来源尚未完成人工确认');
   }
 
-  const proof = uploadedLineage ? null : selectConfirmedBaseline(task, baseVersion);
+  const proof = uploadedLineage ? null : selectConfirmedBaseline(task, baseVersion, mechanicalLineage);
   if (!uploadedLineage && baseVersion !== undefined && proof.version !== baseVersion) throw new Error(`制作单版本 ${baseVersion} 不能作为成功基线`);
   if (uploadedLineage && baseVersion !== undefined) throw new Error('上传图片改图不接受成功输出 baseVersion');
-  const snapshotLineage = uploadedLineage
-    ? uploadedLineage
-    : { kind: 'confirmed-output', proofVersion: proof.version };
+  const snapshotLineage = mechanicalLineage || uploadedLineage || { kind: 'confirmed-output', proofVersion: proof.version };
   const effectivePages = await successfulPageSnapshots(id, task, root, {
     maxVersion: baseVersion ?? task.sheetVersion,
     lineage: snapshotLineage,
@@ -404,16 +433,16 @@ async function createOutputEdit(id, task, { authorization, edits, baseVersion, r
     const page = structuredClone(snapshot.definition);
     if (edit) {
       if (!uploadedLineage) assertEditSourcesRetained(page, currentSources);
-      for (const reference of page.referenceImages || []) {
-        await readTaskReferenceImageBytes(id, reference.sourceId, reference.fileOrder, { sources: task.sources, root });
-      }
-      if (1 + edit.stylePages.length + (page.referenceImages || []).length > 12) {
+      if (1 + edit.stylePages.length > 12) {
         throw new Error(`第 ${edit.page} 页参考图片超过 12 张`);
       }
-      page.prompt = `${page.prompt}\n\n对话局部改图要求：${edit.instruction}`;
+      page.prompt = edit.instruction;
+      page.referenceImages = [];
       if (edit.copy !== undefined) {
         page.copy = edit.copy;
         delete page.copyMode;
+      } else {
+        page.copyMode = 'preserve-source-text';
       }
       outputReferences.push(imageReference(id, snapshot, edit.page, 'edit-base', root));
       for (const stylePage of edit.stylePages) {
@@ -433,11 +462,19 @@ async function createOutputEdit(id, task, { authorization, edits, baseVersion, r
     baseVersion: proof?.version ?? task.sheetVersion,
     pageBases,
     edits,
-    ...(uploadedLineage ? { basis: uploadedLineage } : { basis: { kind: 'confirmed-output' } }),
+    ...(mechanicalLineage ? { basis: mechanicalLineage }
+      : uploadedLineage ? { basis: uploadedLineage }
+        : { basis: { kind: 'confirmed-output' } }),
     uploadedImageReferences: [],
     chatEdit: { kind: 'chat-edit', requestId: authorization.requestId, text: authorization.text, authorizedAt: createdAt },
-    baselineEvidence: uploadedLineage
-      ? { sourceVersion: proofVersion || null, basis: proofVersion ? 'successful-uploaded-image-edit' : 'uploaded-image-input' }
+    baselineEvidence: mechanicalLineage
+      ? {
+        sourceVersion: proof.version,
+        basis: 'successful-mechanical-output',
+        executionCompletedAt: proof.completedAt ?? null,
+      }
+      : uploadedLineage
+        ? { sourceVersion: proofVersion || null, basis: proofVersion ? 'successful-uploaded-image-edit' : 'uploaded-image-input' }
       : {
         sourceVersion: proof.version,
         basis: 'successful-execution-requires-confirmed-sheet',
@@ -554,12 +591,27 @@ function currentPageDefinition(task, page) {
 
 function lineageBasisForRestore(task, currentSheet) {
   if (currentSheet.pageEdit?.basis?.kind === 'uploaded-images') return structuredClone(currentSheet.pageEdit.basis);
+  if (currentSheet.mechanicalAdoption) {
+    return {
+      kind: 'mechanical-output',
+      originVersion: currentSheet.version,
+      adoptionFingerprint: currentSheet.mechanicalAdoption.fingerprint,
+    };
+  }
+  if (currentSheet.pageEdit?.basis?.kind === 'mechanical-output') return structuredClone(currentSheet.pageEdit.basis);
   return { kind: 'confirmed-output' };
 }
 
 function proofForRestore(currentSheet) {
   const evidence = currentSheet.pageEdit?.baselineEvidence;
   if (evidence) return structuredClone(evidence);
+  if (currentSheet.mechanicalAdoption) {
+    return {
+      sourceVersion: currentSheet.version,
+      basis: 'successful-mechanical-output',
+      executionCompletedAt: null,
+    };
+  }
   return {
     sourceVersion: currentSheet.version,
     basis: 'successful-execution-requires-confirmed-sheet',

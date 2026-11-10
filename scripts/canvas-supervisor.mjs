@@ -3,6 +3,8 @@ import { createServer as netServer } from 'node:net';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, open, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { canvasStorageHandler } from '../src/canvas/storage.mjs';
 import { root, dataRoot } from '../src/canvas/client.mjs';
@@ -33,6 +35,7 @@ const cookieName=`studio_canvas_${projectId}`;
 const bootstrapTickets=new Map();
 const browserSessions=new Map();
 let currentImageConfig=null;
+let currentVideoConfig=null;
 let currentConfigRevision=0;
 
 function safeJson(res,status,value) {
@@ -48,6 +51,18 @@ async function readRequestJson(req,limit=64*1024) {
   const chunks=[];let size=0;
   for await(const chunk of req) {size+=chunk.length;if(size>limit)throw new Error('request too large');chunks.push(chunk);}
   return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');
+}
+function validVideoConfig(value) {
+  if(value==null)return null;
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('invalid video config');
+  const baseUrl=typeof value.baseUrl==='string'?value.baseUrl.trim():'';
+  const model=typeof value.model==='string'?value.model.trim():'';
+  const apiKey=typeof value.apiKey==='string'?value.apiKey:'';
+  const apiFormat=value.apiFormat??'openai';
+  if(!['openai','gemini'].includes(apiFormat))throw new Error('invalid video config');
+  if(baseUrl.length>2000||model.length>300||apiKey.length>5000)throw new Error('invalid video config');
+  if(baseUrl){const parsed=new URL(baseUrl);if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password||parsed.search||parsed.hash)throw new Error('invalid video config');}
+  return {baseUrl,model,apiKey,apiFormat};
 }
 function sessionCookie(req) {
   const prefix=`${cookieName}=`;
@@ -67,12 +82,71 @@ const proxyImageRequest=createImageProxyHandler({
   authorize:req=>sameOrigin(req),
   getSession:req=>browserSession(req),
 });
+function allowedVideoTarget(session,target,method) {
+  const video=session.videoConfig;
+  if(!video?.baseUrl||video.model!=='minimax_h3'||!video.apiKey||video.apiFormat!=='openai')return false;
+  let base;
+  try {base=new URL(video.baseUrl);} catch {return false;}
+  if(!['http:','https:'].includes(base.protocol)
+    ||target.protocol!==base.protocol||target.origin!==base.origin||target.username||target.password||target.search||target.hash)return false;
+  const basePath=base.pathname.replace(/\/+$/,'');
+  const apiPath=/\/v1$/i.test(basePath)?basePath:`${basePath}/v1`;
+  if(method==='POST')return target.pathname===`${apiPath}/videos`;
+  if(method!=='GET'||!target.pathname.startsWith(`${apiPath}/videos/`))return false;
+  const parts=target.pathname.slice(`${apiPath}/videos/`.length).split('/');
+  return (parts.length===1&&/^[A-Za-z0-9._~-]+$/.test(parts[0]))
+    || (parts.length===2&&/^[A-Za-z0-9._~-]+$/.test(parts[0])&&parts[1]==='content');
+}
+function decodeProxyTarget(rawTarget) {
+  return /^https?:\/\//i.test(rawTarget)?rawTarget:decodeURIComponent(rawTarget);
+}
+async function proxyVideoRequest(req,res) {
+  if(!sameOrigin(req)){res.writeHead(403,{'cache-control':'no-store'}).end();return;}
+  const session=browserSession(req);
+  if(!session){safeJson(res,401,{error:'Studio session required'});return;}
+  const prefix='/__studio/video-proxy/';
+  const raw=String(req.url||'');
+  if(!raw.startsWith(prefix)||raw.length>16_384){res.writeHead(404,{'cache-control':'no-store'}).end();return;}
+  let targetValue,target;
+  try {targetValue=decodeProxyTarget(raw.slice(prefix.length));target=new URL(targetValue);} catch {res.writeHead(400,{'cache-control':'no-store'}).end();return;}
+  const method=req.method||'GET';
+  if(!allowedVideoTarget(session,target,method)){res.writeHead(403,{'cache-control':'no-store'}).end();return;}
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),method==='POST'?120_000:10*60_000);
+  req.once('aborted',()=>controller.abort());
+  res.once('finish',()=>clearTimeout(timeout));
+  res.once('close',()=>{clearTimeout(timeout);if(!res.writableEnded)controller.abort();});
+  const headers=new Headers();
+  headers.set('authorization',`Bearer ${session.videoConfig.apiKey}`);
+  for(const name of ['accept','content-type']) {
+    const value=req.headers[name];
+    if(typeof value==='string')headers.set(name,value);
+  }
+  const init={method,headers,signal:controller.signal,redirect:'manual'};
+  if(method==='POST') {init.body=Readable.toWeb(req);init.duplex='half';}
+  try {
+    const upstream=await fetch(targetValue,init);
+    if(upstream.status>=300&&upstream.status<400){res.writeHead(502,{'cache-control':'no-store'}).end();return;}
+    const forwarded={};
+    for(const name of ['content-type','etag','last-modified','retry-after']) {
+      const value=upstream.headers.get(name);if(value)forwarded[name]=value;
+    }
+    forwarded['cache-control']='no-store';
+    res.writeHead(upstream.status,forwarded);
+    if(!upstream.body){res.end();return;}
+    try {await pipeline(Readable.fromWeb(upstream.body),res);} catch {if(!res.destroyed)res.destroy();}
+  } catch {
+    if(!res.destroyed&&!res.headersSent)safeJson(res,502,{error:'视频服务转发失败'});
+    else if(!res.destroyed)res.destroy();
+  }
+}
 const storageHandler=canvasStorageHandler({data,authorize:req=>sameOrigin(req)&&Boolean(browserSession(req))});
 const server = createServer(async (req,res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   if(await storageHandler(req,res,url))return;
   if(url.pathname.startsWith('/__studio/'))res.setHeader('referrer-policy','no-referrer');
   if(url.pathname.startsWith('/__studio/image-proxy/')){await proxyImageRequest(req,res);return;}
+  if(url.pathname.startsWith('/__studio/video-proxy/')){await proxyVideoRequest(req,res);return;}
   if (url.pathname === '/__studio/health') {
     safeJson(res,200,{instanceId,projectId}); return;
   }
@@ -97,11 +171,14 @@ const server = createServer(async (req,res) => {
       if(!Number.isInteger(body.configRevision)||body.configRevision<1)throw new Error('invalid config revision');
       if(body.configRevision<currentConfigRevision){safeJson(res,409,{error:'stale config revision'});return;}
       const imageConfig=validateImageProxyConfig(body.imageConfig);
+      const videoConfig=validVideoConfig(body.videoConfig);
       currentImageConfig=imageConfig;
+      currentVideoConfig=videoConfig;
       currentConfigRevision=body.configRevision;
       for(const session of browserSessions.values()) {
         if(session.expiresAt>Date.now()) {
           session.imageConfig=currentImageConfig;
+          session.videoConfig=currentVideoConfig;
           session.configRevision=currentConfigRevision;
         }
       }
@@ -119,7 +196,7 @@ const server = createServer(async (req,res) => {
       if(!item||item.expiresAt<Date.now()){safeJson(res,403,{error:'bootstrap ticket expired'});return;}
       for(const [key,session] of browserSessions)if(session.expiresAt<Date.now())browserSessions.delete(key);
       const sessionId=randomBytes(32).toString('hex');
-      browserSessions.set(sessionId,{projectTitle:item.projectTitle,imageConfig:currentImageConfig,configRevision:currentConfigRevision,expiresAt:Date.now()+24*60*60_000,imageResultUrls:new Map()});
+      browserSessions.set(sessionId,{projectTitle:item.projectTitle,imageConfig:currentImageConfig,videoConfig:currentVideoConfig,configRevision:currentConfigRevision,expiresAt:Date.now()+24*60*60_000,imageResultUrls:new Map()});
       res.setHeader('Set-Cookie',`${cookieName}=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
       safeJson(res,200,{ok:true});
     } catch {safeJson(res,400,{error:'invalid bootstrap request'});}
@@ -129,7 +206,7 @@ const server = createServer(async (req,res) => {
     if(req.method!=='GET'||!sameOrigin(req)){res.writeHead(403,{'cache-control':'no-store'}).end();return;}
     const session=browserSession(req);
     if(!session){safeJson(res,401,{error:'Studio session required'});return;}
-    safeJson(res,200,{ok:true,projectId,projectTitle:session.projectTitle,bridgeUrl,imageConfig:session.imageConfig,configRevision:session.configRevision,bridgeToken:token});
+    safeJson(res,200,{ok:true,projectId,projectTitle:session.projectTitle,bridgeUrl,imageConfig:session.imageConfig,videoConfig:session.videoConfig,configRevision:session.configRevision,bridgeToken:token});
     return;
   }
   if (url.pathname === '/__studio/stop') {

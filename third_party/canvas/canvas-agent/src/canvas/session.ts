@@ -39,6 +39,7 @@ const DIRECT_CANVAS_TOOLS = new Set<ToolName>([
     "canvas_resample_image",
     "canvas_stitch_images",
     "canvas_compose_images",
+    "canvas_adapt_logo",
     "canvas_import_image",
 ]);
 

@@ -36,6 +36,9 @@ export type ImageSplitPiece = {
 
 export type PixelImageSource = { dataUrl: string; width: number; height: number };
 export type ImageStitchParams = { direction: "horizontal" | "vertical"; gap?: number; background?: string };
+export type ImageLogoOutline = { color: string; width: number };
+export type ImageLogoPlate = { color: string; padding: number; radius: number };
+export type ImageLogoAdaptation = { foreground?: string; outline?: ImageLogoOutline; plate?: ImageLogoPlate };
 export type ImageComposeLayer = {
     source: PixelImageSource;
     x: number;
@@ -49,6 +52,185 @@ export type ImageComposeLayer = {
 
 const MAX_PIXEL_OPERATION_LONG_EDGE = 16384;
 const MAX_PIXEL_OPERATION_PIXELS = 32 * 1024 * 1024;
+
+/** Calculate the symmetric pixel padding added for an outline and optional plate. */
+export function logoAdaptationPadding(params: ImageLogoAdaptation) {
+    return (params.outline?.width ?? 0) + (params.plate?.padding ?? 0);
+}
+
+/** Recolor a transparent logo while retaining its alpha pixels, outline, or plate. */
+export async function adaptLogoDataUrl(dataUrl: string, params: ImageLogoAdaptation) {
+    validateLogoAdaptation(params);
+    const image = await loadImage(dataUrl);
+    const padding = logoAdaptationPadding(params);
+    const width = image.naturalWidth + padding * 2;
+    const height = image.naturalHeight + padding * 2;
+    assertPixelOutputSize(width, height);
+
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = image.naturalWidth;
+    sourceCanvas.height = image.naturalHeight;
+    const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
+    if (!sourceContext) throw new Error("浏览器无法创建 Canvas2D 绘图上下文");
+    sourceContext.drawImage(image, 0, 0);
+    const sourcePixels = sourceContext.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+    let hasVisiblePixel = false;
+    let hasTransparentPixel = false;
+    for (let offset = 3; offset < sourcePixels.data.length; offset += 4) {
+        const alpha = sourcePixels.data[offset];
+        hasVisiblePixel ||= alpha > 0;
+        hasTransparentPixel ||= alpha === 0;
+    }
+    if (!hasVisiblePixel || !hasTransparentPixel) {
+        throw new Error("Logo 必须是非空透明原件；请提供带透明背景的 PNG/WebP，不会自动抠除白底。");
+    }
+
+    const { canvas, context } = createPixelCanvas(width, height);
+    if (params.plate) {
+        const [red, green, blue, alpha] = parsePixelColor(params.plate.color);
+        context.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha / 255})`;
+        const radius = Math.min(params.plate.radius, width / 2, height / 2);
+        if (radius > 0) {
+            if (typeof context.roundRect !== "function") throw new Error("当前 Canvas2D 不支持圆角路径，未生成底牌");
+            context.beginPath();
+            context.roundRect(0, 0, width, height, radius);
+            context.fill();
+        } else {
+            context.fillRect(0, 0, width, height);
+        }
+    }
+
+    const outputPixels = context.getImageData(0, 0, width, height);
+    const outlineColor = params.outline ? parsePixelColor(params.outline.color) : null;
+    const foreground = params.foreground ? parsePixelColor(params.foreground) : null;
+    const sourceAlpha = sourcePixels.data;
+    if (outlineColor && params.outline) {
+        const distance = alphaDistanceMap(sourceAlpha, sourceCanvas.width, sourceCanvas.height, padding, width, height);
+        const outlinePixels = context.createImageData(width, height);
+        const outlineWidth = params.outline.width;
+        for (let y = 0; y < height; y += 1) {
+            const sourceY = y - padding;
+            for (let x = 0; x < width; x += 1) {
+                const sourceX = x - padding;
+                if (sourceX >= 0 && sourceY >= 0 && sourceX < sourceCanvas.width && sourceY < sourceCanvas.height
+                    && sourceAlpha[(sourceY * sourceCanvas.width + sourceX) * 4 + 3] > 0) continue;
+                const distanceInPixels = distance[y * width + x] / 256;
+                if (distanceInPixels > outlineWidth) continue;
+                const coverage = Math.max(0, Math.min(1, outlineWidth + 0.5 - distanceInPixels));
+                const offset = (y * width + x) * 4;
+                outlinePixels.data[offset] = outlineColor[0];
+                outlinePixels.data[offset + 1] = outlineColor[1];
+                outlinePixels.data[offset + 2] = outlineColor[2];
+                outlinePixels.data[offset + 3] = Math.round(outlineColor[3] * coverage);
+            }
+        }
+        for (let offset = 0; offset < outlinePixels.data.length; offset += 4) {
+            if (outlinePixels.data[offset + 3] > 0) compositePixel(outputPixels.data, offset, outlinePixels.data, offset);
+        }
+    }
+
+    if (foreground) {
+        for (let offset = 0; offset < sourcePixels.data.length; offset += 4) {
+            if (sourcePixels.data[offset + 3] === 0) continue;
+            sourcePixels.data[offset] = foreground[0];
+            sourcePixels.data[offset + 1] = foreground[1];
+            sourcePixels.data[offset + 2] = foreground[2];
+        }
+    }
+    for (let y = 0; y < sourceCanvas.height; y += 1) {
+        for (let x = 0; x < sourceCanvas.width; x += 1) {
+            const sourceOffset = (y * sourceCanvas.width + x) * 4;
+            if (sourcePixels.data[sourceOffset + 3] === 0) continue;
+            const outputOffset = ((y + padding) * width + x + padding) * 4;
+            compositePixel(outputPixels.data, outputOffset, sourcePixels.data, sourceOffset);
+        }
+    }
+    context.putImageData(outputPixels, 0, 0);
+    return { dataUrl: canvas.toDataURL("image/png"), width, height, padding };
+}
+
+function validateLogoAdaptation(params: ImageLogoAdaptation) {
+    if (params.foreground !== undefined) {
+        if (!/^#[0-9a-fA-F]{6}$/.test(params.foreground)) throw new Error("foreground 必须使用不带透明度的 #RRGGBB，以保留原 Logo alpha");
+    }
+    if (params.outline !== undefined) {
+        if (!params.outline || !Number.isSafeInteger(params.outline.width) || params.outline.width < 1 || params.outline.width > 64) {
+            throw new Error("outline.width 必须是 1–64 的整数像素");
+        }
+        parsePixelColor(params.outline.color);
+    }
+    if (params.plate !== undefined) {
+        if (!params.plate || !Number.isSafeInteger(params.plate.padding) || params.plate.padding < 0 || params.plate.padding > 256
+            || !Number.isSafeInteger(params.plate.radius) || params.plate.radius < 0 || params.plate.radius > 8192) {
+            throw new Error("plate.padding 必须是 0–256 的整数、radius 必须是 0–8192 的整数");
+        }
+        parsePixelColor(params.plate.color);
+    }
+    if (!params.foreground && !params.outline && !params.plate) throw new Error("adapt-logo 至少需要 foreground、outline 或 plate 参数");
+}
+
+/** A two-pass chamfer distance map keeps the alpha contour close without trimming the source canvas. */
+function alphaDistanceMap(source: Uint8ClampedArray, sourceWidth: number, sourceHeight: number, padding: number, width: number, height: number) {
+    const unreachable = 0xffff;
+    const diagonal = 362;
+    const distance = new Uint16Array(width * height);
+    distance.fill(unreachable);
+    for (let y = 0; y < sourceHeight; y += 1) {
+        for (let x = 0; x < sourceWidth; x += 1) {
+            if (source[(y * sourceWidth + x) * 4 + 3] > 0) distance[(y + padding) * width + x + padding] = 0;
+        }
+    }
+    for (let y = 0; y < height; y += 1) {
+        const row = y * width;
+        for (let x = 0; x < width; x += 1) {
+            const index = row + x;
+            let best = distance[index];
+            if (x > 0) best = Math.min(best, distance[index - 1] + 256);
+            if (y > 0) {
+                best = Math.min(best, distance[index - width] + 256);
+                if (x > 0) best = Math.min(best, distance[index - width - 1] + diagonal);
+                if (x + 1 < width) best = Math.min(best, distance[index - width + 1] + diagonal);
+            }
+            distance[index] = best;
+        }
+    }
+    for (let y = height - 1; y >= 0; y -= 1) {
+        const row = y * width;
+        for (let x = width - 1; x >= 0; x -= 1) {
+            const index = row + x;
+            let best = distance[index];
+            if (x + 1 < width) best = Math.min(best, distance[index + 1] + 256);
+            if (y + 1 < height) {
+                best = Math.min(best, distance[index + width] + 256);
+                if (x > 0) best = Math.min(best, distance[index + width - 1] + diagonal);
+                if (x + 1 < width) best = Math.min(best, distance[index + width + 1] + diagonal);
+            }
+            distance[index] = best;
+        }
+    }
+    return distance;
+}
+
+function compositePixel(target: Uint8ClampedArray, targetOffset: number, source: Uint8ClampedArray, sourceOffset: number) {
+    const sourceAlpha = source[sourceOffset + 3];
+    if (sourceAlpha === 0) return;
+    const targetAlpha = target[targetOffset + 3];
+    if (sourceAlpha === 255 || targetAlpha === 0) {
+        target[targetOffset] = source[sourceOffset];
+        target[targetOffset + 1] = source[sourceOffset + 1];
+        target[targetOffset + 2] = source[sourceOffset + 2];
+        target[targetOffset + 3] = sourceAlpha;
+        return;
+    }
+    const sourceOpacity = sourceAlpha / 255;
+    const targetOpacity = targetAlpha / 255;
+    const outputOpacity = sourceOpacity + targetOpacity * (1 - sourceOpacity);
+    const targetWeight = targetOpacity * (1 - sourceOpacity);
+    for (let channel = 0; channel < 3; channel += 1) {
+        target[targetOffset + channel] = Math.round((source[sourceOffset + channel] * sourceOpacity + target[targetOffset + channel] * targetWeight) / outputOpacity);
+    }
+    target[targetOffset + 3] = Math.round(outputOpacity * 255);
+}
 
 /** 拼接源图的原始像素，超出输出画布上限时直接拒绝。 */
 export async function stitchDataUrls(sources: PixelImageSource[], params: ImageStitchParams) {

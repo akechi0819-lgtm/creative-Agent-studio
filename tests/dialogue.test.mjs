@@ -26,6 +26,19 @@ test('成品自然确认仅批准实际展示的完整图片版本与哈希',()=
  assert.throws(()=>dialogueIntent(complete,{text:'确认当前成品 v2 并交付',displayed}),{code:'ERR_DIALOGUE_STALE'});
 });
 
+test('视频镜头确认与交付按独立 videoVersion 和视频 SHA 绑定',()=>{
+ const sha256='c'.repeat(64);
+ const planTask={...task,video:{version:2,plans:[{version:2,prompt:'隔离镜头',confirmedAt:null}],execution:{version:2,status:'pending',submitted:false}}};
+ const planDisplayed={revision:3,sheetVersion:1,videoVersion:2,videoSha:null};
+ for(const text of ['确认视频镜头并生成','确认视频镜头 v2 并生成'])assert.equal(dialogueIntent(planTask,{text,displayed:planDisplayed}),'video-plan');
+ for(const text of ['看起来不错','不要确认视频镜头并生成','确认视频镜头并生成吗','确认视频镜头后再讨论'])assert.equal(dialogueIntent(planTask,{text,displayed:planDisplayed}),null);
+ assert.throws(()=>dialogueIntent(planTask,{text:'确认视频镜头并生成',displayed:{...planDisplayed,videoVersion:1}}),{code:'ERR_DIALOGUE_STALE'});
+ const complete={...planTask,video:{version:2,plans:[{version:2,prompt:'隔离镜头',confirmedAt:'confirmed'}],execution:{version:2,status:'succeeded',submitted:true,output:{sha256}}}};
+ const deliveryDisplayed={...planDisplayed,videoSha:sha256};
+ assert.equal(dialogueIntent(complete,{text:'确认视频交付',displayed:deliveryDisplayed}),'video-delivery');
+ for(const changed of [undefined,{...deliveryDisplayed,videoVersion:1},{...deliveryDisplayed,videoSha:'d'.repeat(64)}])assert.throws(()=>dialogueIntent(complete,{text:'确认视频交付',displayed:changed}),{code:'ERR_DIALOGUE_STALE'});
+});
+
 test('参考方案只能使用当前全部来源，不能伪造新事实',()=>{
  const current={sources:[{id:'one',factBoundary:'不引用品牌'}]};
  assert.deepEqual(referenceProposal(current,[{id:'one',decision:'retained',purpose:'仅风格'}]),[{kind:'existing',id:'one',decision:'retained',purpose:'仅风格',factBoundary:'不引用品牌'}]);

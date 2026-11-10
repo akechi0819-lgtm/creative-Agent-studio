@@ -56,6 +56,9 @@ function jobLabel(kind) {
     resume: '继续绘图',
     'asset-clean': '素材清洗',
     'dna-organize': 'DNA 草稿整理',
+    'video-confirm-and-execute': '确认镜头并生成视频',
+    'video-execute': '生成视频',
+    'video-resume': '查询原视频任务',
   })[kind] || kind;
 }
 
@@ -477,10 +480,15 @@ export function App() {
         && !files.length
         && classifyDialogueIntent(instructionText) === 'sheet',
       );
-      if (explicitlyApprovesDisplayedSheet) await ensureCanvasConnected(taskId);
+      const explicitlyApprovesDisplayedVideo = Boolean(displayed
+        && displayed.revision === expectedRevision
+        && Number.isInteger(displayed.videoVersion) && displayed.videoVersion > 0
+        && !answers && !files.length
+        && classifyDialogueIntent(instructionText) === 'video-plan');
+      if (explicitlyApprovesDisplayedSheet || explicitlyApprovesDisplayedVideo) await ensureCanvasConnected(taskId);
       const result = await startJob(
         () => api.chat(taskId, chatText, chatRevision, requestId, { model, displayed, answers, ...(completedSourceId ? { attachmentSourceIds: [completedSourceId] } : {}) }),
-        { downloadResult: classifyDialogueIntent(instructionText) === 'delivery' },
+        { downloadResult: ['delivery', 'video-delivery'].includes(classifyDialogueIntent(instructionText)) },
       );
       setPendingChatsByTask((all) => ({
         ...all,
@@ -734,8 +742,10 @@ export function App() {
           onLoadModels={loadBaseModels}
           onAction={async (action, payload) => {
             const result = await run(async () => {
-              if (action === 'execute' || action === 'resume' || action === 'confirm-and-execute') await ensureCanvasConnected(task.id);
+              if (['execute', 'resume', 'confirm-and-execute', 'video-confirm-and-execute', 'video-execute', 'video-resume'].includes(action)) await ensureCanvasConnected(task.id);
               const request = action === 'review' && selectedBaseModel ? { ...payload, model: selectedBaseModel } : payload;
+              if (action === 'save-logo-variant') return api.saveLogoVariant(task.id, request);
+              if (action.startsWith('video-')) return api.videoAction(task.id, action, request);
               return api.taskAction(task.id, action, request);
             }, { refresh: true });
             if (action === 'canvas-sync' && payload.selections?.length) setCanvasNeedsSyncTaskId((current) => current === task.id ? '' : current);
@@ -744,6 +754,7 @@ export function App() {
           onConfirmReferencesAndContinue={confirmReferencesAndContinue}
           onSetReferences={(payload) => run(() => api.setReferences(task.id, payload), { refresh: true })}
           onChat={(message, answers, attachments, displayed) => sendChat({ taskId: task.id, text: message, expectedRevision: task.revision, model: selectedBaseModel, displayed, ...(answers ? { answers } : {}), ...(attachments?.length ? { attachments } : {}) })}
+          onSaveLogoVariant={(operationId, imageIndex) => run(() => api.saveLogoVariant(task.id, { expectedRevision: task.revision, operationId, imageIndex }), { refresh: true, success: 'Logo 派生素材已保存为待清洗、待人工确认的素材条目。' })}
           onDraftSheet={() => startJob(() => api.chat(task.id, '请根据已确认的需求、保留的参考素材与本次 DNA 快照，整理一份完整制作单。请提供连续页码、准确页面文案、画面要求、尺寸，以及实际引用的来源 ID；不要替我确认。', task.revision, undefined, { model: selectedBaseModel }))}
           onCanvasSync={async (payload) => {
             return run(() => api.taskAction(task.id, 'canvas-sync', payload), { refresh: true });

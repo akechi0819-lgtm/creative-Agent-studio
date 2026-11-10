@@ -7,11 +7,11 @@ import { createTask, readTask, confirmInputs, setBrief, setSheet, confirmSheet }
 import { executeTask } from '../src/creative/executor.mjs';
 const config={projectId:'fixture',webUrl:'http://fixture',clientId:'fixture'};
 const getHealth=async()=>({targets:[{hasCanvas:true,projectId:'fixture',clientId:'fixture'}]});
-async function setup(t,count=1){
+async function setup(t,count=1,{quality}={}){
  const root=await mkdtemp(path.join(os.tmpdir(),'studio-executor-'));t.after(()=>rm(root,{recursive:true,force:true}));
  let task=await createTask({title:'合同夹具',brief:{topic:'合同验证',audience:'开发者',requirements:'模拟非真实成品'}},root);
  task=await confirmInputs(task.id,{revision:task.revision,by:'test fixture',note:'仅模拟确认'},{root});
- task=await setSheet(task.id,{title:'夹具',pages:Array.from({length:count},(_,i)=>({page:i+1,copy:'文字',prompt:'模拟',size:'3:4'}))},{root,expectedRevision:task.revision,inputRevision:task.inputConfirmation.revision});
+ task=await setSheet(task.id,{title:'夹具',pages:Array.from({length:count},(_,i)=>({page:i+1,copy:'文字',prompt:'模拟',size:'3:4',...(quality===undefined?{}:{quality})}))},{root,expectedRevision:task.revision,inputRevision:task.inputConfirmation.revision});
  await confirmSheet(task.id,{version:1,by:'test fixture',note:'仅模拟确认'},{root,expectedRevision:task.revision});return {root,id:task.id};
 }
 async function executeCurrent(id,options){const task=await readTask(id,options.root);return executeTask(id,{...options,expectedRevision:task.revision});}
@@ -27,7 +27,7 @@ function canvas({failPage,unknown=false,cancelController}={}){
   }
   if(name==='generation_get_status')return {tasks:unknown?[]:[{id:input.nodeIds[0],status:'failed'}]};
   throw new Error(name);
- },deliver:()=>{const config=nodes.filter(n=>n.type==='config').at(-1);const image={id:'late-image',type:'image',metadata:{status:'success'}};nodes.push(image);connections.push({fromNodeId:config.id,toNodeId:image.id});},recover:async(nodeId,file)=>{await mkdir(path.dirname(file),{recursive:true});await writeFile(file,'fixture bytes');return {path:file,nodeId};},runs:()=>runs
+ },deliver:()=>{const config=nodes.filter(n=>n.type==='config').at(-1);const image={id:'late-image',type:'image',metadata:{status:'success'}};nodes.push(image);connections.push({fromNodeId:config.id,toNodeId:image.id});},recover:async(nodeId,file)=>{await mkdir(path.dirname(file),{recursive:true});await writeFile(file,'fixture bytes');return {path:file,nodeId};},runs:()=>runs,nodes:()=>nodes
  };
 }
 test('未确认版本拒绝外部调用',async t=>{const {root,id}=await setup(t);const c=canvas();await assert.rejects(executeCurrent(id,{root,version:2,config,getHealth,...c}));assert.equal(c.runs(),0);});
@@ -60,6 +60,17 @@ test('取消后迟到的成功结果由原节点回收，恢复不重新生成',
  assert.equal(c.runs(),1);assert.equal((await readTask(id,root)).execution.status,'succeeded');
 });
 test('五页支持及完成文件变动不会静默沿用',async t=>{const {root,id}=await setup(t,5);const c=canvas();await executeCurrent(id,{root,version:1,config,getHealth,...c});assert.equal(c.runs(),5);const task=await readTask(id,root);await writeFile(task.execution.pages[0].image.path,'changed');await assert.rejects(executeCurrent(id,{root,version:1,config,getHealth,...c}));assert.equal(c.runs(),5);});
+
+test('图片质量默认 auto，明确选择的质量写入对应 Canvas 配置节点',async t=>{
+ const defaultTask=await setup(t);const defaultCanvas=canvas();
+ await executeCurrent(defaultTask.id,{root:defaultTask.root,version:1,config,getHealth,...defaultCanvas});
+ assert.equal(defaultCanvas.nodes().find(node=>node.type==='config').metadata.quality,'auto');
+ assert.match(defaultCanvas.nodes().find(node=>node.type==='text').metadata.content,/必须准确呈现的全部文字：\n文字/);
+ const highTask=await setup(t,1,{quality:'high'});const highCanvas=canvas();
+ await executeCurrent(highTask.id,{root:highTask.root,version:1,config,getHealth,...highCanvas});
+ assert.equal((await readTask(highTask.id,highTask.root)).sheets[0].pages[0].quality,'high');
+ assert.equal(highCanvas.nodes().find(node=>node.type==='config').metadata.quality,'high');
+});
 
 test('真实共享HTTP连接失败会落盘任务失败状态',async t=>{const {root,id}=await setup(t);await assert.rejects(executeCurrent(id,{root,version:1,config,getHealth:async()=>{throw new Error('controlled health failure');}}));const task=await readTask(id,root);assert.equal(task.execution.status,'failed');assert.equal(task.execution.pages.length,0);});
 

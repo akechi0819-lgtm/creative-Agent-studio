@@ -34,6 +34,11 @@ export const api = {
   task: (id) => request(`/api/tasks/${idPath(id)}`),
   createTask: (value) => request('/api/tasks', json('POST', value)),
   taskAction: (id, action, payload) => request(`/api/tasks/${idPath(id)}/${action}`, json('POST', payload)),
+  saveLogoVariant: (id, payload) => request(`/api/tasks/${idPath(id)}/save-logo-variant`, json('POST', payload)),
+  writeVideoPlan: (id, payload) => request(`/api/tasks/${idPath(id)}/write-video-plan`, json('POST', payload)),
+  videoAction: (id, action, payload) => request(`/api/tasks/${idPath(id)}/${idPath(action)}`, json('POST', payload)),
+  videoOutputUrl: (id, version, sha256) => `/api/tasks/${idPath(id)}/video-output/current?version=${encodeURIComponent(version)}&sha256=${encodeURIComponent(sha256)}`,
+  videoExportUrl: (id, version, file = 'video') => `/api/tasks/${idPath(id)}/video-exports/${idPath(version)}/${idPath(file)}`,
   setReferences: (id, payload) => request(`/api/tasks/${idPath(id)}/references`, json('POST', payload)),
   attachTaskFiles: (id, formData) => request(`/api/tasks/${idPath(id)}/attachments`, { method: 'POST', body: formData }),
   chat: (id, text, expectedRevision, requestId = crypto.randomUUID(), options = {}) => request(`/api/tasks/${idPath(id)}/chat`, json('POST', {

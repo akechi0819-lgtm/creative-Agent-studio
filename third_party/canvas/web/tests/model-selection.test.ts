@@ -1,4 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { AiConfig, ModelCapability } from "../src/stores/use-config-store";
 import type { CanvasNodeData } from "../src/types/canvas";
 
@@ -18,9 +20,11 @@ afterAll(() => {
     else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-const { defaultConfig, resolveModelForCapability, useConfigStore } = await import("../src/stores/use-config-store");
+const { defaultConfig, resolveModelForCapability, STUDIO_H3_VIDEO_DEFAULTS, STUDIO_H3_VIDEO_MODEL, useConfigStore, videoNodeModelSelectionPatch } = await import("../src/stores/use-config-store");
 const { buildGenerationConfig } = await import("../src/lib/canvas/canvas-generation-helpers");
 const { CanvasNodeType } = await import("../src/types/canvas");
+const { canvasThemes } = await import("../src/lib/canvas-theme");
+const { h3VideoRatioOptions, h3VideoResolutionOptions, h3VideoSecondsRange, isH3VideoConfig, VideoSettingsPanel } = await import("../src/components/video-settings-panel");
 
 const config: AiConfig = {
     ...defaultConfig,
@@ -97,4 +101,53 @@ test("unavailable explicit selections are preserved for every generation capabil
     for (const capability of ["image", "video", "text", "audio"] as ModelCapability[]) {
         expect(resolveModelForCapability(config, `removed::${capability}`, capability)).toBe(`removed::${capability}`);
     }
+});
+
+test("selecting MiniMax H3 writes its exact global and node defaults without changing them for other models", () => {
+    const original = useConfigStore.getState().config;
+    try {
+        useConfigStore.getState().updateConfig("videoModel", STUDIO_H3_VIDEO_MODEL);
+        expect(useConfigStore.getState().config).toMatchObject({
+            videoModel: STUDIO_H3_VIDEO_MODEL,
+            size: STUDIO_H3_VIDEO_DEFAULTS.size,
+            vquality: STUDIO_H3_VIDEO_DEFAULTS.vquality,
+            videoSeconds: STUDIO_H3_VIDEO_DEFAULTS.videoSeconds,
+        });
+        expect(videoNodeModelSelectionPatch(STUDIO_H3_VIDEO_MODEL)).toEqual({
+            model: STUDIO_H3_VIDEO_MODEL,
+            size: "16:9",
+            vquality: "768",
+            seconds: "4",
+        });
+        expect(videoNodeModelSelectionPatch("replacement::video-b")).toEqual({ model: "replacement::video-b" });
+
+        useConfigStore.setState({ config: { ...useConfigStore.getState().config, size: "4:3", vquality: "4K", videoSeconds: "9" } });
+        useConfigStore.getState().updateConfig("videoModel", "replacement::video-b");
+        expect(useConfigStore.getState().config).toMatchObject({ size: "4:3", vquality: "4K", videoSeconds: "9" });
+    } finally {
+        useConfigStore.setState({ config: original });
+    }
+});
+
+test("MiniMax H3 settings panel exposes only its supported resolutions, ratios, and duration range", () => {
+    expect(h3VideoResolutionOptions.map((item) => item.value)).toEqual(["768", "1080p", "2K", "4K"]);
+    expect(h3VideoRatioOptions.map((item) => item.value)).toEqual(["1:1", "3:4", "4:3", "16:9", "9:16", "21:9"]);
+    expect(h3VideoSecondsRange).toEqual({ min: 4, max: 15 });
+
+    const h3Config = { ...defaultConfig, model: STUDIO_H3_VIDEO_MODEL, videoModel: STUDIO_H3_VIDEO_MODEL, size: "16:9", vquality: "768", videoSeconds: "4" };
+    expect(isH3VideoConfig(h3Config)).toBe(true);
+    const markup = renderToStaticMarkup(createElement(VideoSettingsPanel, { config: h3Config, onConfigChange: () => {}, theme: canvasThemes.light }));
+    expect(markup).toContain("1080p");
+    expect(markup).toContain("2K");
+    expect(markup).toContain("4K");
+    expect(markup).toContain("21:9");
+    expect(markup).not.toContain("480p");
+    expect(markup).not.toContain("720p");
+    expect(markup).not.toContain("自动");
+    expect(markup).not.toContain("首尾帧模式");
+    expect(markup).not.toContain("全能参考模式");
+    expect(markup).toContain('min="4" max="15"');
+
+    const nodeSelectedConfig = { ...config, model: "replacement::video-b", videoModel: STUDIO_H3_VIDEO_MODEL };
+    expect(isH3VideoConfig(nodeSelectedConfig)).toBe(false);
 });

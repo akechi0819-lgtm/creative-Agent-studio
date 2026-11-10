@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
-import { videoResolutionOptions } from "@/components/video-settings-panel";
+import { h3VideoResolutionOptions, videoResolutionOptions } from "@/components/video-settings-panel";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
@@ -15,7 +15,7 @@ import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent }
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
-import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, STUDIO_H3_VIDEO_DEFAULTS, STUDIO_H3_VIDEO_MODEL, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -68,6 +68,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const webdavReady = Boolean(webdav.url.trim());
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
+    const isH3Video = config.videoModel === STUDIO_H3_VIDEO_MODEL;
     const imageResolutionOptions = mediaScaleOptions.map((value) => ({ value, label: value === "auto" ? t("settingsPanels.common.auto") : value.toUpperCase() }));
     useEffect(() => setActiveTab(initialTab), [initialTab]);
 
@@ -243,7 +244,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         <Select value={inferMediaScale(config.size)} options={imageResolutionOptions} onChange={(scale) => updateConfig("size", computeMediaSize(scale, inferMediaRatio(config.size)))} />
                                     </Form.Item>
                                     <Form.Item label={t("config.preferences.videoResolution")} className="mb-4">
-                                        <Select value={parseVideoResolution(config.vquality)} options={videoResolutionOptions} onChange={(value) => updateConfig("vquality", value)} />
+                                        <Select value={isH3Video ? config.vquality : parseVideoResolution(config.vquality)} options={isH3Video ? h3VideoResolutionOptions : videoResolutionOptions} onChange={(value) => updateConfig("vquality", value)} />
                                     </Form.Item>
                                     <Form.Item label={t("config.preferences.audioVoice")} className="mb-4">
                                         <Select value={config.audioVoice} options={audioVoiceOptions} onChange={(value) => updateConfig("audioVoice", value)} />
@@ -392,10 +393,17 @@ function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
         apiKey: channels[0]?.apiKey || config.apiKey,
         apiFormat: channels[0]?.apiFormat || config.apiFormat,
     };
+    const videoModel = pickDefaultModel(next, "video", config.videoModel);
+    const newlySelectedH3Video = videoModel === STUDIO_H3_VIDEO_MODEL && config.videoModel !== STUDIO_H3_VIDEO_MODEL;
     return {
         ...next,
         imageModel: pickDefaultModel(next, "image", config.imageModel),
-        videoModel: pickDefaultModel(next, "video", config.videoModel),
+        videoModel,
+        ...(newlySelectedH3Video ? {
+            size: STUDIO_H3_VIDEO_DEFAULTS.size,
+            vquality: STUDIO_H3_VIDEO_DEFAULTS.vquality,
+            videoSeconds: STUDIO_H3_VIDEO_DEFAULTS.videoSeconds,
+        } : {}),
         textModel: pickDefaultModel(next, "text", config.textModel),
         audioModel: pickDefaultModel(next, "audio", config.audioModel),
     };

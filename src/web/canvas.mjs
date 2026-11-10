@@ -4,9 +4,10 @@ import { createServer as createNetServer } from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { callCanvasTool, health, recoverImage } from '../canvas/client.mjs';
 import { selectImage } from '../creative/executor.mjs';
-import { readTask, readTaskUploadedImageBytes, requiredRevision, taskDirectory, isSheetAuthorized } from '../creative/tasks.mjs';
+import { readTask, readTaskReferenceImageBytes, readTaskUploadedImageBytes, requiredRevision, taskDirectory, isSheetAuthorized } from '../creative/tasks.mjs';
 import { readCanvasOperationImage, runCanvasOperation } from '../creative/canvas-operations.mjs';
 import { detectImageRegions } from '../creative/image-regions.mjs';
 
@@ -15,6 +16,10 @@ const SUPERVISOR = path.join(REPO_ROOT, 'scripts/canvas-supervisor.mjs');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const VIDEO_MODEL = 'studio-video::minimax_h3';
+const VIDEO_MODEL_NAME = 'minimax_h3';
+const VIDEO_PROFILE = 'osodm-video-json-v1';
+const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
 
 function canvasError(code, message, cause) {
   const error = new Error(message, cause ? { cause } : undefined);
@@ -30,6 +35,28 @@ function taskCanvasDirectory(root, taskId) {
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function assertTransparentLogoSource(image) {
+  let decoded;
+  try { decoded = await loadImage(image.buffer); }
+  catch (cause) { throw canvasError('ERR_CANVAS_OPERATION_INPUT', 'Logo 原件无法读取；请提供带透明通道的 PNG/WebP。', cause); }
+  if (decoded.width !== image.width || decoded.height !== image.height) {
+    throw canvasError('ERR_CANVAS_OPERATION_INPUT', 'Logo 原件尺寸与 Canvas 元数据不一致；请重新读取当前图片。');
+  }
+  const canvas = createCanvas(decoded.width, decoded.height);
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(decoded, 0, 0);
+  const pixels = context.getImageData(0, 0, decoded.width, decoded.height).data;
+  let hasVisiblePixel = false;
+  let hasTransparentPixel = false;
+  for (let offset = 3; offset < pixels.length; offset += 4) {
+    hasVisiblePixel ||= pixels[offset] > 0;
+    hasTransparentPixel ||= pixels[offset] === 0;
+  }
+  if (!hasVisiblePixel || !hasTransparentPixel) {
+    throw canvasError('ERR_CANVAS_OPERATION_INPUT', 'Logo 必须是非空透明原件；请提供带透明背景的 PNG/WebP，不会自动抠除白底。');
+  }
 }
 
 function stableCanvasNodeId(taskId, sourceId, fileOrder, sourceSha256) {
@@ -58,22 +85,125 @@ function normalizeImageSettings(value) {
   return { baseUrl, model, apiKey, apiFormat: 'openai' };
 }
 
-function studioAiConfig(image) {
-  const model = image?.model || '';
-  const channelModel = model ? `studio-image::${model}` : '';
-  const channel = image ? [{
-    id: 'studio-image', name: 'Studio 图片模型', baseUrl: image.baseUrl,
-    apiKey: image.apiKey, apiFormat: 'openai', models: [{ name: model, capability: 'image' }],
-  }] : [];
-  return {
-    channelMode: 'local', baseUrl: image?.baseUrl || '', apiKey: '', apiFormat: 'openai', channels: channel,
-    model: channelModel, imageModel: channelModel, videoModel: '', textModel: '', audioModel: '',
-    audioVoice: 'alloy', audioFormat: 'mp3', audioSpeed: '1', audioInstructions: '',
-    videoSeconds: '6', vquality: '720', videoGenerateAudio: 'true', videoWatermark: 'false', videoMode: 'frames',
-    systemPrompt: '', reasoningEffort: 'auto', models: channelModel ? [channelModel] : [],
-    quality: 'auto', size: '1:1', background: '', count: '1', canvasImageCount: '1',
-    proxyEnabled: false, proxyUrl: '', nodeRegenerateBehavior: 'new-node', autoFocusOnSelect: false,
-  };
+function canonicalVideoBaseUrl(baseUrl) {
+  let parsed;
+  try { parsed = new URL(baseUrl); } catch { throw canvasError('ERR_CANVAS_VIDEO_CONFIG', '视频模型服务地址无效'); }
+  if (parsed.origin !== 'https://api.osodm.com'
+    || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw canvasError('ERR_CANVAS_VIDEO_CONFIG', '视频模型目前仅支持已验证的 HTTPS 服务地址');
+  }
+  const pathname = parsed.pathname.replace(/\/+$/, '');
+  if (pathname && !/^\/v1$/i.test(pathname)) throw canvasError('ERR_CANVAS_VIDEO_CONFIG', 'MiniMax H3 Base URL 只支持服务根地址或 /v1');
+  return `${parsed.origin}/v1`;
+}
+
+function normalizeVideoSettings(value, { requireApiKey = false } = {}) {
+  const video = value?.video;
+  if (!video || typeof video !== 'object' || Array.isArray(video)) return null;
+  const baseUrl = typeof video.baseUrl === 'string' ? video.baseUrl.trim() : '';
+  const model = typeof video.model === 'string' ? video.model.trim() : '';
+  const apiKey = typeof video.apiKey === 'string' ? video.apiKey : '';
+  const apiFormat = video.apiFormat || 'openai';
+  if (!baseUrl && !model && !apiKey) return null;
+  if (!baseUrl || model !== VIDEO_MODEL_NAME || apiFormat !== 'openai' || baseUrl.length > 2000 || apiKey.length > 5000) {
+    throw canvasError('ERR_CANVAS_VIDEO_CONFIG', '视频模型必须配置已验证的 MiniMax H3 OpenAI 通道');
+  }
+  canonicalVideoBaseUrl(baseUrl);
+  if (requireApiKey && !apiKey.trim()) throw canvasError('ERR_CANVAS_VIDEO_CONFIG', 'MiniMax H3 视频通道尚未配置密钥');
+  return { baseUrl, model, apiKey, apiFormat };
+}
+
+export function videoProviderFingerprint(video) {
+  const settings = normalizeVideoSettings({ video }, { requireApiKey: false });
+  if (!settings) return null;
+  return sha256(`${canonicalVideoBaseUrl(settings.baseUrl)}\0${VIDEO_MODEL_NAME}\0${VIDEO_PROFILE}`);
+}
+
+function mp4Boxes(buffer, start, end) {
+  const result = [];
+  let offset = start;
+  while (offset < end) {
+    if (end - offset < 8) throw new Error('MP4 box header is incomplete');
+    const size32 = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    let headerSize = 8;
+    let size = size32;
+    if (size32 === 1) {
+      if (end - offset < 16) throw new Error('MP4 extended box header is incomplete');
+      const extended = buffer.readBigUInt64BE(offset + 8);
+      if (extended > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('MP4 box is too large');
+      size = Number(extended);
+      headerSize = 16;
+    } else if (size32 === 0) size = end - offset;
+    if (size < headerSize || offset + size > end) throw new Error('MP4 box length is invalid');
+    result.push({ type, data: offset + headerSize, end: offset + size });
+    offset += size;
+  }
+  return result;
+}
+
+function mp4BoxDurationMs(buffer, box) {
+  if (!box || box.end - box.data < 20) return null;
+  const version = buffer[box.data];
+  if (version !== 0 && version !== 1) return null;
+  const timescaleOffset = box.data + (version === 1 ? 20 : 12);
+  const durationOffset = timescaleOffset + 4;
+  const durationSize = version === 1 ? 8 : 4;
+  if (durationOffset + durationSize > box.end) return null;
+  const timescale = buffer.readUInt32BE(timescaleOffset);
+  const ticks = version === 1 ? buffer.readBigUInt64BE(durationOffset) : BigInt(buffer.readUInt32BE(durationOffset));
+  const unknownDuration = version === 1 ? 0xffff_ffff_ffff_ffffn : 0xffff_ffffn;
+  if (!timescale || ticks === 0n || ticks === unknownDuration || ticks > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  const durationMs = Math.round(Number(ticks) * 1000 / timescale);
+  return Number.isSafeInteger(durationMs) && durationMs > 0 ? durationMs : null;
+}
+
+function parseMp4Metadata(buffer) {
+  const top = mp4Boxes(buffer, 0, buffer.length);
+  const moov = top.find((box) => box.type === 'moov');
+  if (!top.some((box) => box.type === 'ftyp') || !top.some((box) => box.type === 'mdat') || !moov) {
+    throw new Error('MP4 metadata or media data is missing');
+  }
+  const moovChildren = mp4Boxes(buffer, moov.data, moov.end);
+  // Fragmented MP4 can report media-timescale ticks in mdhd; only mvhd carries
+  // the movie presentation duration used by the browser.
+  const movieDurationMs = mp4BoxDurationMs(buffer, moovChildren.find((box) => box.type === 'mvhd'));
+  if (movieDurationMs === null) throw new Error('MP4 movie presentation duration is missing or invalid');
+  let videoTrack = null;
+  for (const track of moovChildren.filter((box) => box.type === 'trak')) {
+    const trackBoxes = mp4Boxes(buffer, track.data, track.end);
+    const tkhd = trackBoxes.find((box) => box.type === 'tkhd');
+    const mdia = trackBoxes.find((box) => box.type === 'mdia');
+    if (!tkhd || !mdia) continue;
+    const mediaBoxes = mp4Boxes(buffer, mdia.data, mdia.end);
+    const hdlr = mediaBoxes.find((box) => box.type === 'hdlr');
+    const mdhd = mediaBoxes.find((box) => box.type === 'mdhd');
+    const minf = mediaBoxes.find((box) => box.type === 'minf');
+    if (!hdlr || hdlr.end - hdlr.data < 12 || buffer.toString('ascii', hdlr.data + 8, hdlr.data + 12) !== 'vide' || !mdhd || !minf) continue;
+    const sampleTable = mp4Boxes(buffer, minf.data, minf.end).find((box) => box.type === 'stbl');
+    const sampleDescription = sampleTable && mp4Boxes(buffer, sampleTable.data, sampleTable.end).find((box) => box.type === 'stsd');
+    if (!sampleDescription || sampleDescription.end - sampleDescription.data < 16) continue;
+    const sampleCount = buffer.readUInt32BE(sampleDescription.data + 4);
+    const samples = mp4Boxes(buffer, sampleDescription.data + 8, sampleDescription.end);
+    if (!sampleCount || !samples.some((box) => ['avc1', 'avc3', 'hvc1', 'hev1', 'vp09', 'av01', 'mp4v'].includes(box.type))) continue;
+    const trackVersion = buffer[tkhd.data];
+    const widthOffset = tkhd.data + (trackVersion === 1 ? 88 : 76);
+    if (widthOffset + 8 > tkhd.end) continue;
+    const width = Math.round(buffer.readUInt32BE(widthOffset) / 65536);
+    const height = Math.round(buffer.readUInt32BE(widthOffset + 4) / 65536);
+    if (width > 0 && height > 0) {
+      const durationMs = movieDurationMs;
+      videoTrack = { width, height, durationMs };
+      break;
+    }
+  }
+  if (!videoTrack) throw new Error('MP4 has no decodable video track metadata');
+  return videoTrack;
+}
+
+function pathIsInside(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 async function fileExists(file) {
@@ -187,8 +317,49 @@ function assertTaskVersion(task, version) {
   }
 }
 
-function candidateOutputs(task, snapshot, version) {
+function mechanicalAdoptionForPage(task, page, version) {
+  const origin = page.productOrigin;
+  const sameOrigin = (value) => value?.type === 'canvas-operation'
+    && value.operationId === origin.operationId && value.imageIndex === origin.imageIndex
+    && value.nodeId === origin.nodeId && typeof value.sha256 === 'string' && value.sha256.toLowerCase() === origin.sha256.toLowerCase()
+    && value.operation === origin.operation;
+  if (origin.type !== 'canvas-operation' || !UUID.test(origin.operationId || '')
+    || !Number.isInteger(origin.imageIndex) || origin.imageIndex < 0
+    || typeof origin.nodeId !== 'string' || !origin.nodeId.trim()
+    || !/^[a-f0-9]{64}$/i.test(origin.sha256 || '')
+    || page.status !== 'succeeded' || page.imageNodeId !== origin.nodeId
+    || typeof page.image?.sha256 !== 'string' || page.image.sha256.toLowerCase() !== origin.sha256.toLowerCase()) {
+    throw canvasError('ERR_CANVAS_MECHANICAL_ORIGIN', '机械成品的采用授权或来源记录不一致，请重新读取任务状态');
+  }
+
+  const matching = (task.mechanicalAdoptions || []).filter((entry) => entry?.page === page.page
+    && Number.isInteger(entry.version) && entry.version <= version && entry.workType === 'mechanical' && sameOrigin(entry.source));
+  const latestVersion = Math.max(0, ...matching.map((entry) => entry.version));
+  const latestRecords = matching.filter((entry) => entry.version === latestVersion);
+  const ledger = latestRecords[0];
+  const sheet = task.sheets?.find((entry) => entry.version === latestVersion);
+  const adoption = sheet?.mechanicalAdoption;
+  const auth = adoption?.adoptionApproval;
+  const ledgerAuth = ledger?.adoptionApproval;
+  const execution = task.execution?.version === latestVersion
+    ? task.execution
+    : [...(task.executionHistory || [])].reverse().find((entry) => entry.version === latestVersion);
+  const adoptedPage = execution?.pages?.find((entry) => entry.page === page.page);
+  if (latestVersion < 1 || latestRecords.length !== 1
+    || adoption?.version !== latestVersion || adoption.page !== page.page
+    || adoption.requestId !== ledger?.requestId || adoption.workType !== 'mechanical' || !sameOrigin(adoption.source)
+    || auth?.by !== ledgerAuth?.by || auth?.note !== ledgerAuth?.note || auth?.authorizedAt !== ledgerAuth?.authorizedAt
+    || !sameOrigin(adoptedPage?.productOrigin)) {
+    throw canvasError('ERR_CANVAS_MECHANICAL_ORIGIN', '机械成品的历史采用记录与当前页来源不一致，请重新读取任务状态');
+  }
+  return origin;
+}
+
+async function candidateOutputs(task, snapshot, version, { root, instanceId, config } = {}) {
   assertTaskVersion(task, version);
+  if (snapshot?.projectId !== task.id || (snapshot.clientId && config?.clientId && snapshot.clientId !== config.clientId)) {
+    throw canvasError('ERR_CANVAS_PROJECT_MISMATCH', '当前 Canvas 项目或客户端与任务不匹配');
+  }
   const nodes = new Map((snapshot.nodes || []).map((node) => [node.id, node]));
   const edges = new Map();
   for (const edge of snapshot.connections || []) {
@@ -199,6 +370,34 @@ function candidateOutputs(task, snapshot, version) {
   const result = [];
   for (const page of task.execution.pages || []) {
     if (page.status !== 'succeeded' && !page.submitted) continue;
+    if (page.productOrigin != null) {
+      const origin = mechanicalAdoptionForPage(task, page, version);
+      let operationImage;
+      try { operationImage = await readCanvasOperationImage(task.id, origin.operationId, origin.imageIndex, { root }); }
+      catch (cause) { throw canvasError('ERR_CANVAS_MECHANICAL_ORIGIN', '机械成品的任务操作记录或源文件无法核验', cause); }
+      if (operationImage.taskId !== task.id || operationImage.operationId !== origin.operationId
+        || operationImage.imageIndex !== origin.imageIndex || operationImage.canvasInstanceId !== instanceId
+        || typeof operationImage.canvasClientId !== 'string' || !operationImage.canvasClientId.trim()
+        || operationImage.nodeId !== origin.nodeId || operationImage.operation !== origin.operation
+        || operationImage.sha256?.toLowerCase() !== origin.sha256.toLowerCase()) {
+        throw canvasError('ERR_CANVAS_MECHANICAL_ORIGIN', '机械成品不属于当前任务 Canvas 实例或操作记录');
+      }
+      const node = nodes.get(origin.nodeId);
+      if (!node || node.type !== 'image' || node.metadata?.status !== 'success') {
+        throw canvasError('ERR_CANVAS_MECHANICAL_ORIGIN', '机械成品节点已不存在或不属于当前任务画布');
+      }
+      result.push({
+        page: page.page,
+        nodeId: origin.nodeId,
+        title: `第 ${page.page} 页图片`,
+        width: Number(node.metadata?.naturalWidth) || null,
+        height: Number(node.metadata?.naturalHeight) || null,
+        status: 'success',
+        sha256: origin.sha256.toLowerCase(),
+        productOrigin: origin,
+      });
+      continue;
+    }
     for (const nodeId of edges.get(page.nodeId) || []) {
       const node = nodes.get(nodeId);
       if (!node || node.type !== 'image' || node.metadata?.status !== 'success') continue;
@@ -213,7 +412,7 @@ function instanceIdentity(instance, taskId) {
     && typeof instance.token === 'string' && typeof instance.webUrl === 'string' && typeof instance.bridgeUrl === 'string');
 }
 
-/** Canvas supervisors, browser tickets, and image credentials are scoped to one task. */
+/** Canvas supervisors, browser tickets, and image/video provider credentials are scoped to one task. */
 export function createCanvasManager({ root, readConfig, canvasTool = callCanvasTool, bridgeHealth = health, regionDetector = detectImageRegions, detachedSupervisor = false } = {}) {
   if (typeof root !== 'string' || !root.trim()) throw new Error('Canvas manager 需要数据根目录');
   if (typeof readConfig !== 'function') throw new Error('Canvas manager 需要 readConfig');
@@ -229,6 +428,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     const value = await readConfig({ root: dataRoot, taskId });
     return {
       imageConfig: normalizeImageSettings(value),
+      videoConfig: normalizeVideoSettings(value),
       configRevision: Number.isInteger(value?.revision) && value.revision > 0 ? value.revision : 1,
     };
   }
@@ -269,18 +469,22 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
   async function syncImageConfig(record) {
     const configRevision = record?.revision;
     if (!Number.isInteger(configRevision) || configRevision < 1) {
-      return { status: 'unsynced', updated: 0, active: 0, message: '图片配置版本无效，当前 Canvas 未同步。' };
+      return { status: 'unsynced', updated: 0, active: 0, message: '模型配置版本无效，当前 Canvas 未同步。' };
     }
     let snapshot;
     try {
-      snapshot = { configRevision, imageConfig: normalizeImageSettings({ image: record.image }) };
+      snapshot = {
+        configRevision,
+        imageConfig: normalizeImageSettings({ image: record.image }),
+        videoConfig: normalizeVideoSettings({ video: record.video }),
+      };
     } catch {
-      return { status: 'unsynced', updated: 0, active: 0, message: '图片配置无法同步到当前 Canvas。' };
+      return { status: 'unsynced', updated: 0, active: 0, message: '模型配置无法同步到当前 Canvas。' };
     }
     let items;
     try { items = await activeInstances(); }
     catch {
-      return { status: 'unsynced', updated: 0, active: 0, message: '无法确认当前 Canvas 实例，图片配置未同步。' };
+      return { status: 'unsynced', updated: 0, active: 0, message: '无法确认当前 Canvas 实例，模型配置未同步。' };
     }
     if (!items.length) return { status: 'no-active-canvas', updated: 0, active: 0, message: '当前没有已打开的 Canvas，新配置会在下次打开时应用。' };
     const results = await Promise.all(items.map(async (item) => {
@@ -289,9 +493,9 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     }));
     const updated = results.filter(Boolean).length;
     if (updated !== items.length) {
-      return { status: 'unsynced', updated, active: items.length, message: '部分或全部 Canvas 图片配置未同步，请在生成前重试同步。' };
+      return { status: 'unsynced', updated, active: items.length, message: '部分或全部 Canvas 模型配置未同步，请在生成前重试同步。' };
     }
-    return { status: 'synced', updated, active: items.length, message: '已同步到当前打开的 Canvas。' };
+    return { status: 'synced', updated, active: items.length, message: '图片与视频模型配置已同步到当前打开的 Canvas。' };
   }
 
   async function loadInstance(taskId) {
@@ -428,12 +632,18 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     return { buffer, contentType: match[1], width: Number(result.width) || null, height: Number(result.height) || null, sha256: sha256(buffer) };
   }
 
-  async function snapshotCandidates(task, snapshot, config, version) {
-    const candidates = candidateOutputs(task, snapshot, version);
+  async function snapshotCandidates(task, snapshot, config, version, instanceId) {
+    const candidates = await candidateOutputs(task, snapshot, version, { root: dataRoot, instanceId, config });
     const selectedByPage = new Map((task.execution.pages || []).map((page) => [page.page, page.imageNodeId]));
     return Promise.all(candidates.map(async (candidate) => {
       let current = null;
-      try { current = await readImageBytes(candidate.nodeId, config); } catch {}
+      try { current = await readImageBytes(candidate.nodeId, config); }
+      catch (cause) {
+        if (candidate.sha256) throw canvasError('ERR_CANVAS_MECHANICAL_ORIGIN', `第 ${candidate.page} 页机械成品节点无法读取`, cause);
+      }
+      if (candidate.sha256 && current?.sha256 !== candidate.sha256) {
+        throw canvasError('ERR_CANVAS_IMAGE_CHANGED', `第 ${candidate.page} 页机械成品节点内容已改变，请重新采用并复审`);
+      }
       return {
         ...candidate,
         width: current?.width || candidate.width,
@@ -498,7 +708,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
       if (snapshot.projectId !== taskId) throw canvasError('ERR_CANVAS_PROJECT_MISMATCH', '当前 Canvas 项目与任务不匹配');
       base.state = 'ready'; base.clientConnected = true;
       if (task.sheetVersion > 0 && task.execution?.version === task.sheetVersion) {
-        const candidates = await snapshotCandidates(task, snapshot, target, task.sheetVersion);
+        const candidates = await snapshotCandidates(task, snapshot, target, task.sheetVersion, instance.config.instanceId);
         const currentHashes = new Map(candidates.map((image) => [image.nodeId, image.sha256]));
         base.images = candidates;
         base.task.pages = base.task.pages.map((page) => ({ ...page, currentSha256: page.imageNodeId ? currentHashes.get(page.imageNodeId) ?? null : null }));
@@ -566,6 +776,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     const operation = payload.operation;
     const fields = {
       import: ['image'], stitch: ['nodeIds', 'direction', 'gap', 'background'], compose: ['nodeId', 'layers'],
+      'adapt-logo': ['nodeId', 'foreground', 'outline', 'plate'],
       crop: ['nodeId', 'crop'], split: ['nodeId', 'rows', 'columns'], resample: ['nodeId', 'targetLongEdge', 'algorithm'],
       move: ['nodeId', 'x', 'y'], resize: ['nodeId', 'width', 'height'],
     }[operation];
@@ -622,12 +833,13 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
 
     if (operation === 'import') {
       if (!payload.image || typeof payload.image !== 'object' || Array.isArray(payload.image)
-        || Object.keys(payload.image).some((key) => !['sourceId', 'fileOrder'].includes(key))) {
+        || Object.keys(payload.image).some((key) => !['sourceKind', 'sourceId', 'fileOrder'].includes(key))
+        || !['task-upload', 'task-reference'].includes(payload.image.sourceKind)) {
         throw canvasError('ERR_CANVAS_OPERATION_INPUT', '导入附件引用无效。');
       }
-      const sourceId = nodeId(payload.image.sourceId, '任务附件来源 ID');
-      const fileOrder = integer(payload.image.fileOrder, '任务附件顺序', { minimum: 1 });
-      input.image = { sourceId, fileOrder };
+      const sourceId = nodeId(payload.image.sourceId, '任务图片来源 ID');
+      const fileOrder = integer(payload.image.fileOrder, '任务图片顺序', { minimum: 1 });
+      input.image = { sourceKind: payload.image.sourceKind, sourceId, fileOrder };
       return finish(null);
     }
 
@@ -667,6 +879,38 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
         if (layer.clear !== undefined) normalized.clear = color(layer.clear, '合成图层清除色');
         return normalized;
       });
+      return finish(input.nodeId);
+    }
+
+    if (operation === 'adapt-logo') {
+      input.nodeId = nodeId(payload.nodeId);
+      if (payload.foreground !== undefined) {
+        if (typeof payload.foreground !== 'string' || !/^#[0-9a-f]{6}$/i.test(payload.foreground)) {
+          throw canvasError('ERR_CANVAS_OPERATION_INPUT', 'foreground 必须是不透明 #RRGGBB，以保留原 Logo alpha。');
+        }
+        input.foreground = payload.foreground;
+      }
+      if (payload.outline !== undefined) {
+        const outline = payload.outline;
+        if (!outline || typeof outline !== 'object' || Array.isArray(outline)
+          || Object.keys(outline).some((key) => !['color', 'width'].includes(key))) {
+          throw canvasError('ERR_CANVAS_OPERATION_INPUT', 'outline 参数无效。');
+        }
+        input.outline = { color: color(outline.color, '描边颜色'), width: integer(outline.width, '描边宽度', { minimum: 1, maximum: 64 }) };
+      }
+      if (payload.plate !== undefined) {
+        const plate = payload.plate;
+        if (!plate || typeof plate !== 'object' || Array.isArray(plate)
+          || Object.keys(plate).some((key) => !['color', 'padding', 'radius'].includes(key))) {
+          throw canvasError('ERR_CANVAS_OPERATION_INPUT', '底牌参数无效。');
+        }
+        input.plate = {
+          color: color(plate.color, '底牌颜色'),
+          padding: integer(plate.padding, '底牌留白', { maximum: 256 }),
+          radius: integer(plate.radius, '底牌圆角', { maximum: 8192 }),
+        };
+      }
+      if (!input.foreground && !input.outline && !input.plate) throw canvasError('ERR_CANVAS_OPERATION_INPUT', 'adapt-logo 至少需要 foreground、outline 或 plate 参数。');
       return finish(input.nodeId);
     }
 
@@ -748,6 +992,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
       nodeId: image.nodeId,
       width: image.width,
       height: image.height,
+      ...(image.padding === undefined ? {} : { padding: image.padding }),
       sha256: image.sha256,
       name,
       mimeType: image.contentType,
@@ -869,13 +1114,18 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
       }
       let uploaded;
       try {
-        uploaded = await readTaskUploadedImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot });
+        uploaded = input.image.sourceKind === 'task-reference'
+          ? await readTaskReferenceImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot })
+          : await readTaskUploadedImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot });
       } catch (cause) {
-        throw canvasError('ERR_CANVAS_OPERATION_INPUT', '只能导入当前任务中未排除、哈希有效的图片附件。', cause);
+        const message = input.image.sourceKind === 'task-reference'
+          ? '只能导入当前任务中已人工保留、冻结且哈希有效的参考图片。'
+          : '只能导入当前任务中未排除、哈希有效的图片附件。';
+        throw canvasError('ERR_CANVAS_OPERATION_INPUT', message, cause);
       }
       if (uploaded.bytes.length > MAX_IMAGE_BYTES) throw canvasError('ERR_CANVAS_OPERATION_INPUT', '导入图片超过 Canvas 附件大小上限。');
       nodeId = stableCanvasNodeId(taskId, input.image.sourceId, input.image.fileOrder, uploaded.sha256);
-      sourceBinding = { type: 'task-upload', sourceId: input.image.sourceId, fileOrder: input.image.fileOrder, sha256: uploaded.sha256 };
+      sourceBinding = { type: input.image.sourceKind, sourceId: input.image.sourceId, fileOrder: input.image.fileOrder, sha256: uploaded.sha256 };
     }
 
     return runCanvasOperation({
@@ -953,9 +1203,14 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
         if (operation === 'import') {
           let uploaded;
           try {
-            uploaded = await readTaskUploadedImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot });
+            uploaded = input.image.sourceKind === 'task-reference'
+              ? await readTaskReferenceImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot })
+              : await readTaskUploadedImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot });
           } catch (cause) {
-            throw canvasError('ERR_CANVAS_OPERATION_INPUT', '只能导入当前任务中未排除、哈希有效的图片附件。', cause);
+            const message = input.image.sourceKind === 'task-reference'
+              ? '只能导入当前任务中已人工保留、冻结且哈希有效的参考图片。'
+              : '只能导入当前任务中未排除、哈希有效的图片附件。';
+            throw canvasError('ERR_CANVAS_OPERATION_INPUT', message, cause);
           }
           if (uploaded.bytes.length > MAX_IMAGE_BYTES) throw canvasError('ERR_CANVAS_OPERATION_INPUT', '导入图片超过 Canvas 附件大小上限。');
           if (uploaded.sha256 !== sourceBinding.sha256) {
@@ -993,9 +1248,11 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
           await checkFreshTask(true);
           let currentUpload;
           try {
-            currentUpload = await readTaskUploadedImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot });
+            currentUpload = input.image.sourceKind === 'task-reference'
+              ? await readTaskReferenceImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot })
+              : await readTaskUploadedImageBytes(taskId, input.image.sourceId, input.image.fileOrder, { sources: task.sources, root: dataRoot });
           } catch (cause) {
-            const changed = canvasError('ERR_CANVAS_SOURCE_CHANGED', '导入附件在 Canvas 操作期间发生变化；请检查画布后再继续。', cause);
+            const changed = canvasError('ERR_CANVAS_SOURCE_CHANGED', '导入的任务图片在 Canvas 操作期间发生变化；请检查画布后再继续。', cause);
             changed.canvasOutcomeUnknown = true;
             throw changed;
           }
@@ -1039,6 +1296,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
             throw canvasError('ERR_CANVAS_SOURCE_CHANGED', '区域检测后源图片发生变化，请重新读取图像区域后再合成。');
           }
         }
+        if (operation === 'adapt-logo') await assertTransparentLogoSource(sourceImages.get(nodeId));
 
         let expectedOutputSize = null;
         if (operation === 'stitch') {
@@ -1068,6 +1326,14 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
             }
           }
           expectedOutputSize = { width: base.width, height: base.height };
+        } else if (operation === 'adapt-logo') {
+          const base = sourceImages.get(input.nodeId);
+          validatePixelBudget(base?.width, base?.height);
+          const padding = (input.outline?.width ?? 0) + (input.plate?.padding ?? 0);
+          const width = base.width + padding * 2;
+          const height = base.height + padding * 2;
+          validatePixelBudget(width, height);
+          expectedOutputSize = { width, height, padding };
         }
 
         const source = sourceNodes.get(nodeId);
@@ -1079,6 +1345,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
         const toolInput = operation === 'stitch'
           ? { ...input }
           : operation === 'compose' ? { ...input }
+            : operation === 'adapt-logo' ? { ...input }
             : operation === 'crop' ? { nodeId, crop: input.crop }
               : operation === 'split' ? { nodeId, rows: input.rows, columns: input.columns }
                 : operation === 'resample' ? { nodeId, targetLongEdge: input.targetLongEdge, algorithm: input.algorithm }
@@ -1086,6 +1353,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
                     : { id: nodeId, width: input.width, height: input.height };
         const command = operation === 'stitch' ? 'canvas_stitch_images'
           : operation === 'compose' ? 'canvas_compose_images'
+            : operation === 'adapt-logo' ? 'canvas_adapt_logo'
             : operation === 'crop' ? 'canvas_crop_image'
               : operation === 'split' ? 'canvas_split_image'
                 : operation === 'resample' ? 'canvas_resample_image'
@@ -1149,6 +1417,9 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
           || new Set(bridgeResult.images.map((image) => image.nodeId)).size !== bridgeResult.images.length) {
           throw uncertain('Canvas 未返回可核验的机械图片节点；请读取当前画布状态，不要自动重提');
         }
+        if (operation === 'adapt-logo' && bridgeResult.images[0]?.padding !== expectedOutputSize.padding) {
+          throw uncertain('Canvas 未返回与实际尺寸一致的 Logo padding；请读取当前画布状态，不要自动重提');
+        }
         const attachments = [];
         const resultImages = [];
         for (const [index, returned] of bridgeResult.images.entries()) {
@@ -1161,12 +1432,13 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
           const saved = await writeMechanicalImage(imagesDirectory, index, {
             ...actual,
             operation,
+            ...(operation === 'adapt-logo' ? { padding: returned.padding } : {}),
             nodeId: returned.nodeId,
             fileUrl,
             downloadUrl: `${fileUrl}?download=1`,
           });
           attachments.push(saved);
-          resultImages.push({ nodeId: saved.nodeId, width: saved.width, height: saved.height, sha256: saved.sha256, name: saved.name, fileUrl: saved.fileUrl, downloadUrl: saved.downloadUrl });
+          resultImages.push({ nodeId: saved.nodeId, width: saved.width, height: saved.height, ...(saved.padding === undefined ? {} : { padding: saved.padding }), sha256: saved.sha256, name: saved.name, fileUrl: saved.fileUrl, downloadUrl: saved.downloadUrl });
         }
         const result = operation === 'stitch' || operation === 'compose'
           ? { operation, sourceNodeId: nodeId, sourceNodeIds: uniqueSourceNodeIds, images: resultImages }
@@ -1195,10 +1467,10 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     if (!Array.isArray(payload.selections)) {
       return {
         projectId: taskId, clientConnected: true, revision: task.revision, version, task,
-        candidates: await snapshotCandidates(task, snapshot, config, version),
+        candidates: await snapshotCandidates(task, snapshot, config, version, instance.config.instanceId),
       };
     }
-    const candidates = candidateOutputs(task, snapshot, version);
+    const candidates = await candidateOutputs(task, snapshot, version, { root: dataRoot, instanceId: instance.config.instanceId, config });
     if (!payload.selections.length) throw canvasError('ERR_CANVAS_SELECTION_REQUIRED', '至少选择一张当前任务的 Canvas 图片');
     const chosen = new Map();
     for (const value of payload.selections) {
@@ -1221,20 +1493,22 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     const evidence = existing?.projectId === taskId && existing?.version === version && existing?.pages && typeof existing.pages === 'object'
       ? { ...existing, pages: { ...existing.pages } }
       : { projectId: taskId, version, pages: {} };
-    const currentCandidates = candidateOutputs(latest, refreshed, version);
+    const currentCandidates = await candidateOutputs(latest, refreshed, version, { root: dataRoot, instanceId: instance.config.instanceId, config });
     for (const [page, nodeId] of chosen) {
       const record = latest.execution.pages.find((item) => item.page === page);
       const candidateNodeIds = currentCandidates.filter((item) => item.page === page).map((item) => item.nodeId).sort();
       if (!record || !candidateNodeIds.includes(nodeId)) throw canvasError('ERR_CANVAS_SYNC_REQUIRED', `第 ${page} 页 Canvas 候选图已变化，请刷新后重新选图`);
       const actual = await readImageBytes(nodeId, config);
       if (actual.sha256 !== record.image?.sha256) throw canvasError('ERR_CANVAS_IMAGE_CHANGED', `第 ${page} 页 Canvas 图片在同步时已改变，请重新同步`);
+      const fixedOrigin = currentCandidates.find((candidate) => candidate.page === page && candidate.nodeId === nodeId)?.sha256;
+      if (fixedOrigin && actual.sha256 !== fixedOrigin) throw canvasError('ERR_CANVAS_IMAGE_CHANGED', `第 ${page} 页机械成品节点内容已改变，请重新采用并复审`);
       evidence.pages[page] = { selectedNodeId: nodeId, candidateNodeIds, sha256: actual.sha256 };
     }
     await writeSelectionEvidence(dataRoot, taskId, evidence);
     return {
       projectId: taskId, clientConnected: true, revision: latest.revision, version,
       task: latest,
-      candidates: await snapshotCandidates(latest, refreshed, config, version),
+      candidates: await snapshotCandidates(latest, refreshed, config, version, instance.config.instanceId),
     };
   }
 
@@ -1244,9 +1518,12 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     const instance = await loadInstance(taskId);
     if (!instance) throw canvasError('ERR_CANVAS_DISCONNECTED', 'Canvas 尚未启动，请先打开该任务画布');
     const { config, snapshot } = await liveSnapshot(taskId, instance);
-    const candidate = candidateOutputs(task, snapshot, version).find((item) => item.page === page && item.nodeId === nodeId);
+    const candidate = (await candidateOutputs(task, snapshot, version, { root: dataRoot, instanceId: instance.config.instanceId, config }))
+      .find((item) => item.page === page && item.nodeId === nodeId);
     if (!candidate) throw canvasError('ERR_CANVAS_IMAGE_NOT_FOUND', '所选图片已不存在或不属于当前任务');
-    return readImageBytes(nodeId, config);
+    const actual = await readImageBytes(nodeId, config);
+    if (candidate.sha256 && actual.sha256 !== candidate.sha256) throw canvasError('ERR_CANVAS_IMAGE_CHANGED', `第 ${page} 页机械成品节点内容已改变，请重新采用并复审`);
+    return actual;
   }
 
   async function assertFresh(taskId, { expectedRevision, version, images } = {}) {
@@ -1281,7 +1558,7 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     const instance = await loadInstance(taskId);
     if (!instance) throw canvasError('ERR_CANVAS_DISCONNECTED', 'Canvas 已关闭或未启动；不能确认当前选图是否仍与已审核成品一致');
     const { config, snapshot } = await liveSnapshot(taskId, instance);
-    const liveCandidates = candidateOutputs(task, snapshot, version);
+    const liveCandidates = await candidateOutputs(task, snapshot, version, { root: dataRoot, instanceId: instance.config.instanceId, config });
     let evidence;
     try { evidence = await readJson(selectionEvidencePath(dataRoot, taskId)); }
     catch (error) { throw canvasError('ERR_CANVAS_EVIDENCE_INVALID', 'Canvas 选图记录无法读取，请重新同步并选图', error); }
@@ -1303,6 +1580,8 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
       }
       const actual = await readImageBytes(record.imageNodeId, config);
       if (actual.sha256 !== record.image.sha256) throw canvasError('ERR_CANVAS_IMAGE_CHANGED', `第 ${image.page} 页 Canvas 图片已改变，请重新同步并复审`);
+      const fixedOrigin = liveCandidates.find((candidate) => candidate.page === image.page && candidate.nodeId === record.imageNodeId)?.sha256;
+      if (fixedOrigin && actual.sha256 !== fixedOrigin) throw canvasError('ERR_CANVAS_IMAGE_CHANGED', `第 ${image.page} 页机械成品节点内容已改变，请重新采用并复审`);
     }
     return { ok: true, projectId: taskId, version, revision: task.revision, images: checks.map((image) => ({ page: image.page, sha256: image.sha256.toLowerCase() })) };
   }
@@ -1331,9 +1610,149 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
         assertPinned(candidate);
         const task = await requireTask(taskId);
         const snapshot = await callCanvasTool('canvas_get_state', {}, pinned, options);
-        const allowed = candidateOutputs(task, snapshot, task.execution.version).some((image) => image.nodeId === nodeId);
+        const allowed = (await candidateOutputs(task, snapshot, task.execution.version, {
+          root: dataRoot, instanceId: instance.config.instanceId, config: pinned,
+        })).find((image) => image.nodeId === nodeId);
         if (!allowed) throw canvasError('ERR_CANVAS_IMAGE_NOT_FOUND', '回收目标不是当前任务生成节点的图片结果');
+        if (allowed.sha256) {
+          const actual = await readImageBytes(nodeId, pinned, (name, input, targetConfig, callOptions) => callCanvasTool(name, input, targetConfig, { ...options, ...callOptions }));
+          if (actual.sha256 !== allowed.sha256) throw canvasError('ERR_CANVAS_IMAGE_CHANGED', '机械成品节点内容已改变，请重新采用并复审');
+        }
         return recoverImage(nodeId, destination, pinned, options);
+      },
+    };
+  }
+
+  async function videoModelInfo(taskId) {
+    await requireTask(taskId);
+    const value = await readConfig({ root: dataRoot, taskId });
+    const video = normalizeVideoSettings(value);
+    return {
+      model: video ? VIDEO_MODEL : null,
+      providerFingerprint: video ? videoProviderFingerprint(video) : null,
+      apiKeyConfigured: Boolean(video?.apiKey.trim()),
+    };
+  }
+
+  async function readStoredVideo(taskId, node) {
+    const metadata = node?.metadata;
+    const storageKey = metadata?.storageKey;
+    if (node?.type !== 'video' || !metadata || !metadata.videoTaskId || typeof metadata.videoTaskId !== 'string'
+      || !storageKey || typeof storageKey !== 'string' || !storageKey.startsWith('video:')
+      || !['success', 'loading'].includes(metadata.status) || !metadata.content) {
+      throw canvasError('ERR_CANVAS_VIDEO_NOT_FOUND', '回收目标不是当前任务已生成的视频节点');
+    }
+    if (metadata.model && ![VIDEO_MODEL, VIDEO_MODEL_NAME].includes(metadata.model)) {
+      throw canvasError('ERR_CANVAS_VIDEO_NOT_FOUND', '视频节点模型与当前任务通道不匹配');
+    }
+    const directory = path.join(taskCanvasDirectory(dataRoot, taskId), 'storage', 'media_files');
+    const directoryInfo = await fs.lstat(directory).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (!directoryInfo?.isDirectory() || directoryInfo.isSymbolicLink()) {
+      throw canvasError('ERR_CANVAS_VIDEO_UNAVAILABLE', '任务视频存储目录不存在或无效');
+    }
+    const recordPath = path.join(directory, `${sha256(storageKey)}.json`);
+    const recordInfo = await fs.lstat(recordPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (!recordInfo?.isFile() || recordInfo.isSymbolicLink() || recordInfo.size > 90 * 1024 * 1024) {
+      throw canvasError('ERR_CANVAS_VIDEO_UNAVAILABLE', '任务视频文件不存在或大小超出限制');
+    }
+    let record;
+    try { record = JSON.parse(await fs.readFile(recordPath, 'utf8')); }
+    catch (error) { throw canvasError('ERR_CANVAS_VIDEO_UNAVAILABLE', '任务视频存储记录无效', error); }
+    if (record?.key !== storageKey || typeof record.base64 !== 'string'
+      || typeof record.contentType !== 'string' || !/^video\//i.test(record.contentType)) {
+      throw canvasError('ERR_CANVAS_VIDEO_UNAVAILABLE', '任务视频存储身份或格式无效');
+    }
+    const bytes = Buffer.from(record.base64, 'base64');
+    if (!bytes.length || bytes.length > MAX_VIDEO_BYTES || bytes.toString('base64') !== record.base64) {
+      throw canvasError('ERR_CANVAS_VIDEO_UNAVAILABLE', '任务视频内容为空、损坏或大小超出限制');
+    }
+    let media;
+    try { media = parseMp4Metadata(bytes); }
+    catch (error) { throw canvasError('ERR_CANVAS_VIDEO_UNAVAILABLE', '任务视频缺少可解码的 MP4 视频元数据', error); }
+    return { storageKey, bytes, mimeType: record.contentType, ...media, sha256: sha256(bytes) };
+  }
+
+  async function writeRecoveredVideo(taskId, destination, bytes, signal) {
+    if (typeof destination !== 'string' || !destination.trim()) throw canvasError('ERR_CANVAS_VIDEO_PATH', '视频回收目标路径无效');
+    const taskRoot = path.resolve(taskDirectory(taskId, dataRoot));
+    const target = path.resolve(destination);
+    if (!pathIsInside(taskRoot, target) || target === taskRoot) throw canvasError('ERR_CANVAS_VIDEO_PATH', '视频只能回收到当前任务目录');
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    const [taskReal, parentReal] = await Promise.all([fs.realpath(taskRoot), fs.realpath(path.dirname(target))]);
+    if (!pathIsInside(taskReal, parentReal)) throw canvasError('ERR_CANVAS_VIDEO_PATH', '视频回收路径超出当前任务目录');
+    const existing = await fs.lstat(target).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (existing && (!existing.isFile() || existing.isSymbolicLink())) throw canvasError('ERR_CANVAS_VIDEO_PATH', '视频回收目标必须是普通文件');
+    signal?.throwIfAborted();
+    await fs.writeFile(target, bytes, { signal, mode: 0o600 });
+    return target;
+  }
+
+  async function videoExecutionOptions(taskId, { target } = {}) {
+    const task = await requireTask(taskId);
+    const snapshot = await configSnapshotFor(taskId);
+    const video = snapshot.videoConfig;
+    if (!video?.apiKey.trim()) throw canvasError('ERR_CANVAS_VIDEO_CONFIG', 'MiniMax H3 视频通道尚未配置完整密钥');
+    const providerFingerprint = videoProviderFingerprint(video);
+    const instance = await startSupervisor(taskId);
+    if (!(await pushImageConfig(instance, snapshot))) throw canvasError('ERR_CANVAS_CONFIG_SYNC', '图片与视频模型配置未能同步到任务 Canvas');
+    const pinned = await resolveTarget(taskId, instance,
+      target?.clientId || task.video?.execution?.target?.clientId);
+    const config = {
+      projectId: taskId,
+      instanceId: instance.config.instanceId,
+      clientId: pinned.clientId,
+      model: VIDEO_MODEL,
+      providerFingerprint,
+    };
+    const assertPinned = (candidate) => {
+      const identity = candidate?.config || candidate;
+      if (identity?.projectId !== taskId || identity?.instanceId !== instance.config.instanceId
+        || identity?.clientId !== pinned.clientId || identity?.providerFingerprint !== providerFingerprint) {
+        throw canvasError('ERR_CANVAS_TARGET_CHANGED', 'Canvas 视频执行目标或模型通道已变化；请读取任务状态后显式恢复');
+      }
+    };
+    const assertCurrentProvider = async (candidate) => {
+      assertPinned(candidate);
+      const current = normalizeVideoSettings(await readConfig({ root: dataRoot, taskId }), { requireApiKey: true });
+      if (!current || videoProviderFingerprint(current) !== providerFingerprint) {
+        throw canvasError('ERR_CANVAS_VIDEO_PROVIDER_CHANGED', '视频模型通道已变化；请读取任务状态后显式恢复');
+      }
+    };
+    return {
+      model: VIDEO_MODEL,
+      providerFingerprint,
+      config,
+      getHealth: async (candidate, options) => {
+        await assertCurrentProvider(candidate);
+        return health(pinned, options);
+      },
+      tool: async (name, input, candidate, options) => {
+        await assertCurrentProvider(candidate);
+        if (!['canvas_apply_ops', 'canvas_get_state'].includes(name)) {
+          throw canvasError('ERR_CANVAS_VIDEO_TOOL_DENIED', '视频执行仅允许 Canvas 状态读取和受控画布操作');
+        }
+        return callCanvasTool(name, input, pinned, options);
+      },
+      recover: async (nodeId, destination, candidate, options) => {
+        await assertCurrentProvider(candidate);
+        const state = await callCanvasTool('canvas_get_state', {}, pinned, options);
+        if (state?.projectId !== taskId || !Array.isArray(state.nodes)) {
+          throw canvasError('ERR_CANVAS_VIDEO_UNAVAILABLE', '无法核验当前任务 Canvas 视频状态');
+        }
+        const node = state.nodes.find((item) => item?.id === nodeId);
+        if (!node) throw canvasError('ERR_CANVAS_VIDEO_NOT_FOUND', '任务视频节点已不存在');
+        const media = await readStoredVideo(taskId, node);
+        const outputPath = await writeRecoveredVideo(taskId, destination, media.bytes, options?.signal);
+        return {
+          path: outputPath,
+          nodeId,
+          bytes: media.bytes.length,
+          mimeType: media.mimeType,
+          width: media.width,
+          height: media.height,
+          durationMs: media.durationMs,
+          sha256: media.sha256,
+        };
       },
     };
   }
@@ -1376,6 +1795,8 @@ export function createCanvasManager({ root, readConfig, canvasTool = callCanvasT
     mechanicalOperation,
     mechanicalImage,
     executionOptions,
+    videoModelInfo,
+    videoExecutionOptions,
     checkImageConfig,
     syncImageConfig,
     stop,

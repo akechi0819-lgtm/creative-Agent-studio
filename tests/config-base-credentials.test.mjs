@@ -81,3 +81,35 @@ test('credential sharing rejects managed sources and incomplete custom base cred
   assert.equal(unchanged.base.apiKey, '');
   assert.equal(unchanged.image.apiKey, '');
 });
+
+test('video settings use an independent OpenAI-format channel and never expose its key', async (t) => {
+  const root = await temporaryRoot(t);
+  const before = await readConfigRecord({ root });
+  assert.deepEqual(before.video, { baseUrl: '', model: '', apiKey: '', apiFormat: 'openai' });
+
+  const saved = await saveConfig({
+    expectedRevision: before.revision,
+    video: {
+      baseUrl: 'https://api.osodm.com',
+      model: 'minimax_h3',
+      apiKey: 'fixture-video-key-never-returned',
+    },
+  }, { root });
+
+  assert.equal(saved.video.apiFormat, 'openai');
+  assert.equal(saved.base.apiKey, '');
+  assert.equal(saved.image.apiKey, '');
+  const outward = publicConfig(saved);
+  assert.deepEqual(outward.video, {
+    baseUrl: 'https://api.osodm.com',
+    model: 'minimax_h3',
+    apiFormat: 'openai',
+    apiKeyConfigured: true,
+  });
+  assert.doesNotMatch(JSON.stringify(outward), /fixture-video-key-never-returned/u);
+
+  await assert.rejects(saveConfig({
+    expectedRevision: saved.revision,
+    video: { apiFormat: 'unknown' },
+  }, { root }), { code: 'ERR_CONFIG_INVALID' });
+});

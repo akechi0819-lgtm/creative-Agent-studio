@@ -5,11 +5,13 @@ export function classifyDialogueIntent(value) {
   const text = String(value || '').trim().replace(/\s+/gu, '').replace(/[。！!]+$/u, '');
   if (/[?？吗么]|(?:不|别|勿|没|否|取消|稍后|等等|如果|要是|讨论|考虑)/u.test(text)) return null;
   const target = '(?:当前)?(?:这(?:一)?(?:份|版|个|套)?|以上|该|本)?';
-  const affirmation = text.match(new RegExp(`^(${target}(?:制作单|制作方案|方案|成品|图片|成果)(?:v\\d+)?)(?:可以|就)(.+?)(?:吧|了)?$`, 'iu'));
+  const affirmation = text.match(new RegExp(`^(${target}(?:制作单|制作方案|方案|成品|图片|成果|视频镜头|视频方案|视频)(?:v\\d+)?)(?:可以|就)(.+?)(?:吧|了)?$`, 'iu'));
   const instruction = text.match(/^(?:请)?(?:就)?(?:确认|同意|按|照)(.+?)(?:吧|了)?$/u)?.[1]
     || (affirmation ? affirmation[1] + affirmation[2] : null);
   if (!instruction) return null;
   const link = '[，,]?(?:并)?';
+  if (new RegExp(`^${target}(?:视频镜头|视频方案)(?:v\\d+)?${link}(?:开始)?(?:生成|制作)$`, 'iu').test(instruction)) return 'video-plan';
+  if (new RegExp(`^${target}(?:视频)(?:v\\d+)?${link}(?:交付|打包)(?:${link}下载)?$`, 'iu').test(instruction)) return 'video-delivery';
   if (new RegExp(`^${target}(?:制作单|制作方案|方案)(?:v\\d+)?${link}(?:开始)?(?:绘图|制作|执行|出图|生成|做)$`, 'iu').test(instruction)) return 'sheet';
   if (new RegExp(`^${target}(?:(?:成品|图片|成果)(?:v\\d+)?${link})?(?:交付|打包)(?:${link}下载)?$`, 'iu').test(instruction)) return 'delivery';
   if (new RegExp(`^${target}参考方案(?:并继续|，继续|,继续)?$`, 'u').test(instruction)) return 'references';
@@ -24,9 +26,22 @@ export function dialogueIntent(task, body) {
   const stale = () => Object.assign(new Error('展示版本已变化，请查看当前对话和预览后重新确认。'), { code: 'ERR_DIALOGUE_STALE', status: 409 });
   if (body.displayed?.revision !== task.revision || body.displayed?.sheetVersion !== task.sheetVersion) throw stale();
   const version = String(body.text).replace(/\s+/gu,'').match(/v(\d+)/iu)?.[1];
-  if (version && Number(version) !== task.sheetVersion) throw stale();
+  if (version && !['video-plan', 'video-delivery'].includes(kind) && Number(version) !== task.sheetVersion) throw stale();
   if ((kind === 'sheet' || kind === 'delivery') && !task.sheetVersion) throw stale();
   if (body.answers || body.attachmentSourceIds?.length) throw new Error('请先查看上传或回答后的版本，再单独确认。');
+  if (kind === 'video-plan') {
+    const plan = task.video?.plans?.find((item) => item.version === task.video.version);
+    if (!plan || task.video.execution?.version !== task.video.version
+      || body.displayed?.videoVersion !== task.video.version || plan.confirmedAt) throw stale();
+    if (version && Number(version) !== task.video.version) throw stale();
+  }
+  if (kind === 'video-delivery') {
+    const output = task.video?.execution?.output;
+    if (task.video?.execution?.status !== 'succeeded' || task.video.execution.version !== task.video.version
+      || body.displayed?.videoVersion !== task.video.version || !/^[a-f0-9]{64}$/iu.test(output?.sha256 || '')
+      || body.displayed?.videoSha !== output.sha256) throw stale();
+    if (version && Number(version) !== task.video.version) throw stale();
+  }
   if (kind === 'delivery') {
     const pages = task.execution?.pages || [];
     const sheet = task.sheets?.find(item => item.version === task.sheetVersion);

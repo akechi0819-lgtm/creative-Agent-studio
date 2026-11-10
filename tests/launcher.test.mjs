@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { backupData, restoreData, assertOffline } from '../src/launcher/backup.mjs';
+import { tryLockExclusive } from '../adapters/dsh/node_modules/@deepseek-ai/node-addon-system/lib/flock.js';
 import { serveControl, runtimeStatus, stopRuntime } from '../src/launcher/control.mjs';
 import { runtimeIdentityMismatchMessage, runtimeSourceIdentity } from '../src/launcher/identity.mjs';
 
@@ -69,6 +70,33 @@ test('backup rejects live writers, nested destination and symlinks',async t=>{
     await fs.symlink(path.join(root,'config'),path.join(root,'link'));
     await assert.rejects(backupData(root,path.join(base,'backup')),/符号链接/);
   }
+});
+test('backup accepts an idle zero-byte DSH session.lock as a flock inode',async t=>{
+  const {base,root}=await fixture(t);
+  const lock=path.join(root,'web','dsh','sessions','session-fixture','session.lock');
+  await fs.mkdir(path.dirname(lock),{recursive:true});
+  await fs.writeFile(lock,Buffer.alloc(0));
+  await assert.doesNotReject(assertOffline(root));
+  const destination=path.join(base,'dsh-backup');
+  const result=await backupData(root,destination);
+  assert.equal(result.files,1);
+  await assert.doesNotReject(fs.access(path.join(destination,'data','config','studio.json')));
+  await assert.rejects(fs.access(path.join(destination,'data','web','dsh','sessions','session-fixture','session.lock')));
+});
+test('backup rejects a DSH session.lock held by a live POSIX flock',async t=>{
+  if(process.platform==='win32')return t.skip('Windows DSH uses a named semaphore and leaves no lock file.');
+  const {root}=await fixture(t);
+  const lock=path.join(root,'web','dsh','sessions','session-fixture','session.lock');
+  await fs.mkdir(path.dirname(lock),{recursive:true});
+  await fs.writeFile(lock,Buffer.alloc(0));
+  const owner=await fs.open(lock,'r+');
+  try {
+    await tryLockExclusive(owner.fd);
+    await assert.rejects(assertOffline(root),/仍有/);
+  } finally {
+    await owner.close();
+  }
+  await assert.doesNotReject(assertOffline(root));
 });
 test('authenticated HTTP control supports Windows graceful stop without PID signals',async t=>{
   const {root}=await fixture(t);await fs.mkdir(path.join(root,'web'));

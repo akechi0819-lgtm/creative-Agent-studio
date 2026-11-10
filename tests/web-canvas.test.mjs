@@ -6,6 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { chromium } from 'playwright';
 import { createCanvasManager } from '../src/web/canvas.mjs';
+import { adoptCanvasResult } from '../src/creative/mechanical-products.mjs';
 import { createTask, confirmInputs, setSheet, confirmSheet, readTask, taskDirectory, withTask } from '../src/creative/tasks.mjs';
 
 const PNG_RED = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jXioAAAAASUVORK5CYII=', 'base64');
@@ -302,6 +303,105 @@ test('Canvas manager binds isolated browser projects, selection hashes, and same
     assert.deepEqual([...configRoots], [root], 'manager reads config only from the isolated test root');
     assert.equal((await readTask(secondTask.id, root)).id, secondTask.id);
     assert.equal((await manager.checkImageConfig()).connectionTested, false);
+
+    const runMechanicalStitch = async () => {
+      const current = await readTask(firstTask.id, root);
+      const operationId = crypto.randomUUID();
+      const operation = await manager.mechanicalOperation(firstTask.id, {
+        operation: 'stitch',
+        nodeIds: [imageNodeId, fixturePages[1].imageNodeId],
+        direction: 'horizontal',
+        gap: 0,
+        operationId,
+        requestId: crypto.randomUUID(),
+        callId: crypto.randomUUID(),
+        userText: '仅在隔离测试中拼接两张夹具图片。',
+        expectedRevision: current.revision,
+      });
+      return { operationId, task: operation.task, image: operation.result.images[0] };
+    };
+    const firstMechanical = await runMechanicalStitch();
+    const firstAdoption = await adoptCanvasResult(firstTask.id, {
+      operationId: firstMechanical.operationId,
+      imageIndex: 0,
+      page: 1,
+      requestId: crypto.randomUUID(),
+      workType: 'mechanical',
+      authorization: { by: '隔离测试用户', note: '仅测试采用第 1 页夹具机械成品。' },
+      expectedRevision: firstMechanical.task.revision,
+    }, { root });
+    const secondMechanical = await runMechanicalStitch();
+    const secondAdoption = await adoptCanvasResult(firstTask.id, {
+      operationId: secondMechanical.operationId,
+      imageIndex: 0,
+      page: 2,
+      requestId: crypto.randomUUID(),
+      workType: 'mechanical',
+      authorization: { by: '隔离测试用户', note: '仅测试采用第 2 页夹具机械成品。' },
+      expectedRevision: secondMechanical.task.revision,
+    }, { root });
+    assert.equal(secondAdoption.task.sheetConfirmation, null, 'mechanical adoption keeps its own authorization instead of fabricating sheet confirmation');
+    assert.equal(secondAdoption.task.execution.pages[0].productOrigin.operationId, firstMechanical.operationId, 'adopting another page preserves the first page product origin');
+    assert.equal(secondAdoption.task.execution.pages[1].productOrigin.operationId, secondMechanical.operationId);
+
+    const adoptedImages = secondAdoption.task.execution.pages.slice(0, 2).map(({ page, image }) => ({ page, sha256: image.sha256 }));
+    const adoptedState = await manager.sync(firstTask.id, {
+      expectedRevision: secondAdoption.task.revision,
+      version: secondAdoption.task.sheetVersion,
+    });
+    assert.equal(adoptedState.candidates.find((candidate) => candidate.page === 1)?.nodeId, firstMechanical.image.nodeId);
+    assert.equal(adoptedState.candidates.find((candidate) => candidate.page === 2)?.nodeId, secondMechanical.image.nodeId);
+    const adoptedFreshness = await manager.assertFresh(firstTask.id, {
+      expectedRevision: secondAdoption.task.revision,
+      version: secondAdoption.task.sheetVersion,
+      images: adoptedImages,
+    });
+    assert.equal(adoptedFreshness.images.length, 2, 'freshness accepts both the current adoption and the inherited earlier adoption');
+
+    const firstOutput = await manager.mechanicalImage(firstTask.id, firstMechanical.operationId, 0);
+    const firstOutputBytes = await fs.readFile(firstOutput.filePath);
+    const changedOutputHash = digest(PNG_BLUE);
+    const replaceAdoptedNode = async (bytes, mimeType, width, height) => {
+      await restoredOptions.tool('canvas_delete_nodes', { ids: [firstMechanical.image.nodeId] }, restoredOptions.config, {});
+      await restoredOptions.tool('canvas_apply_ops', { ops: [{
+        type: 'add_node', id: firstMechanical.image.nodeId, nodeType: 'image', title: '隔离机械成品',
+        position: { x: 1200, y: 0 },
+        metadata: { content: `data:${mimeType};base64,${bytes.toString('base64')}`, mimeType, status: 'success', naturalWidth: width, naturalHeight: height },
+      }] }, restoredOptions.config, {});
+    };
+    await replaceAdoptedNode(PNG_BLUE, 'image/png', 1, 1);
+    const changedNode = await restoredOptions.tool('canvas_read_image', { nodeId: firstMechanical.image.nodeId }, restoredOptions.config, {});
+    assert.equal(digest(Buffer.from(changedNode.dataUrl.split(',')[1], 'base64')), changedOutputHash, 'fixture changes the adopted Canvas node bytes');
+    await assert.rejects(manager.assertFresh(firstTask.id, {
+      expectedRevision: secondAdoption.task.revision,
+      version: secondAdoption.task.sheetVersion,
+      images: [adoptedImages[0]],
+    }), (error) => error.code === 'ERR_CANVAS_IMAGE_CHANGED', 'freshness checks the adopted node bytes against the approved SHA');
+    await replaceAdoptedNode(firstOutputBytes, firstOutput.mimeType, firstOutput.width, firstOutput.height);
+    assert.notEqual(changedOutputHash, firstOutput.sha256);
+
+    const firstOperationPath = path.join(taskDirectory(firstTask.id, root), 'canvas-operations', `${firstMechanical.operationId}.json`);
+    const originalOperationRecord = await fs.readFile(firstOperationPath);
+    const operationRecord = JSON.parse(originalOperationRecord.toString('utf8'));
+    operationRecord.canvasInstanceId = crypto.randomUUID();
+    await fs.writeFile(firstOperationPath, `${JSON.stringify(operationRecord, null, 2)}\n`);
+    await assert.rejects(manager.assertFresh(firstTask.id, {
+      expectedRevision: secondAdoption.task.revision,
+      version: secondAdoption.task.sheetVersion,
+      images: [adoptedImages[0]],
+    }), (error) => error.code === 'ERR_CANVAS_MECHANICAL_ORIGIN', 'freshness rejects a mechanical ledger from another task Canvas instance');
+    await fs.writeFile(firstOperationPath, originalOperationRecord);
+
+    const beforeLedgerTamper = await readTask(firstTask.id, root);
+    const tamperedTask = await withTask(firstTask.id, (draft) => {
+      const inherited = draft.mechanicalAdoptions.find((entry) => entry.version === firstAdoption.task.sheetVersion);
+      inherited.source.sha256 = '0'.repeat(64);
+    }, { root, expectedRevision: beforeLedgerTamper.revision });
+    await assert.rejects(manager.assertFresh(firstTask.id, {
+      expectedRevision: tamperedTask.revision,
+      version: tamperedTask.sheetVersion,
+      images: [adoptedImages[0]],
+    }), (error) => error.code === 'ERR_CANVAS_MECHANICAL_ORIGIN', 'freshness verifies the inherited approval ledger and source identity');
     t.diagnostic('Isolated browser test used only the temporary profile root and local fake image configuration.');
   } finally {
     for (const page of pages) await page.close().catch(() => {});

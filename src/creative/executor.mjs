@@ -12,6 +12,13 @@ function assertConfirmed(task, version) {
   return sheet;
 }
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+const IMAGE_QUALITIES = new Set(['auto', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+function imageQuality(page) {
+  const quality = page.quality ?? 'auto';
+  if (!IMAGE_QUALITIES.has(quality)) throw new Error(`第 ${page.page} 页图片质量无效`);
+  return quality;
+}
 
 function referenceImageUrl(reference) {
   return `data:${reference.mimeType};base64,${reference.bytes.toString('base64')}`;
@@ -120,6 +127,7 @@ async function assertExistingReferenceNode(node, expected, call) {
 }
 
 async function ensurePageNodes({ page, sheet, record, images, model, call }) {
+  const quality = imageQuality(page);
   if ((record.referenceNodes || []).length !== images.length) throw new Error('参考图片节点记录不完整，停止生成');
   const state = await call('canvas_get_state');
   const nodes = state.nodes || [];
@@ -212,9 +220,11 @@ async function ensurePageNodes({ page, sheet, record, images, model, call }) {
         ...(model ? { model } : {}),
         size: page.size,
         count: 1,
-        quality: 'low',
+        quality,
       },
     });
+  } else if (configNode.metadata?.quality !== quality) {
+    operations.push({ type: 'update_node', id: record.nodeId, metadata: { quality } });
   }
   const inputNodeIds = [record.textNodeId, ...(record.referenceNodes || []).map(reference => reference.nodeId)];
   for (const fromNodeId of inputNodeIds) {
@@ -237,6 +247,7 @@ export async function executeTask(id, { version, expectedRevision, root, signal,
       const record = ex.pages.find(item => item.page === page.page);
       return record?.status !== 'succeeded' && (!record?.submitted || retryPage === page.page);
     });
+    for (const page of pagesNeedingFiles) imageQuality(page);
     const referenceImagesByPage = await loadReferenceImages(id, sheet, pagesNeedingFiles, root);
     let current;
     try {

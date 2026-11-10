@@ -2,11 +2,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { createRequire } from 'node:module';
 import { alive, readJson, runtimeStatus } from './control.mjs';
 
 const ignored = (name, relative) => name === '.lock' || name.startsWith('.lock-') || name.endsWith('.lock') || name === '.write-lock'
   || /^(?:web\/(?:runtime\.json|service\.log)|model-plugin\/instance\.json|(?:canvas\/[^/]+\/)?(?:canvas-instance\.json|supervisor\.log))$/.test(relative);
 const inside = (parent,child) => child===parent || child.startsWith(parent+path.sep);
+const isDshSessionLock = relative => /^web\/dsh\/sessions\/.+\/session\.lock$/.test(relative);
+const dshRequire = createRequire(new URL('../../adapters/dsh/package.json', import.meta.url));
 async function digest(file) {
   const hash=createHash('sha256');
   for await(const chunk of createReadStream(file))hash.update(chunk);
@@ -27,11 +30,29 @@ async function walk(directory,relative='') {
 }
 export async function assertOffline(root) {
   if((await runtimeStatus(root)).running)throw new Error('请先 stop 工作台，再备份、恢复或更新。');
-  async function check(directory) {
+  async function check(directory,relative='') {
     for(const entry of await fs.readdir(directory,{withFileTypes:true}).catch(e=>{if(e.code==='ENOENT')return [];throw e;})) {
+      const name=relative?`${relative}/${entry.name}`:entry.name;
       const full=path.join(directory,entry.name);
       if(entry.isSymbolicLink())throw new Error('数据目录存在符号链接，请先移出后维护。');
-      if(entry.isDirectory())await check(full);
+      if(entry.isDirectory())await check(full,name);
+      else if(entry.isFile()&&isDshSessionLock(name)) {
+        // DSH session.lock is a zero-byte POSIX flock inode, not a JSON owner record.
+        // Windows uses a named semaphore and leaves no file, per the DSH backend contract.
+        if(process.platform!=='win32') {
+          const {tryLockExclusive}=await import(dshRequire.resolve('@deepseek-ai/node-addon-system/flock'));
+          const handle=await fs.open(full,'r+');
+          try {
+            await tryLockExclusive(handle.fd);
+          } catch(error) {
+            if(error?.code==='EAGAIN'||error?.code==='EWOULDBLOCK')
+              throw new Error('此数据目录仍有工作台、Canvas、插件或 CLI 操作运行，请先退出后维护。');
+            throw new Error(`无法检查 DSH 会话锁，已停止维护：${error.message}`,{cause:error});
+          } finally {
+            await handle.close();
+          }
+        }
+      }
       else if(entry.name.endsWith('.lock')||entry.name==='.write-lock'||entry.name==='owner.json') {
         const owner=await readJson(full);
         if(owner?.pid&&alive(owner.pid))throw new Error('此数据目录仍有工作台、Canvas、插件或 CLI 操作运行，请先退出后维护。');

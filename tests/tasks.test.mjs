@@ -158,6 +158,17 @@ test("accepts one-to-five-page sheets and rejects counts outside the supported r
   }
 });
 
+test("preserves the selected image quality and defaults other pages to auto", async (t) => {
+  const { root } = await fixture(t);
+  let task = await createTask({ title: "质量设置", brief: "brief" }, root);
+  task = await confirmInputs(task.id, { revision: task.revision, by: "用户", note: "确认需求和来源" }, { root });
+  const value = sheet(2);
+  value.pages[0].quality = "high";
+  task = await setSheet(task.id, value, sheetWriteOptions(task, root));
+  assert.deepEqual(task.sheets[0].pages.map((page) => page.quality), ["high", "auto"]);
+  await assert.rejects(setSheet(task.id, { ...sheet(1), pages: [{ ...sheet(1).pages[0], quality: "ultra" }] }, sheetWriteOptions(task, root)), /图片质量/);
+});
+
 test("withTask serializes writers and persists only explicit checkpoints after a callback fails", async (t) => {
   const { root } = await fixture(t);
   const initial = await createTask({ title: "并发锁", brief: "brief" }, root);

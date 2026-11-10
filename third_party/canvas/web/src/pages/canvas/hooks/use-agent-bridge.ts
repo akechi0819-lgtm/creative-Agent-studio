@@ -6,6 +6,7 @@ import { useCanvasToolStore } from "@/stores/use-canvas-tool-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { composeDataUrls, getDataUrlDimensions, stitchDataUrls, type ImageComposeLayer, type PixelImageSource } from "@/lib/canvas/canvas-image-data";
 import { transformCanvasImageData, type CanvasImageOperationRequest, type CanvasImageOperationResult } from "@/lib/canvas/canvas-image-operations";
+import { adaptLogoDataUrl, type ImageLogoAdaptation } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
 import { deleteStoredImages, imageToDataUrl, uploadImage } from "@/services/image-storage";
@@ -100,7 +101,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
         const inputs = await readCanvasImageInputs(sourceNodeIds, nodesRef);
         await assertCanvasImageInputsUnchanged(inputs, nodesRef);
 
-        let pieces: Array<{ dataUrl: string; row?: number; column?: number }>;
+        let pieces: Array<{ dataUrl: string; row?: number; column?: number; padding?: number }>;
         if (request.operation === "stitch") {
             const sources = request.nodeIds.map((nodeId) => toPixelImageSource(inputs.get(nodeId)!));
             pieces = [{ dataUrl: await stitchDataUrls(sources, request) }];
@@ -111,6 +112,10 @@ export function useAgentBridge(params: AgentBridgeParams) {
                 source: toPixelImageSource(inputs.get(nodeId)!),
             }));
             pieces = [{ dataUrl: await composeDataUrls(base, layers) }];
+        } else if (request.operation === "adapt-logo") {
+            const source = inputs.get(request.nodeId)!;
+            const { dataUrl, padding } = await adaptLogoDataUrl(source.dataUrl, logoAdaptationParams(request));
+            pieces = [{ dataUrl, padding }];
         } else {
             const source = inputs.get(request.nodeId)!;
             const operation = request.operation === "crop"
@@ -151,7 +156,9 @@ export function useAgentBridge(params: AgentBridgeParams) {
                     : request.operation === "split"
                         ? { width: gridWidth, height: gridHeight }
                         : fitNodeSize(image.width, image.height);
-                const title = request.operation === "crop"
+            const title = request.operation === "adapt-logo"
+                ? "Adapted Logo"
+                : request.operation === "crop"
                     ? "Cropped Image"
                     : request.operation === "split"
                         ? `Split Image ${Number(piece.row) + 1}-${Number(piece.column) + 1}`
@@ -160,7 +167,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
                             : request.operation === "stitch"
                                 ? "Stitched Image"
                                 : "Composed Image";
-                return { type: "add_node", id, nodeType: CanvasNodeType.Image, title, position, ...dimensions, metadata: imageMetadata(image) };
+            return { type: "add_node", id, nodeType: CanvasNodeType.Image, title, position, ...dimensions, metadata: imageMetadata(image) };
             });
             const childNodeIds = addNodeOps.map((op) => op.type === "add_node" ? op.id : undefined).filter((id): id is string => Boolean(id));
             const uniqueSourceNodeIds = [...new Set(sourceNodeIds)];
@@ -170,7 +177,10 @@ export function useAgentBridge(params: AgentBridgeParams) {
                 { type: "select_nodes", ids: childNodeIds },
             ];
             applyAgentOps(ops);
-            const resultImages = uploadedImages.map((image, index) => ({ nodeId: childNodeIds[index], width: image.width, height: image.height }));
+            const resultImages = uploadedImages.map((image, index) => ({
+                nodeId: childNodeIds[index], width: image.width, height: image.height,
+                ...(pieces[index].padding === undefined ? {} : { padding: pieces[index].padding }),
+            }));
             if (request.operation === "stitch" || request.operation === "compose") {
                 return { operation: request.operation, sourceNodeId: request.operation === "stitch" ? request.nodeIds[0] : request.nodeId, sourceNodeIds: uniqueSourceNodeIds, images: resultImages };
             }
@@ -222,6 +232,16 @@ function assertImageOperationRequest(request: CanvasImageOperationRequest) {
         if (!/^data:image\/(?:png|jpeg|webp);base64,(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(request.dataUrl)) {
             throw new Error("dataUrl 仅允许非空 PNG、JPEG 或 WebP base64 data URL");
         }
+    } else if (request.operation === "adapt-logo") {
+        if (request.foreground !== undefined && !/^#[0-9a-fA-F]{6}$/.test(request.foreground)) throw new Error("foreground 必须使用不带透明度的 #RRGGBB，以保留原 Logo alpha");
+        if (request.outline && (!Number.isSafeInteger(request.outline.width) || request.outline.width < 1 || request.outline.width > 64 || !isPixelColor(request.outline.color))) {
+            throw new Error("outline 必须包含 #RRGGBB/#RRGGBBAA color 和 1–64 整数像素 width");
+        }
+        if (request.plate && (!isPixelColor(request.plate.color) || !Number.isSafeInteger(request.plate.padding) || request.plate.padding < 0 || request.plate.padding > 256
+            || !Number.isSafeInteger(request.plate.radius) || request.plate.radius < 0 || request.plate.radius > 8192)) {
+            throw new Error("plate 必须包含颜色、0–256 整数 padding 和 0–8192 整数 radius");
+        }
+        if (!request.foreground && !request.outline && !request.plate) throw new Error("adapt-logo 至少需要 foreground、outline 或 plate 参数");
     } else if (request.operation === "compose") {
         if (request.layers.length < 1 || request.layers.length > 20) throw new Error("layers 必须包含 1–20 个贴图");
         for (const layer of request.layers) {
@@ -245,6 +265,18 @@ function assertImageOperationRequest(request: CanvasImageOperationRequest) {
     } else if (request.operation === "resample" && (!Number.isFinite(request.targetLongEdge) || request.targetLongEdge <= 0 || request.targetLongEdge > 4096 || !["nearest", "bilinear", "high"].includes(request.algorithm))) {
         throw new Error("targetLongEdge 必须大于 0 且不超过 4096，algorithm 必须是 nearest、bilinear 或 high");
     }
+}
+
+function isPixelColor(value: string) {
+    return /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(value);
+}
+
+function logoAdaptationParams(request: Extract<CanvasImageOperationRequest, { operation: "adapt-logo" }>): ImageLogoAdaptation {
+    return {
+        ...(request.foreground ? { foreground: request.foreground } : {}),
+        ...(request.outline ? { outline: request.outline } : {}),
+        ...(request.plate ? { plate: request.plate } : {}),
+    };
 }
 
 type CanvasImageInput = PixelImageSource & { nodeId: string; metadataRevision: string };

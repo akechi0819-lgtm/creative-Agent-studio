@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api.js';
+import { videoChannelForSave } from './settings-contract.js';
 
 export function DnaSettings({ initial, task, job, refreshKey, onRun, onApplyToTask }) {
   const firstProfile = initial || { revision: 1, enabled: false, content: '' };
@@ -94,11 +95,12 @@ export function DnaSettings({ initial, task, job, refreshKey, onRun, onApplyToTa
 }
 
 export function ModelSettings({ initial, refreshKey, onRun }) {
-  const firstConfig = initial || { revision: 1, base: {}, image: {} };
+  const firstConfig = initial || { revision: 1, base: {}, image: {}, video: {} };
   const seenRevision = useRef(firstConfig.revision);
   const [config, setConfig] = useState(firstConfig);
   const [base, setBase] = useState(() => providerDraft(firstConfig.base));
   const [image, setImage] = useState(() => imageProviderDraft(firstConfig.image));
+  const [video, setVideo] = useState(() => videoProviderDraft(firstConfig.video));
   const [pluginState, setPluginState] = useState(null);
   const [pluginError, setPluginError] = useState('');
   const [pluginBusy, setPluginBusy] = useState('');
@@ -111,12 +113,13 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
-    const current = initial || { revision: 1, base: {}, image: {} };
+    const current = initial || { revision: 1, base: {}, image: {}, video: {} };
     if (seenRevision.current === current.revision) return;
     seenRevision.current = current.revision;
     setConfig(current);
     setBase(providerDraft(current.base));
     setImage(imageProviderDraft(current.image));
+    setVideo(videoProviderDraft(current.video));
     setClearKeys([]);
   }, [initial]);
 
@@ -155,7 +158,7 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
   }, [loginStatus]);
 
   function updateModel(kind, field, value) {
-    const setter = kind === 'base' ? setBase : setImage;
+    const setter = kind === 'base' ? setBase : kind === 'image' ? setImage : setVideo;
     setter((current) => field === 'source'
       ? { ...current, source: value, model: '' }
       : { ...current, [field]: value });
@@ -169,11 +172,15 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
   async function save() {
     setSaving(true); setError(''); setNotice('');
     try {
-      const response = await onRun(() => api.saveConfig({ expectedRevision: config.revision, base: { ...base, source: base.source || 'custom' }, image, clearKeys }), { success: '配置已保存。' });
+      const videoChannel = videoChannelForSave(video, {
+        savedApiKeyConfigured: Boolean(config.video?.apiKeyConfigured),
+        clearKey: clearKeys.includes('video'),
+      });
+      const response = await onRun(() => api.saveConfig({ expectedRevision: config.revision, base: { ...base, source: base.source || 'custom' }, image, video: videoChannel, clearKeys }), { success: '配置已保存。' });
       const next = response.config;
       seenRevision.current = next.revision;
       setConfig(next);
-      setBase((value) => ({ ...value, apiKey: '' })); setImage((value) => ({ ...value, apiKey: '' })); setClearKeys([]); setChecks(null);
+      setBase((value) => ({ ...value, apiKey: '' })); setImage((value) => ({ ...value, apiKey: '' })); setVideo((value) => ({ ...value, apiKey: '' })); setClearKeys([]); setChecks(null);
       const sync = response.canvasSync;
       setNotice(sync?.status === 'synced'
         ? '配置已保存，并已同步到打开的画布；下一次生成使用新配置。'
@@ -225,13 +232,14 @@ export function ModelSettings({ initial, refreshKey, onRun }) {
   const canCheckImage = Boolean(config.image?.baseUrl && config.image?.model && config.image?.apiKeyConfigured && !clearKeys.includes('image'));
 
   return <section className="settings-page">
-    <header className="section-header"><div><span className="eyebrow">基础能力与图像生成分开配置</span><h1>模型与服务</h1><p>清洗、对话、工具调用和读图共用基础模型；生图模型独立。配置仅保存后生效，连接检查读取已保存配置。</p></div><span className="revision-chip">配置 v{config.revision || 1}</span></header>
+    <header className="section-header"><div><span className="eyebrow">基础能力、图片与视频分开配置</span><h1>模型与服务</h1><p>清洗、对话、工具调用和读图共用基础模型；生图与 MiniMax H3 视频模型分别配置。配置仅保存后生效。</p></div><span className="revision-chip">配置 v{config.revision || 1}</span></header>
     {(error || notice) && <div className={`inline-banner ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}>{error || notice}</div>}
     <div className="provider-grid">
       <ProviderFields key={base.source || 'custom'} title="基础模型" description="清洗、对话、工具调用和读图共用当前模型。" kind="base" model={{ ...base, source: base.source || 'custom' }} saved={config.base || {}} clearSelected={clearKeys.includes('base')} configRevision={config.revision} onChange={updateModel} onClear={toggleClear} canCheck={canCheckBase} checking={checkKind === 'base'} onCheck={() => check('base')} onFetchModels={fetchModels} pluginState={pluginState} pluginError={pluginError} pluginBusy={pluginBusy} pluginNotice={pluginNotice} onPluginAction={runPluginAction} />
       <ProviderFields title="图片模型" description="单独用于 Canvas 的图像生成能力。" kind="image" model={image} saved={config.image || {}} clearSelected={clearKeys.includes('image')} configRevision={config.revision} onChange={updateModel} onClear={toggleClear} canCheck={canCheckImage} checking={checkKind === 'image'} onCheck={() => check('image')} onFetchModels={fetchModels} />
+      <VideoSettingsFields model={video} saved={config.video || {}} clearSelected={clearKeys.includes('video')} onChange={updateModel} onClear={toggleClear} />
     </div>
-    <div className="config-save-row"><div><strong>保存后新请求会使用新配置</strong><p>基础模型和图片模型分别生效；检查连接始终读取已保存配置。自用 API 的密钥留空表示保留，勾选清除后保存才会移除。</p></div><button className="button primary" onClick={save} disabled={saving}>{saving ? '正在保存…' : '保存配置'}</button></div>
+    <div className="config-save-row"><div><strong>保存后新请求会使用新配置</strong><p>基础模型、图片模型和视频 API 分别生效。密钥留空表示保留，勾选清除后保存才会移除。</p></div><button className="button primary" onClick={save} disabled={saving}>{saving ? '正在保存…' : '保存配置'}</button></div>
     {checks && <div className="check-results"><div className="settings-section-head"><span className="section-index">✓</span><div><h2>连接检查结果</h2><p>以下结果仅来自本次显式检查。</p></div></div><div className="check-result-grid">{Object.entries(checks).filter(([, value]) => value && typeof value === 'object').map(([kind, result]) => {
       const connected = result.status === 'connected';
       const neutral = result.status === 'unverified' || result.status === 'not_configured';
@@ -257,6 +265,21 @@ function providerDraft(channel = {}) {
 
 function imageProviderDraft(channel = {}) {
   return { baseUrl: channel.baseUrl || '', model: channel.model || '', apiKey: '' };
+}
+
+function videoProviderDraft(channel = {}) {
+  return { baseUrl: channel.baseUrl || '', model: channel.model || '', apiKey: '' };
+}
+
+function VideoSettingsFields({ model, saved, clearSelected, onChange, onClear }) {
+  return <section className="provider-card video-provider-card">
+    <div className="provider-head"><div><span className="provider-icon">▣</span><div><h2>视频模型</h2><p>单独用于任务 Canvas 的 MiniMax H3 视频生成。</p></div></div><span className={`config-state ${saved.apiKeyConfigured ? 'configured' : ''}`}><i />{saved.apiKeyConfigured ? '已配置' : '未配置'}</span></div>
+    <label className="field-label">服务地址<input type="url" value={model.baseUrl} onChange={(event) => onChange('video', 'baseUrl', event.target.value)} placeholder="https://api.osodm.com" autoComplete="url" /></label>
+    <label className="field-label">视频模型<input value="minimax_h3" readOnly aria-label="视频模型名称" /></label>
+    <label className="field-label">视频 API Key<input type="password" value={model.apiKey} onChange={(event) => onChange('video', 'apiKey', event.target.value)} placeholder={saved.apiKeyConfigured ? '已保存密钥 · 留空则保留' : '尚未配置'} autoComplete="new-password" /></label>
+    <small className="field-help">使用 OpenAI 兼容协议。密钥保存在本机私有配置；视频生成会按 Canvas 任务单独确认。</small>
+    <label className="check-row clear-key"><input type="checkbox" checked={clearSelected} onChange={(event) => onClear('video', event.target.checked)} /><span>明确清除已保存的视频 API Key</span></label>
+  </section>;
 }
 
 function ProviderFields({ title, description, kind, model, saved, clearSelected, configRevision, onChange, onClear, canCheck, checking, onCheck, onFetchModels, pluginState, pluginError, pluginBusy, pluginNotice, onPluginAction }) {

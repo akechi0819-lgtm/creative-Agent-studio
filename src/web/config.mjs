@@ -5,8 +5,9 @@ import { dataRoot } from '../canvas/client.mjs';
 
 import { MODEL_SOURCES, matchesSource, ensureModelPlugin } from './model-plugin.mjs';
 
-const CHANNELS = ['base', 'image'];
+const CHANNELS = ['base', 'image', 'video'];
 const DEFAULT_CHANNEL = Object.freeze({ baseUrl: '', model: '', apiKey: '' });
+const DEFAULT_VIDEO_CHANNEL = Object.freeze({ ...DEFAULT_CHANNEL, apiFormat: 'openai' });
 
 function configDirectory(root) {
   const value = root ?? dataRoot();
@@ -30,7 +31,13 @@ function configError(code, message) {
 }
 
 function emptyRecord() {
-  return { schemaVersion: 1, revision: 1, base: { ...DEFAULT_CHANNEL, source: 'custom' }, image: { ...DEFAULT_CHANNEL } };
+  return {
+    schemaVersion: 1,
+    revision: 1,
+    base: { ...DEFAULT_CHANNEL, source: 'custom' },
+    image: { ...DEFAULT_CHANNEL },
+    video: { ...DEFAULT_VIDEO_CHANNEL },
+  };
 }
 
 function normalizeChannel(value, label) {
@@ -57,6 +64,11 @@ function normalizeChannel(value, label) {
     if (!MODEL_SOURCES.includes(source) || (source !== 'custom' && model && !matchesSource(model, source))) throw configError('ERR_CONFIG_INVALID', '基础模型来源与模型不匹配');
     return { baseUrl, model, apiKey, source };
   }
+  if (label === '视频模型') {
+    const apiFormat = value.apiFormat ?? 'openai';
+    if (!['openai', 'gemini'].includes(apiFormat)) throw configError('ERR_CONFIG_INVALID', '视频模型接口格式无效');
+    return { baseUrl, model, apiKey, apiFormat };
+  }
   return { baseUrl, model, apiKey };
 }
 
@@ -70,6 +82,7 @@ function normalizeRecord(value) {
     revision: value.revision,
     base: normalizeChannel(value.base ?? DEFAULT_CHANNEL, '基础模型'),
     image: normalizeChannel(value.image ?? DEFAULT_CHANNEL, '图片模型'),
+    video: normalizeChannel(value.video ?? DEFAULT_VIDEO_CHANNEL, '视频模型'),
   };
 }
 
@@ -104,6 +117,7 @@ export async function readConfig({ root } = {}) {
     revision: record.revision,
     basic: await resolveBasicConfig(record.base, { root }),
     image: { ...record.image },
+    video: { ...record.video },
   };
 }
 
@@ -130,6 +144,12 @@ export function publicConfig(record) {
       baseUrl: record.image.baseUrl,
       model: record.image.model,
       apiKeyConfigured: Boolean(record.image.apiKey),
+    },
+    video: {
+      baseUrl: record.video.baseUrl,
+      model: record.video.model,
+      apiFormat: record.video.apiFormat ?? 'openai',
+      apiKeyConfigured: Boolean(record.video.apiKey),
     },
   };
 }
@@ -197,10 +217,10 @@ export async function saveConfig(input, { root } = {}) {
   }
   const clearKeys = input.clearKeys ?? [];
   if (!Array.isArray(clearKeys) || clearKeys.some((key) => !CHANNELS.includes(key))) {
-    throw configError('ERR_CONFIG_INVALID', 'clearKeys 只能包含 base 或 image');
+    throw configError('ERR_CONFIG_INVALID', 'clearKeys 只能包含 base、image 或 video');
   }
   for (const key of Object.keys(input)) {
-    if (!['expectedRevision', 'base', 'image', 'clearKeys'].includes(key)) {
+    if (!['expectedRevision', 'base', 'image', 'video', 'clearKeys'].includes(key)) {
       throw configError('ERR_CONFIG_INVALID', '配置包含不支持的字段');
     }
   }
@@ -210,7 +230,9 @@ export async function saveConfig(input, { root } = {}) {
     }
     if (input[name] && Object.keys(input[name]).some((key) => !(name === 'base'
       ? ['source', 'baseUrl', 'model', 'apiKey']
-      : ['baseUrl', 'model', 'apiKey', 'useBaseCredentials']).includes(key))) {
+      : name === 'image'
+        ? ['baseUrl', 'model', 'apiKey', 'useBaseCredentials']
+        : ['baseUrl', 'model', 'apiKey', 'apiFormat']).includes(key))) {
       throw configError('ERR_CONFIG_INVALID', `${name} 配置包含不支持的字段`);
     }
     if (name === 'image' && input.image && Object.hasOwn(input.image, 'useBaseCredentials')
@@ -240,6 +262,7 @@ export async function saveConfig(input, { root } = {}) {
         if (name === 'base' && Object.hasOwn(source, 'source')) channel.source = source.source;
         if (Object.hasOwn(source, 'baseUrl')) channel.baseUrl = source.baseUrl;
         if (Object.hasOwn(source, 'model')) channel.model = source.model;
+        if (name === 'video' && Object.hasOwn(source, 'apiFormat')) channel.apiFormat = source.apiFormat;
         if (Object.hasOwn(source, 'apiKey') && typeof source.apiKey !== 'string') {
           throw configError('ERR_CONFIG_INVALID', `${name} 凭据必须是文本`);
         }
@@ -247,7 +270,7 @@ export async function saveConfig(input, { root } = {}) {
       }
       if (clearKeys.includes(name)) channel.apiKey = '';
       if (!source && !clearKeys.includes(name)) continue;
-      next[name] = normalizeChannel(channel, name === 'base' ? '基础模型' : '图片模型');
+      next[name] = normalizeChannel(channel, name === 'base' ? '基础模型' : name === 'image' ? '图片模型' : '视频模型');
     }
     if (input.image?.useBaseCredentials === true) {
       if (next.base.source !== 'custom' || !next.base.baseUrl || !next.base.apiKey) {
