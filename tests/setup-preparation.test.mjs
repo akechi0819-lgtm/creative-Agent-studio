@@ -36,6 +36,7 @@ async function withReadyRepo(run) {
       'src/materials/mcp.mjs',
       'src/materials/verify.mjs',
       'src/canvas/runtime.mjs',
+      'src/canvas/video-proxy.mjs',
       'src/canvas/mcp.mjs',
     ]) {
       const file = path.join(repoRoot, relative);

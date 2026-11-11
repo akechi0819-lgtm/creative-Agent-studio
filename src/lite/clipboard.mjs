@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-/** Read once, only after the employee explicitly says they copied the image API key. */
-export async function readImageKeyFromClipboard() {
+/** Read once, only after the employee explicitly confirms copying this API key. */
+export async function readApiKeyFromClipboard(label = 'API') {
   const command=process.platform==='darwin' ? 'pbpaste' : process.platform==='win32' ? 'powershell.exe' : null;
-  if(!command)throw new Error('此系统请通过本机私有配置文件提供图片密钥');
+  if(!command)throw new Error(`此系统请通过本机私有配置文件提供${label}密钥`);
   const args=process.platform==='win32' ? ['-NoProfile','-NonInteractive','-Command',
     '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); Get-Clipboard -Raw'] : [];
   try {
@@ -12,5 +12,5 @@ export async function readImageKeyFromClipboard() {
     const key=stdout.trim();
     if(!key || key.length>5000 || /[\r\n]/.test(key))throw new Error('invalid clipboard');
     return key;
-  } catch {throw new Error('未读到有效的图片密钥；请先复制完整密钥，再由宿主执行配置');}
+  } catch {throw new Error(`未读到有效的${label}密钥；请先复制完整密钥，再由宿主执行配置`);}
 }

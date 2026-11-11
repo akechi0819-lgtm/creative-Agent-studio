@@ -7,7 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createCompanyCanvasMcp } from '../src/canvas/mcp.mjs';
 
-test('MCP exposes shared drawing tools, preserves explicit targets, and reports actual image bytes',async t=>{
+test('MCP exposes shared drawing and H3 status tools, preserves explicit targets, and reports actual image bytes',async t=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'company-lite-mcp-'));
   t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const calls=[];
@@ -24,7 +24,10 @@ test('MCP exposes shared drawing tools, preserves explicit targets, and reports 
   t.after(()=>client.close());t.after(()=>server.close());
   const names=(await client.listTools()).tools.map(tool=>tool.name);
   assert.ok(names.includes('canvas_open') && names.includes('canvas_list_projects') && names.includes('canvas_crop_image'));
-  assert.ok(!names.some(name=>/task|confirm_sheet|workbench_video|assets_add/.test(name)));
+  assert.ok(names.includes('canvas_generate_video'));
+  assert.ok(!names.includes('workbench_video_generate'));
+  assert.ok(names.includes('canvas_adapt_logo'));
+  assert.ok(!names.some(name=>/task|confirm_sheet|workbench_audio|assets_add/.test(name)));
   const check=await client.callTool({name:'canvas_status',arguments:{}});
   assert.equal(JSON.parse(check.content[0].text).running,false);
   assert.equal(JSON.parse(await fs.readFile(path.join(root,'setup/canvas-mcp-check.json'),'utf8')).service,'company-lite-canvas');
@@ -44,6 +47,24 @@ test('MCP exposes shared drawing tools, preserves explicit targets, and reports 
   const saved=await client.callTool({name:'canvas_save_image',arguments:{nodeId:'image-1'}});
   assert.deepEqual(await fs.readFile(JSON.parse(saved.content[0].text).path),png);
   assert.deepEqual(await fs.readFile(source),png);
+  const adapted=await client.callTool({name:'canvas_adapt_logo',arguments:{
+    nodeId:'transparent-logo-1',
+    foreground:'#ffffff',
+    outline:{color:'#1e293b',width:2},
+    plate:{color:'#ffffff',padding:8,radius:12},
+    projectId:'project-1',
+    clientId:'client-1',
+  }});
+  assert.equal(adapted.isError,undefined);
+  assert.deepEqual(calls.at(-1),{
+    name:'canvas_adapt_logo',
+    input:{nodeId:'transparent-logo-1',foreground:'#ffffff',outline:{color:'#1e293b',width:2},plate:{color:'#ffffff',padding:8,radius:12}},
+    target:{projectId:'project-1',clientId:'client-1'},
+  });
+  const beforeInvalidLogo=calls.length;
+  const invalidLogo=await client.callTool({name:'canvas_adapt_logo',arguments:{nodeId:'transparent-logo-1'}});
+  assert.equal(invalidLogo.isError,true);
+  assert.equal(calls.length,beforeInvalidLogo,'invalid logo requests do not reach Canvas');
   const before=calls.length;
   const invalid=await client.callTool({name:'site_navigate',arguments:{path:'/config'}});
   assert.equal(invalid.isError,true);assert.equal(calls.length,before);

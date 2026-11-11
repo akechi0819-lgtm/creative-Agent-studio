@@ -8,7 +8,7 @@ import { useTranslation } from "react-i18next";
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { createVideoGenerationTask, isVideoTaskFailed, storeGeneratedVideo, waitForVideoGenerationTask } from "@/services/api/video";
-import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { defaultConfig, STUDIO_H3_VIDEO_MODEL, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { ensureImagePreview, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
@@ -48,6 +48,7 @@ import { flushCanvasStore, useCanvasStore } from "@/stores/canvas/use-canvas-sto
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { isCompanyLiteGenerationAllowed, isCompanyLiteGenerationModeSupported } from "@/lib/canvas/company-lite-generation";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
 import { applyGroupSelection, applyUngroupSelection, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, focusViewportForNode, getConnectionTargetAnchor, getGroupWrapRect, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
@@ -2276,8 +2277,8 @@ function InfiniteCanvasPage() {
                     ? { ...node, metadata: { ...node.metadata, status: node.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: error.message } }
                     : node));
             };
-            if ((mode as string) !== "image") {
-                reportFailure(new Error("Company Lite 仅配置图片生成"));
+            if (!isCompanyLiteGenerationModeSupported(mode)) {
+                reportFailure(new Error("Company Lite 仅支持图片与已配置的 MiniMax H3 文生视频"));
                 return;
             }
             if (!sourceNode) {
@@ -2289,8 +2290,12 @@ function InfiniteCanvasPage() {
                 return;
             }
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
+            if (!isCompanyLiteGenerationAllowed(mode, generationConfig.model, STUDIO_H3_VIDEO_MODEL)) {
+                reportFailure(new Error("Company Lite 视频生成仅支持已配置的 MiniMax H3 文生视频"));
+                return;
+            }
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                reportFailure(new Error("图片服务尚未配置，请回到宿主智能体配置图片 API。"));
+                reportFailure(new Error(mode === "video" ? "视频服务尚未配置，请回到宿主智能体配置 MiniMax H3 视频 API。" : "图片服务尚未配置，请回到宿主智能体配置图片 API。"));
                 return;
             }
 
@@ -2775,16 +2780,24 @@ function InfiniteCanvasPage() {
 
     const handleRetryNode = useCallback(
         async (node: CanvasNodeData, imageId?: string) => {
+            if (node.type === CanvasNodeType.Video) {
+                if (node.metadata?.model !== STUDIO_H3_VIDEO_MODEL || !hasResumableVideoTask(node)) {
+                    message.error("Company Lite 仅支持恢复已提交的 MiniMax H3 文生视频任务");
+                    return;
+                }
+                if (generationRequestsRef.current.has(node.id)) {
+                    message.error("该节点正在生成视频，请先查询 generation_get_status，完成后再恢复。");
+                    return;
+                }
+                await pollVideoNodeTask(node);
+                return;
+            }
             if (node.type !== CanvasNodeType.Image) {
-                message.error("Company Lite 仅配置图片生成");
+                message.error("Company Lite 仅支持图片与已配置的 MiniMax H3 文生视频");
                 return;
             }
             if (generationRequestsRef.current.has(node.id)) {
                 message.error("该节点正在生成图片，请先查询 generation_get_status，完成后再生成。");
-                return;
-            }
-            if (hasResumableVideoTask(node)) {
-                await pollVideoNodeTask(node);
                 return;
             }
             const sourceNode = findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
@@ -3074,10 +3087,6 @@ function InfiniteCanvasPage() {
     }, []);
     const handleNodeRetry = useCallback(
         (node: CanvasNodeData) => {
-            if (node.type !== CanvasNodeType.Image) {
-                message.error("Company Lite 仅配置图片生成");
-                return;
-            }
             void handleRetryNode(node);
         },
         [handleRetryNode, message],

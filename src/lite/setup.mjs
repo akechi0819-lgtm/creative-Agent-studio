@@ -6,11 +6,15 @@ import { dataRoot } from '../canvas/client.mjs';
 import { createCanvasRuntime } from '../canvas/runtime.mjs';
 import { readMaterialConfig, saveMaterialConfig } from '../materials/config.mjs';
 import { verifyMaterials } from '../materials/verify.mjs';
-import { publicConfig, readConfigRecord, saveConfig, validateCompanyDefaults } from './config.mjs';
+import { publicConfig, readConfigRecord, saveConfig, saveVideoConfig, validateCompanyDefaults, VIDEO_PROVIDER } from './config.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const DEFAULTS_ENV = 'COMPANY_LITE_DEFAULTS_FILE';
 const REQUIRED_SETUP_DEPENDENCIES = ['@modelcontextprotocol/sdk', 'zod'];
+
+function imageConfigRevision(record) {
+  return record.imageRevision ?? record.revision;
+}
 
 const SETUP_FILES = [
   'package.json',
@@ -26,6 +30,7 @@ const SETUP_FILES = [
   'src/materials/mcp.mjs',
   'src/materials/verify.mjs',
   'src/canvas/runtime.mjs',
+  'src/canvas/video-proxy.mjs',
   'src/canvas/mcp.mjs',
 ];
 
@@ -440,14 +445,14 @@ function validCanvasId(value) {
 
 function imageAcceptanceMatches(record, evidence, acceptance) {
   return Boolean(record.image.baseUrl && record.image.model && record.image.apiKey
-    && evidence && acceptance && evidence.configRevision === record.revision
+    && evidence && acceptance && evidence.configRevision === imageConfigRevision(record)
     && evidence.model === record.image.model && evidence.projectId === acceptance.projectId
     && evidence.sourceNodeId === acceptance.sourceNodeId && evidence.mcpRead
     && evidence.mcpRead.imageNodeId === acceptance.imageNodeId
     && evidence.mcpRead.sha256 === acceptance.sha256 && evidence.mcpRead.bytes === acceptance.bytes
     && evidence.mcpRead.width === acceptance.width && evidence.mcpRead.height === acceptance.height
     && evidence.submittedAt === acceptance.submittedAt && evidence.mcpRead.readAt === acceptance.readAt
-    && acceptance.configRevision === record.revision);
+    && acceptance.configRevision === imageConfigRevision(record));
 }
 
 async function loadDefaults(repoRoot, env) {
@@ -619,19 +624,19 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
   };
 
   const imageConfigured = Boolean(record.image.baseUrl && record.image.model && record.image.apiKey);
-  const imageVerified = imageConfigured && imageCheck?.configRevision === record.revision && imageCheck.ok;
+  const imageVerified = imageConfigured && imageCheck?.configRevision === imageConfigRevision(record) && imageCheck.ok;
   const imageGenerationCurrent = Boolean(imageVerified && imageGeneration
-    && imageGeneration.configRevision === record.revision && imageGeneration.model === record.image.model);
+    && imageGeneration.configRevision === imageConfigRevision(record) && imageGeneration.model === record.image.model);
   const imageReadCurrent = Boolean(imageGenerationCurrent && imageGeneration.mcpRead);
   const imageAcceptanceReady = imageReadCurrent && imageAcceptanceMatches(record, imageGeneration, imageAcceptance);
   const imageNeedsAction = !imageAcceptanceReady;
   if (imageCheck && record.image.apiKey) imageCheck.message = imageCheck.message.replaceAll(record.image.apiKey, '[已隐藏]');
-  const safeImageSummary = imageConfigured && imageCheck?.configRevision === record.revision && imageCheck.ok
+  const safeImageSummary = imageConfigured && imageCheck?.configRevision === imageConfigRevision(record) && imageCheck.ok
     ? imageAcceptanceReady ? '图片服务连接、真实生成、宿主 MCP 读图与历史重开验收均通过。'
       : '图片服务连接检查通过，等待当前宿主完成真实生成、MCP 读图和历史重开验收。'
     : !imageConfigured
       ? '填写图片服务地址、模型和密钥后检查连接。'
-      : imageCheck?.configRevision === record.revision && !imageCheck.ok
+      : imageCheck?.configRevision === imageConfigRevision(record) && !imageCheck.ok
         ? '图片服务连接检查未通过。'
         : '图片服务已保存，请检查连接。';
   let imageNextAction = '填写或确认图片服务地址、模型和密钥，然后保存并检查连接。';
@@ -648,7 +653,7 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
     connectionVerified: imageVerified,
     summary: safeImageSummary,
     nextAction: imageNextAction,
-    error: imageCheck?.configRevision === record.revision && !imageCheck.ok
+    error: imageCheck?.configRevision === imageConfigRevision(record) && !imageCheck.ok
       ? { code: 'ERR_IMAGE_API_CHECK', message: imageCheck.message }
       : null,
     config: publicConfig(record).image,
@@ -657,11 +662,11 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
       model: record.image.model || defaults.image.model || '',
     },
     defaultsError: defaults.error,
-    checkedAt: imageCheck?.configRevision === record.revision ? imageCheck.checkedAt : null,
+    checkedAt: imageCheck?.configRevision === imageConfigRevision(record) ? imageCheck.checkedAt : null,
     checks: [{
       name: '图片服务连接',
       ok: imageVerified,
-      detail: imageVerified ? 'GET /models 已确认当前配置可连接；此项不调用生成接口。' : imageCheck?.configRevision === record.revision ? '连接检查未通过；请查看检查记录' : '当前配置尚未检查',
+      detail: imageVerified ? 'GET /models 已确认当前配置可连接；此项不调用生成接口。' : imageCheck?.configRevision === imageConfigRevision(record) ? '连接检查未通过；请查看检查记录' : '当前配置尚未检查',
     }, {
       name: '本次配置真实生成与宿主 MCP 读图',
       ok: imageReadCurrent,
@@ -696,7 +701,7 @@ export async function getSetupStatus({ root, repoRoot = REPO_ROOT, nodeVersion =
   };
   steps.push(finishStep);
   const currentStep = steps.find((step) => !step.complete) || finishStep;
-  const logs = stageLogs(steps, linkedHostReport, currentMaterialCheck, imageCheck?.configRevision === record.revision ? imageCheck : null, defaults.error);
+  const logs = stageLogs(steps, linkedHostReport, currentMaterialCheck, imageCheck?.configRevision === imageConfigRevision(record) ? imageCheck : null, defaults.error);
   return {
     current: currentStep.id,
     actionNeeded: currentStep.actionNeeded,
@@ -722,9 +727,9 @@ export async function imageAcceptanceTrackingPending({ root } = {}) {
     readImageGenerationEvidence(resolvedRoot), readImageAcceptance(resolvedRoot),
   ]);
   if (!record.image.baseUrl || !record.image.model || !record.image.apiKey
-    || !check?.ok || check.configRevision !== record.revision
+    || !check?.ok || check.configRevision !== imageConfigRevision(record)
     || imageAcceptanceMatches(record, evidence, acceptance)) return false;
-  return !(evidence?.configRevision === record.revision && evidence.mcpRead);
+  return !(evidence?.configRevision === imageConfigRevision(record) && evidence.mcpRead);
 }
 
 /** Record one submitted MCP generation only while the current setup still needs its test image. */
@@ -738,22 +743,22 @@ export async function recordImageGenerationSubmission({ projectId, sourceNodeId,
     readImageGenerationEvidence(resolvedRoot), readImageAcceptance(resolvedRoot),
   ]);
   if (!record.image.baseUrl || !record.image.model || !record.image.apiKey
-    || !check?.ok || check.configRevision !== record.revision
+    || !check?.ok || check.configRevision !== imageConfigRevision(record)
     || imageAcceptanceMatches(record, evidence, acceptance)) return { recorded: false };
   const source = canvasState.nodes.find((node) => node.id === sourceNodeId);
   if (source?.type !== 'config' || source.metadata?.generationMode !== 'image'
     || String(source.metadata?.count ?? '') !== '1'
     || source.metadata?.model && source.metadata.model !== record.image.model) return { recorded: false };
-  const previousSource = evidence?.configRevision === record.revision
+  const previousSource = evidence?.configRevision === imageConfigRevision(record)
     ? canvasState.nodes.find((node) => node.id === evidence.sourceNodeId)
     : null;
-  if (evidence?.configRevision === record.revision && (evidence.mcpRead || previousSource?.metadata?.status !== 'error')) {
+  if (evidence?.configRevision === imageConfigRevision(record) && (evidence.mcpRead || previousSource?.metadata?.status !== 'error')) {
     return { recorded: false };
   }
   const priorImageNodeIds = canvasState.nodes.filter((node) => node.type === 'image').map((node) => node.id);
   await writePrivateJson(resolvedRoot, 'image-generation.json', {
     schemaVersion: 1,
-    configRevision: record.revision,
+    configRevision: imageConfigRevision(record),
     model: record.image.model,
     projectId,
     sourceNodeId,
@@ -775,9 +780,9 @@ export async function recordImageMcpRead({ projectId, imageNodeId, canvasState, 
     readImageGenerationEvidence(resolvedRoot), readImageAcceptance(resolvedRoot),
   ]);
   if (!record.image.baseUrl || !record.image.model || !record.image.apiKey
-    || !check?.ok || check.configRevision !== record.revision
+    || !check?.ok || check.configRevision !== imageConfigRevision(record)
     || imageAcceptanceMatches(record, evidence, acceptance)
-    || !evidence || evidence.configRevision !== record.revision || evidence.model !== record.image.model
+    || !evidence || evidence.configRevision !== imageConfigRevision(record) || evidence.model !== record.image.model
     || evidence.projectId !== projectId || evidence.mcpRead) return { recorded: false };
   if (!isFreshGeneratedImage(canvasState, imageNodeId, evidence, record.image.model)) return { recorded: false };
   const image = decodeImageDataUrl(imageResult?.dataUrl);
@@ -820,10 +825,10 @@ export async function verifyImageAcceptance({ projectId, imageNodeId } = {}, {
     readImageGenerationEvidence(resolvedRoot), readImageAcceptance(resolvedRoot),
   ]);
   if (!record.image.baseUrl || !record.image.model || !record.image.apiKey
-    || !check?.ok || check.configRevision !== record.revision) {
+    || !check?.ok || check.configRevision !== imageConfigRevision(record)) {
     throw setupError('ERR_IMAGE_ACCEPTANCE_CONFIG', '当前图片配置尚未通过连接检查；请先运行 node scripts/setup.mjs check-image。');
   }
-  if (!evidence || evidence.configRevision !== record.revision || evidence.model !== record.image.model
+  if (!evidence || evidence.configRevision !== imageConfigRevision(record) || evidence.model !== record.image.model
     || evidence.projectId !== projectId || evidence.mcpRead?.imageNodeId !== imageNodeId) {
     throw setupError('ERR_IMAGE_ACCEPTANCE_EVIDENCE', '找不到与当前图片配置、项目和节点匹配的宿主 MCP 生成及读图证据。');
   }
@@ -870,7 +875,7 @@ export async function verifyImageAcceptance({ projectId, imageNodeId } = {}, {
 
   const acceptance = {
     schemaVersion: 1,
-    configRevision: record.revision,
+    configRevision: imageConfigRevision(record),
     projectId,
     sourceNodeId: evidence.sourceNodeId,
     imageNodeId,
@@ -1041,7 +1046,7 @@ export async function verifyImageApi({ root, fetchImpl = fetch, now = () => new 
   const checkedAt = now().toISOString();
   let result;
   if (!record.image.baseUrl || !record.image.model || !record.image.apiKey) {
-    result = { schemaVersion: 1, configRevision: record.revision, ok: false, statusCode: null, checkedAt, message: '图片 API 地址、模型和密钥必须填写后才能检查。' };
+    result = { schemaVersion: 1, configRevision: imageConfigRevision(record), ok: false, statusCode: null, checkedAt, message: '图片 API 地址、模型和密钥必须填写后才能检查。' };
   } else {
     const url = modelsEndpoint(record.image.baseUrl);
     try {
@@ -1073,16 +1078,109 @@ export async function verifyImageApi({ root, fetchImpl = fetch, now = () => new 
           message = `GET /models 已列出所配置模型“${record.image.model}”（HTTP ${statusCode}）；未调用图片生成，也未验证实际生图能力。`;
         }
       }
-      result = { schemaVersion: 1, configRevision: record.revision, ok, statusCode, checkedAt, message };
+      result = { schemaVersion: 1, configRevision: imageConfigRevision(record), ok, statusCode, checkedAt, message };
     } catch (error) {
       const message = error?.name === 'TimeoutError' || error?.name === 'AbortError'
         ? 'GET /models 连接超时（10 秒）。'
         : `GET /models 连接失败：${String(error?.message || '网络错误').replaceAll(record.image.apiKey, '[已隐藏]')}`;
-      result = { schemaVersion: 1, configRevision: record.revision, ok: false, statusCode: null, checkedAt, message: message.slice(0, 300) };
+      result = { schemaVersion: 1, configRevision: imageConfigRevision(record), ok: false, statusCode: null, checkedAt, message: message.slice(0, 300) };
     }
   }
   await writePrivateJson(resolvedRoot, 'image-check.json', result);
   return result;
+}
+
+/** Check H3 configuration metadata through the read-only models endpoint; never create a video. */
+export async function verifyVideoApi({ root, fetchImpl = fetch, now = () => new Date() } = {}) {
+  const record = await readConfigRecord({ root: rootPath(root) });
+  const checkedAt = now().toISOString();
+  const apiKeyConfigured = Boolean(record.video.apiKey);
+  if (!apiKeyConfigured) {
+    return {
+      provider: VIDEO_PROVIDER.baseUrl,
+      model: VIDEO_PROVIDER.model,
+      apiFormat: VIDEO_PROVIDER.apiFormat,
+      apiKeyConfigured: false,
+      metadataReachable: false,
+      modelListed: null,
+      statusCode: null,
+      checkedAt,
+      message: '视频 API Key 尚未配置；未发送网络请求，也未生成视频。',
+      generationVerified: false,
+    };
+  }
+
+  try {
+    const response = await fetchImpl(`${VIDEO_PROVIDER.baseUrl}/v1/models`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${record.video.apiKey}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const statusCode = Number.isInteger(response?.status) ? response.status : null;
+    if (!response?.ok) {
+      return {
+        provider: VIDEO_PROVIDER.baseUrl,
+        model: VIDEO_PROVIDER.model,
+        apiFormat: VIDEO_PROVIDER.apiFormat,
+        apiKeyConfigured: true,
+        metadataReachable: false,
+        modelListed: null,
+        statusCode,
+        checkedAt,
+        message: `GET /v1/models 返回 HTTP ${statusCode || '未知'}；视频服务连通性未验证，未生成视频。`,
+        generationVerified: false,
+      };
+    }
+    let payload = null;
+    try { payload = await response.json(); } catch { /* A successful response still proves metadata endpoint reachability. */ }
+    const ids = Array.isArray(payload?.data)
+      ? payload.data.map((item) => item?.id).filter((id) => typeof id === 'string')
+      : null;
+    const modelListed = ids ? ids.includes(VIDEO_PROVIDER.model) : null;
+    const message = modelListed === true
+      ? `GET /v1/models 已响应并列出 ${VIDEO_PROVIDER.model}；未生成视频。`
+      : modelListed === false
+        ? `GET /v1/models 已响应，但目录未列出 ${VIDEO_PROVIDER.model}；目录结果不判定该渠道的视频生成能力，未生成视频。`
+        : 'GET /v1/models 已响应，但未返回可识别的 OpenAI 模型目录；仅确认端点有响应，未验证 H3 生成能力，也未生成视频。';
+    return {
+      provider: VIDEO_PROVIDER.baseUrl,
+      model: VIDEO_PROVIDER.model,
+      apiFormat: VIDEO_PROVIDER.apiFormat,
+      apiKeyConfigured: true,
+      metadataReachable: true,
+      modelListed,
+      statusCode,
+      checkedAt,
+      message,
+      generationVerified: false,
+    };
+  } catch (error) {
+    const reason = error?.name === 'TimeoutError' || error?.name === 'AbortError'
+      ? '请求超时（10 秒）'
+      : String(error?.message || '网络错误').replaceAll(record.video.apiKey, '[已隐藏]');
+    return {
+      provider: VIDEO_PROVIDER.baseUrl,
+      model: VIDEO_PROVIDER.model,
+      apiFormat: VIDEO_PROVIDER.apiFormat,
+      apiKeyConfigured: true,
+      metadataReachable: false,
+      modelListed: null,
+      statusCode: null,
+      checkedAt,
+      message: `GET /v1/models 未验证连通：${reason}；未生成视频。`.slice(0, 300),
+      generationVerified: false,
+    };
+  }
+}
+
+/** Save only the local H3 key, then perform a read-only metadata check. */
+export async function saveAndCheckVideoConfig(input, options = {}) {
+  await saveVideoConfig(input, options);
+  const [check, record] = await Promise.all([
+    verifyVideoApi(options),
+    readConfigRecord({ root: options.root }),
+  ]);
+  return { config: publicConfig(record).video, check };
 }
 
 /** Save image settings first, then record a non-paid /models connectivity result. */

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import {
   beginMaterialLogin,
@@ -14,11 +15,13 @@ import {
   recordImageMcpRead,
   recordMaterialCheck,
   reportHostProbe,
+  saveAndCheckVideoConfig,
   saveAndVerifyImageConfig,
   verifyImageAcceptance,
   verifyImageApi,
+  verifyVideoApi,
 } from '../src/lite/setup.mjs';
-import { saveConfig } from '../src/lite/config.mjs';
+import { saveConfig, saveVideoConfig } from '../src/lite/config.mjs';
 import { saveMaterialConfig } from '../src/materials/config.mjs';
 
 async function withTemp(run) {
@@ -42,6 +45,7 @@ async function createPackageFixture(repoRoot, { canvas = true } = {}) {
     'src/materials/mcp.mjs',
     'src/materials/verify.mjs',
     'src/canvas/runtime.mjs',
+    'src/canvas/video-proxy.mjs',
     'src/canvas/mcp.mjs',
     'src/canvas/import-errors.mjs',
   ];
@@ -97,6 +101,7 @@ async function createFreshSourceCliFixture(repoRoot) {
     'src/lite/clipboard.mjs',
     'src/canvas/client.mjs',
     'src/canvas/runtime.mjs',
+    'src/canvas/video-proxy.mjs',
     'src/canvas/mcp.mjs',
     'src/canvas/import-errors.mjs',
   ]) {
@@ -128,6 +133,70 @@ async function saveVerifiedMaterials(root, { downloadVerified = true, failureCod
   return saved;
 }
 
+test('H3 check reads only model metadata, distinguishes reachability from model listing, and never generates', async () => {
+  await withTemp(async (root) => {
+    const saved = await saveAndCheckVideoConfig({ expectedRevision: 1, video: { apiKey: 'fixture-h3-key' } }, {
+      root,
+      fetchImpl: async (url, options) => {
+        assert.equal(url, 'https://api.osodm.com/v1/models');
+        assert.equal(options.method, 'GET');
+        assert.equal(options.headers.authorization, 'Bearer fixture-h3-key');
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'another_model' }] }) };
+      },
+      now: () => new Date('2026-11-11T00:00:00.000Z'),
+    });
+
+    assert.equal(saved.config.model, 'minimax_h3');
+    assert.equal(saved.config.apiKeyConfigured, true);
+    assert.equal(JSON.stringify(saved).includes('fixture-h3-key'), false);
+    assert.equal(saved.check.metadataReachable, true);
+    assert.equal(saved.check.modelListed, false);
+    assert.equal(saved.check.generationVerified, false);
+    assert.match(saved.check.message, /不判定.*生成能力/);
+  });
+});
+
+test('H3 check reports unsupported metadata endpoints as unverified without a generation fallback', async () => {
+  await withTemp(async (root) => {
+    await saveVideoConfig({ expectedRevision: 1, video: { apiKey: 'fixture-h3-key' } }, { root });
+    let calls = 0;
+    const result = await verifyVideoApi({ root, fetchImpl: async (_url, options) => {
+      calls += 1;
+      assert.equal(options.method, 'GET');
+      return { ok: false, status: 404 };
+    } });
+    assert.equal(calls, 1);
+    assert.equal(result.metadataReachable, false);
+    assert.equal(result.modelListed, null);
+    assert.equal(result.generationVerified, false);
+    assert.match(result.message, /连通性未验证/);
+  });
+});
+
+test('saving the optional video channel does not stale the existing image setup check', async () => {
+  await withTemp(async (root) => {
+    await saveConfig({ expectedRevision: 1, image }, { root });
+    const imageCheck = await verifyImageApi({
+      root,
+      fetchImpl: async (url, options) => {
+        assert.equal(url, 'https://images.example/v1/models');
+        assert.equal(options.method, 'GET');
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'image-v2' }] }) };
+      },
+    });
+    assert.equal(imageCheck.ok, true, JSON.stringify(imageCheck));
+    assert.equal(await imageAcceptanceTrackingPending({ root }), true);
+
+    await saveVideoConfig({ expectedRevision: 2, video: { apiKey: 'fixture-h3-key' } }, { root });
+    assert.equal(await imageAcceptanceTrackingPending({ root }), true);
+    const repoRoot = path.join(root, 'repo');
+    await createPackageFixture(repoRoot);
+    const status = await getSetupStatus({ root, repoRoot, env: {} });
+    assert.equal(status.steps.find((step) => step.id === 'image').connectionVerified, true);
+    assert.equal(status.config.video.apiKeyConfigured, true);
+  });
+});
+
 test('clipboard key input stays local and accepts a non-secret parameter file', {skip:process.platform!=='darwin'}, async()=>{
   await withTemp(async directory=>{
     const bin=path.join(directory,'bin');await fs.mkdir(bin);
@@ -152,11 +221,11 @@ async function createCliDefaults(directory) {
   return file;
 }
 
-function runSetupCli(args, { root, defaultsFile }) {
+function runSetupCli(args, { root, defaultsFile, env = {} }) {
   const script = path.resolve(import.meta.dirname, '../scripts/setup.mjs');
   return spawnSync(process.execPath, [script, ...args], {
     cwd: path.resolve(import.meta.dirname, '..'),
-    env: { ...process.env, STUDIO_DATA_DIR: root, COMPANY_LITE_DEFAULTS_FILE: defaultsFile },
+    env: { ...process.env, STUDIO_DATA_DIR: root, COMPANY_LITE_DEFAULTS_FILE: defaultsFile, ...env },
     encoding: 'utf8',
   });
 }
@@ -641,5 +710,86 @@ test('configure-image reads a private file, saves before a failed check, and nev
     const checkedStatus = JSON.parse(checked.stdout);
     assert.equal(checkedStatus.steps.find((step) => step.id === 'image').complete, false);
     assert.equal(checked.stdout.includes(payloadKey), false);
+  });
+});
+
+test('configure-video imports only the fixed H3 key and checks metadata without exposing it or generating', async () => {
+  await withTemp(async (directory) => {
+    const root = path.join(directory, 'data');
+    const defaultsFile = await createCliDefaults(directory);
+    const payloadFile = path.join(directory, 'video-payload.json');
+    const preloadFile = path.join(directory, 'fake-video-metadata.mjs');
+    const payloadKey = 'fixture-video-payload-key';
+    await fs.writeFile(payloadFile, JSON.stringify({ expectedRevision: 1, video: { apiKey: payloadKey } }), { mode: 0o600 });
+    await fs.writeFile(preloadFile, `
+      globalThis.fetch = async (url, options) => {
+        if (url !== 'https://api.osodm.com/v1/models' || options.method !== 'GET') throw new Error('unexpected request');
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'other_model' }] }) };
+      };
+    `);
+    if (process.platform !== 'win32') await fs.chmod(payloadFile, 0o600);
+
+    const configured = runSetupCli(['configure-video', `@${payloadFile}`], {
+      root,
+      defaultsFile,
+      env: { NODE_OPTIONS: `--import=${pathToFileURL(preloadFile).href}` },
+    });
+    assert.equal(configured.status, 0, configured.stderr);
+    const result = JSON.parse(configured.stdout);
+    assert.equal(result.config.model, 'minimax_h3');
+    assert.equal(result.config.apiKeyConfigured, true);
+    assert.equal(result.check.metadataReachable, true);
+    assert.equal(result.check.modelListed, false, 'an omitted catalog model does not claim video generation is unavailable');
+    assert.equal(result.check.generationVerified, false);
+    assert.equal(configured.stdout.includes(payloadKey), false);
+    const saved = JSON.parse(await fs.readFile(path.join(root, 'config', 'studio.json'), 'utf8'));
+    assert.equal(saved.video.apiKey, payloadKey);
+    assert.deepEqual(Object.keys(saved.video), ['apiKey']);
+
+    const checkedWithoutKey = runSetupCli(['check-video'], {
+      root: path.join(directory, 'unconfigured-data'),
+      defaultsFile,
+      env: { NODE_OPTIONS: `--import=${pathToFileURL(preloadFile).href}` },
+    });
+    assert.equal(checkedWithoutKey.status, 1);
+    assert.equal(JSON.parse(checkedWithoutKey.stdout).apiKeyConfigured, false);
+    assert.equal(checkedWithoutKey.stdout.includes(payloadKey), false);
+  });
+});
+
+test('configure-video reads a confirmed clipboard key into the shared private config without touching image settings', { skip: process.platform !== 'darwin' }, async () => {
+  await withTemp(async (directory) => {
+    const root = path.join(directory, 'data');
+    const defaultsFile = await createCliDefaults(directory);
+    const bin = path.join(directory, 'bin');
+    await fs.mkdir(bin);
+    const payloadFile = path.join(directory, 'video-public-params.json');
+    const preloadFile = path.join(directory, 'fake-video-metadata.mjs');
+    const key = 'fixture-video-clipboard-key';
+    await fs.writeFile(path.join(bin, 'pbpaste'), `#!/bin/sh\nprintf ${key}\n`, { mode: 0o700 });
+    await fs.writeFile(payloadFile, JSON.stringify({ expectedRevision: 1, video: {} }), { mode: 0o644 });
+    await fs.writeFile(preloadFile, `
+      globalThis.fetch = async (url, options) => {
+        if (url !== 'https://api.osodm.com/v1/models' || options.method !== 'GET') throw new Error('unexpected request');
+        return { ok: true, status: 200, json: async () => ({ data: [] }) };
+      };
+    `);
+
+    const result = runSetupCli(['configure-video', `@${payloadFile}`, '--key-from-clipboard'], {
+      root,
+      defaultsFile,
+      env: {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        NODE_OPTIONS: `--import=${pathToFileURL(preloadFile).href}`,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout + result.stderr, /fixture-video-clipboard-key/);
+    assert.match(result.stdout, /metadataReachable/);
+    const saved = JSON.parse(await fs.readFile(path.join(root, 'config', 'studio.json'), 'utf8'));
+    assert.equal(saved.video.apiKey, key);
+    assert.equal(saved.image.apiKey, '');
+    assert.deepEqual(Object.keys(saved.video), ['apiKey']);
+    assert.ok(!await fs.stat(path.join(root, 'config', 'video.json')).then(() => true, () => false));
   });
 });

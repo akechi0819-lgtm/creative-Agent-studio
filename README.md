@@ -1,6 +1,6 @@
 # Creative Agent Studio — Company Lite
 
-`codex/company-lite` 是面向外部宿主智能体的源码能力包：宿主当前对话线程主持创作并调用工具；本机 Canvas/MCP 保存跨线程共享的项目历史、图片与排版状态；本机只读素材 MCP 连接公司远端 Teedy 提供远端素材。本仓库不包含聊天或推理平台，也不另建任务账本。
+`codex/company-lite` 是面向外部宿主智能体的源码能力包：宿主当前对话线程主持创作并调用工具；本机 Canvas/MCP 保存跨线程共享的项目历史、图片与排版状态，并提供可选 H3 视频与透明标识像素工具；本机只读素材 MCP 连接公司远端 Teedy 提供远端素材。本仓库不包含聊天或推理平台，也不另建任务账本。
 
 当前支持 Windows 和 macOS；Linux 不在支持范围内，也未作适配。首次安装可直接复制[员工安装提示词](docs/员工安装提示词.md)，其中包含 GitHub 分支入口、五步安装流程和验收标准。步骤规定完成结果，不绑定各宿主唯一命令或配置方式。仓库根目录的 `company-defaults.json` 提供公司 Teedy 与图片 API 的预填默认值，可按员工选择更换；图片 API 已保存的本机配置优先于默认值。
 
@@ -63,6 +63,8 @@ node scripts/setup.mjs check-image
 
 配置模板和 revision 由宿主根据当前 setup 状态生成，员工无需创建或理解 JSON，也无需操作终端或编辑技术配置。关于各凭据输入机制和 CLI 调用方式，见[宿主使用说明](docs/代理宿主使用.md)。
 
+H3 视频是可选通道，不是图片安装或图片验收的前置条件。`configure-video` 与 `check-video` 复用 `config/studio.json` 的同一本机私有配置文件；只保存 H3 Key，不把 Key 返回浏览器。`check-video` 只读检查 `/v1/models`，分别报告 Key 是否配置、metadata 是否可达以及模型是否列出；不会发起生成，`generationVerified` 仍为 `false`。若 metadata 端点拒绝请求，结果保持“未验证连通”，不会改用生成请求探测。
+
 图片 API 地址、模型和 Teedy 根地址由仓库根目录的 `company-defaults.json` 预填；员工可在当前对话提供非秘密 URL 和模型来更换。图片 API 已保存的本机设置优先于默认值。当前值和读取方式见[宿主使用说明](docs/代理宿主使用.md#仓库内置默认值)。
 
 共享 Canvas 服务可从源码根分别通过 `node scripts/studio.mjs status`、`node scripts/studio.mjs open @JSON` 和 `node scripts/studio.mjs mcp-config` 查看、打开或配置。宿主日常绘图优先直接调用 Canvas MCP；创作时使用 `canvas_open` 选择新项目、最近项目或历史项目。Canvas 历史和图片 API 配置跨线程共用，其他线程的需求、来源和批准不会自动沿用。
@@ -76,6 +78,16 @@ node scripts/setup.mjs check-image
 5. 按当前用户授权调用 `canvas_run_generation`；它返回 `{submitted, nodeId}` 后，以 `generation_get_status` 查询异步结果。明确失败且仍在原授权和费用范围内时可继续处理；超范围或授权不明时先询问。状态未知先查，不重复提交收费请求。
 6. 用 `canvas_read_image` 返回的实际图片内容检查成品，局部修改后重新读图。宿主无法实际查看图片时，不声称完成图像审核。用户在当前对话明确批准后，才调用 `canvas_save_image` 导出。
 
+新创作要提供准确文案，并按用户指定的审美组织构图、字体层级、色彩和质感；不要默认扁平纯色、禁止渐变或强制低质量。修改已有图片时，只把用户本次短指令、当前底图和用户明确指定的风格参考交给 Canvas，不拼接历史 prompt；未提供替换文案时保留原图文字，不再次把旧文案注入生成提示。
+
+## 可选 H3 视频与透明标识
+
+只有用户明确要求视频且确认当次生成后，才调用 Canvas MCP `canvas_generate_video`。它在当前画布中创建提示词节点和视频配置节点，连接后提交一次生成；固定模型为 `studio-video::minimax_h3`。输入 `prompt`、`seconds`（默认 `4`，仅 `4`–`15` 秒）、`size`（默认 `16:9`，六种固定比例）和字符串 `resolution`（默认 `768`，仅 `768`、`1080p`、`2K`、`4K`）；只提交文生视频。上游请求为 `video.v1` / `text_to_video`，不传 `quality`、`ratio`、`n`、`metadata`、声音或参考素材。当前 Studio 没有公网参考 URL 输入，本机素材不能直接传给该渠道。该工具返回 `sourceNodeId`（配置节点）和 `textNodeId`；用 `canvas_get_state` 沿配置节点的连线找到唯一视频子节点，再以 `generation_get_status({scope:"canvas",nodeIds:[videoNodeId]})` 查询完成状态。若提交调用报结果未知，按报错中的两个节点 ID 查画布，不要重提。
+
+`canvas_save_video({nodeId})` 只保存上述连接关系中已完成且 `status:"success"` 的 Canvas 视频子节点；它把 MP4 写入本机导出目录并返回 SHA-256、字节数和媒体信息，不向模型暴露视频 data URL，也不建立任务或批准账本。只有用户在当前对话明确批准导出时调用。生成返回的是配置节点 ID；保存必须使用实际视频子节点的 `nodeId`。
+
+`canvas_adapt_logo` 用于已有透明标识的确定性像素适配，可设置 `foreground`、轮廓描边 `outline` 和圆角底板 `plate`；至少选择一项。它保留原始 alpha 并返回新透明 PNG 节点，不自动抠不透明底色、替换原件或写入素材库。查看结果并由用户决定采用后，批准导出使用通用 `canvas_save_image`。
+
 Canvas 继续支持手动绘图和既有像素操作，包括导入、拼贴、拼接、组合、裁切、分割、重采样、移动和缩放；这些不是新发明的能力。
 
 ## 当前证据与边界
@@ -83,6 +95,7 @@ Canvas 继续支持手动绘图和既有像素操作，包括导入、拼贴、�
 - 首轮源码根回归 38/38、Canvas bridge 23/23 均通过，0 失败、0 跳过；Canvas web typecheck/build 通过。
 - Mac 本机全新浅克隆起始没有 `node_modules` 和构建产物；`node scripts/prepare.mjs` 完成三组依赖安装及 Canvas Agent/Web 构建。随后 setup 正确报告本地源码与 Canvas 就绪、仍等待当前宿主 MCP。克隆目录中的共享 Canvas 集成 1/1 通过（4.6 秒），覆盖多项目、裁切拼接、历史重启恢复及 MCP stdio 图片读写，未请求生图。
 - 隔离临时配置下的真实图片服务 `GET /v1/models` 返回 HTTP 200 并列出配置模型；未进行生图，源配置未更改，临时 Key 目录已删除。另一次真实 Canvas MCP 单张生成样本上游 HTTP 200，用时 20.198 秒，本机完整保存用时 25.892 秒，准备画布用时 1.051 秒；请求计数为 1。主代理已实际打开检查验收图。这些都是本机样本，不是普遍时延或宿主验收承诺。
+- 隔离 Playwright Chromium 通过真实 MCP `canvas_generate_video` 提交原生 Canvas 文本／配置节点流程；浏览器向同源视频代理发出一条 H3 `video.v1` 创建请求，测试夹具按原合同返回 queued、completed 和合成 MP4。工具沿配置节点连线找到实际生成的 video child，再通过真实 Canvas 媒体存储、`canvas_read_video` 桥接和 `canvas_save_video` 写入临时导出目录。提示词与用户原文一致，提交仅一次；MP4 读回字节、SHA-256、时长和尺寸匹配，外网请求被阻断。此证据覆盖 MCP 到本地保存的集成链，不证明真实 H3 服务生成、输出质量或具体宿主体验。
 - 源码提交 `5fbf1bd` 的 Windows/macOS/Linux GitHub Actions 已全部通过；CI 覆盖源码构建和集成，员工交互桌面仍待实测。具体宿主的本地命令、MCP 配置和图片读取能力，以及 Teedy 账号和只读权限仍需目标环境验证。
 
 ## 初次使用提示

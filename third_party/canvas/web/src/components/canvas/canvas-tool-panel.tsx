@@ -9,6 +9,9 @@ import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
 import { imageToDataUrl } from "@/services/image-storage";
 import { getMediaBlob } from "@/services/file-storage";
 import { createCanvasConnectionRecovery } from "@/lib/canvas/canvas-connection";
+import { isCompanyLiteGenerationAllowed } from "@/lib/canvas/company-lite-generation";
+import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
+import { STUDIO_H3_VIDEO_MODEL, useConfigStore } from "@/stores/use-config-store";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasImageOperationRequest } from "@/lib/canvas/canvas-image-operations";
 
@@ -97,14 +100,25 @@ export function CanvasToolPanel() {
                     const mode = call.input?.mode;
                     const node = context.getSnapshot().nodes.find(node => node.id === nodeId);
                     if (!nodeId || !node) throw new Error("生成节点不存在");
-                    if (mode !== undefined && mode !== "image") throw new Error("Company Lite 仅配置图片生成");
+                    const generationMode = mode === "video" ? "video" : "image";
+                    const generationConfig = buildGenerationConfig(useConfigStore.getState().config, node, generationMode);
+                    if (!isCompanyLiteGenerationAllowed(mode, generationConfig.model, STUDIO_H3_VIDEO_MODEL)) {
+                        throw new Error(mode === "video" ? "Company Lite 视频生成仅支持已配置的 MiniMax H3 文生视频" : "Company Lite 仅支持图片与已配置的 MiniMax H3 文生视频");
+                    }
                     const prompt = (typeof call.input?.prompt === "string" ? call.input.prompt.trim() : "")
                         || node.metadata?.composerContent
                         || node.metadata?.prompt
                         || "";
-                    result = await context.submitGeneration(nodeId, prompt);
-                    await context.persistCurrentSnapshot();
-                    await connection.writeState(context.getSnapshot());
+                    if (mode === "video") {
+                        context.applyOps([{ type: "run_generation", nodeId, mode: "video", prompt }]);
+                        await context.persistCurrentSnapshot();
+                        result = context.getSnapshot();
+                        await connection.writeState(result as CanvasAgentSnapshot);
+                    } else {
+                        result = await context.submitGeneration(nodeId, prompt);
+                        await context.persistCurrentSnapshot();
+                        await connection.writeState(context.getSnapshot());
+                    }
                 } else {
                     if (!context) throw new Error("请先打开目标画布");
                     if (context.getSnapshot().projectId !== projectId) throw new Error("画布项目已切换，请重新连接绘图工具");

@@ -7,14 +7,12 @@ import { chromium } from 'playwright';
 
 import { createCanvasRuntime } from '../src/canvas/runtime.mjs';
 
-const repoRoot = path.resolve(import.meta.dirname, '..');
-
-test('Canvas exposes only image generation while keeping editable text prompt nodes', { timeout: 180_000 }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'company-lite-image-only-'));
+test('Canvas preserves editable prompts and image controls without making provider requests', { timeout: 180_000 }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'company-lite-canvas-controls-'));
   const runtime = createCanvasRuntime({ root });
   let browser;
   let context;
-  let generationRequests = 0;
+  let providerRequests = 0;
   t.after(async () => {
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});
@@ -29,7 +27,7 @@ test('Canvas exposes only image generation while keeping editable text prompt no
   await allowLocalStudioOrigins(context, [instance.webUrl, instance.bridgeUrl]);
   const page = await context.newPage();
   page.on('request', (request) => {
-    if (request.method() === 'POST' && request.url().includes('/__studio/image-proxy/')) generationRequests += 1;
+    if (request.url().includes('/__studio/image-proxy/') || request.url().includes('/__studio/video-proxy/')) providerRequests += 1;
   });
   await page.goto(launch.openUrl, { waitUntil: 'domcontentloaded' });
   const projectId = await waitForProjectRoute(page);
@@ -45,8 +43,6 @@ test('Canvas exposes only image generation while keeping editable text prompt no
 
   const toolbar = page.locator('[data-canvas-bottom-toolbar]');
   await toolbar.getByRole('button', { name: '文本' }).waitFor({ state: 'visible' });
-  assert.equal(await toolbar.getByRole('button', { name: '视频' }).count(), 0, 'toolbar does not expose video generation');
-  assert.equal(await toolbar.getByRole('button', { name: '音频' }).count(), 0, 'toolbar does not expose audio generation');
   assert.equal(await toolbar.getByRole('button', { name: '图片' }).count(), 1);
   assert.equal(await toolbar.getByRole('button', { name: '生成配置' }).count(), 1);
 
@@ -54,12 +50,6 @@ test('Canvas exposes only image generation while keeping editable text prompt no
   const configPanel = page.locator('[data-canvas-config-node-panel]');
   await configPanel.waitFor({ state: 'visible' });
   assert.equal((await configPanel.locator('.canvas-config-mode').innerText()).trim(), '生图');
-  assert.equal(await configPanel.locator('.ant-segmented').count(), 0, 'config panel has no generation-mode selector');
-  assert.equal(await configPanel.locator('button').filter({ hasText: /视频|音频/ }).count(), 0, 'config panel does not offer video/audio generation settings');
-
-  const screenshotPath = path.join(repoRoot, 'docs/evidence/company-lite/image-only-controls.png');
-  await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
-  await page.screenshot({ path: screenshotPath, fullPage: true });
 
   await page.locator(`[data-node-id="${textNode.id}"]`).click({ position: { x: 40, y: 40 } });
   const textPanel = page.locator('[data-canvas-node-prompt-panel="text"]');
@@ -82,9 +72,8 @@ test('Canvas exposes only image generation while keeping editable text prompt no
   assert.match(menuText, /文本/);
   assert.match(menuText, /图片/);
   assert.match(menuText, /生成配置/);
-  assert.doesNotMatch(menuText, /视频|音频/);
 
-  assert.equal(generationRequests, 0, 'the UI regression never calls an image generation API');
+  assert.equal(providerRequests, 0, 'the UI regression never calls an image or video provider');
 });
 
 async function waitForProjectRoute(page) {

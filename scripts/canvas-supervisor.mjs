@@ -9,7 +9,8 @@ import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { canvasStorageHandler } from '../src/canvas/storage.mjs';
 import { root, dataRoot } from '../src/canvas/client.mjs';
-import { readConfigRecord } from '../src/lite/config.mjs';
+import { readConfigRecord, VIDEO_PROVIDER } from '../src/lite/config.mjs';
+import { createVideoProxyHandler, videoBrowserConfig } from '../src/canvas/video-proxy.mjs';
 
 const data = dataRoot();
 await mkdir(data, {recursive:true,mode:0o700});
@@ -42,7 +43,9 @@ const cookieName='studio_canvas_company_lite';
 const bootstrapTickets=new Map();
 const browserSessions=new Map();
 let currentImageConfig=null;
+let currentVideoConfig=null;
 let currentConfigRevision=0;
+let videoProxyRequest=null;
 const imageResultUrlTtlMs=60*60_000;
 const maxImageResultUrlsPerSession=64;
 const maxImageResultUrlLength=8192;
@@ -73,14 +76,23 @@ function validImageConfig(value) {
   if(baseUrl){const parsed=new URL(baseUrl);if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password||parsed.search||parsed.hash)throw new Error('invalid image config');}
   return {baseUrl,model,apiKey,apiFormat};
 }
+function validVideoConfig(value) {
+  if(!value||typeof value!=='object'||Array.isArray(value)
+    ||Object.keys(value).some(key=>key!=='apiKey'))throw new Error('invalid video config');
+  const apiKey=typeof value.apiKey==='string'?value.apiKey:'';
+  if(apiKey.length>5000)throw new Error('invalid video config');
+  return {...VIDEO_PROVIDER,apiKey};
+}
 
 async function refreshImageConfig() {
   const record=await readConfigRecord({root:data});
   if(record.revision===currentConfigRevision)return;
   currentImageConfig=validImageConfig(record.image);
+  currentVideoConfig=validVideoConfig(record.video);
   currentConfigRevision=record.revision;
   for(const session of browserSessions.values()) {
     session.imageConfig=currentImageConfig;
+    session.videoConfig=currentVideoConfig;
     session.configRevision=currentConfigRevision;
   }
 }
@@ -239,6 +251,12 @@ async function handleRequest(req,res) {
   if(await storageHandler(req,res,url))return;
   if(url.pathname.startsWith('/__studio/'))res.setHeader('referrer-policy','no-referrer');
   if(url.pathname.startsWith('/__studio/image-proxy/')){await proxyImageRequest(req,res);return;}
+  if(url.pathname.startsWith('/__studio/video-proxy/')){
+    await refreshImageConfig();
+    if(videoProxyRequest)await videoProxyRequest(req,res);
+    else safeJson(res,503,{error:'本地视频代理尚未就绪'});
+    return;
+  }
   if (url.pathname === '/__studio/health') {
     safeJson(res,200,{instanceId,workspaceId}); return;
   }
@@ -265,7 +283,7 @@ async function handleRequest(req,res) {
       for(const [key,session] of browserSessions)if(session.expiresAt<Date.now())browserSessions.delete(key);
       await refreshImageConfig();
       const sessionId=randomBytes(32).toString('hex');
-      browserSessions.set(sessionId,{imageConfig:currentImageConfig,configRevision:currentConfigRevision,expiresAt:Date.now()+24*60*60_000,imageResultUrls:new Map()});
+      browserSessions.set(sessionId,{imageConfig:currentImageConfig,videoConfig:currentVideoConfig,configRevision:currentConfigRevision,expiresAt:Date.now()+24*60*60_000,imageResultUrls:new Map()});
       res.setHeader('Set-Cookie',`${cookieName}=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
       safeJson(res,200,{ok:true});
     } catch {safeJson(res,400,{error:'invalid bootstrap request'});}
@@ -277,7 +295,8 @@ async function handleRequest(req,res) {
     if(!session){safeJson(res,401,{error:'Studio session required'});return;}
     await refreshImageConfig();
     const publicImage=session.imageConfig ? {...session.imageConfig,apiKey:session.imageConfig.apiKey?'local-session':''} : null;
-    safeJson(res,200,{ok:true,workspaceId,instanceId,bridgeUrl,imageConfig:publicImage,configRevision:session.configRevision,bridgeToken:token});
+    const publicVideo=videoBrowserConfig(session.videoConfig,webUrl);
+    safeJson(res,200,{ok:true,workspaceId,instanceId,bridgeUrl,imageConfig:publicImage,videoConfig:publicVideo,configRevision:session.configRevision,bridgeToken:token});
     return;
   }
   if (url.pathname === '/__studio/stop') {
@@ -314,6 +333,7 @@ try {
   await new Promise((resolve,reject)=>{server.on('error',reject);server.listen(webPort,'127.0.0.1',resolve);});
   await writeFile(path.join(data,'canvas-web-port.json'),JSON.stringify({port:server.address().port}),{mode:0o600});
   webUrl=`http://127.0.0.1:${server.address().port}`;
+  videoProxyRequest=createVideoProxyHandler({webUrl,getSession:request=>browserSession(request)});
   const bridgePort=await freePort();
   const logs = await open(path.join(data,'canvas-bridge.log'),'a',0o600);
   child=spawn(process.execPath,[path.join(root,'third_party/canvas/canvas-agent/dist/index.js')],{

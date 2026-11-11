@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { readImageKeyFromClipboard } from '../src/lite/clipboard.mjs';
+import { readApiKeyFromClipboard } from '../src/lite/clipboard.mjs';
 import { startMaterialLogin } from '../src/lite/material-login.mjs';
 import {
   getSetupStatus,
   beginMaterialLogin,
   reportHostProbe,
   saveAndVerifyImageConfig,
+  saveAndCheckVideoConfig,
   saveAndVerifyMaterials,
   resolveMaterialBaseUrl,
   verifyImageApi,
+  verifyVideoApi,
   verifyImageAcceptance,
 } from '../src/lite/setup.mjs';
 
@@ -22,29 +24,31 @@ function output(value) {
 }
 
 function usage() {
-  return '用法：node scripts/setup.mjs [status|login-materials [远端 HTTPS 地址]|report-host connected <查询工具名> <下载工具名>|report-host failed|configure-image @JSON文件 [--key-from-clipboard]|check-image|verify-image <项目ID> <成图节点ID>]';
+  return '用法：node scripts/setup.mjs [status|login-materials [远端 HTTPS 地址]|report-host connected <查询工具名> <下载工具名>|report-host failed|configure-image @JSON文件 [--key-from-clipboard]|check-image|configure-video @JSON文件 [--key-from-clipboard]|check-video|verify-image <项目ID> <成图节点ID>]';
 }
 
-async function readPrivatePayload(argument, publicFieldsOnly = false) {
+async function readPrivatePayload(argument, { channel = 'image', publicFieldsOnly = false } = {}) {
   if (typeof argument !== 'string' || !argument.startsWith('@') || argument.length < 2) {
-    throw new Error('configure-image 需要 @私有JSON文件 参数');
+    throw new Error(`configure-${channel} 需要 @私有JSON文件 参数`);
   }
   const file = path.resolve(argument.slice(1));
   const info = await fs.lstat(file);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error('图片配置载荷必须是普通文件');
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error('配置载荷必须是普通文件');
   if (!publicFieldsOnly && process.platform !== 'win32' && (info.mode & 0o077) !== 0) {
-    throw new Error('图片配置载荷权限过宽；请先限制为仅本人可读写');
+    throw new Error('私密配置载荷权限过宽；请先限制为仅本人可读写');
   }
   let source;
   try { source = await fs.readFile(file, 'utf8'); }
-  catch (error) { throw new Error(`图片配置载荷无法读取（${error.code || 'I/O 错误'}）`); }
+  catch (error) { throw new Error(`配置载荷无法读取（${error.code || 'I/O 错误'}）`); }
   try {
     const value=JSON.parse(source);
-    if(publicFieldsOnly && Object.hasOwn(value.image || {},'apiKey'))throw new Error('剪贴板模式的参数文件只填写图片地址和模型，不填写密钥');
+    if (publicFieldsOnly && Object.hasOwn(value[channel] || {}, 'apiKey')) {
+      throw new Error('剪贴板模式的参数文件只填写非秘密配置，不填写密钥');
+    }
     return value;
   }
   catch (error) {
-    if (error instanceof SyntaxError) throw new Error('图片配置载荷 JSON 格式无效');
+    if (error instanceof SyntaxError) throw new Error('配置载荷 JSON 格式无效');
     throw error;
   }
 }
@@ -88,8 +92,8 @@ async function run() {
   if (command === 'configure-image') {
     const clipboard=args.length===2 && args[1]==='--key-from-clipboard';
     if (args.length !== 1 && !clipboard) throw new Error(usage());
-    const payload = await readPrivatePayload(args[0],clipboard);
-    if(clipboard)payload.image={...payload.image,apiKey:await readImageKeyFromClipboard()};
+    const payload = await readPrivatePayload(args[0], { channel: 'image', publicFieldsOnly: clipboard });
+    if(clipboard)payload.image={...payload.image,apiKey:await readApiKeyFromClipboard('图片 API')};
     const status = await saveAndVerifyImageConfig(payload, { root });
     output(status);
     if (!imageConnectionPassed(status)) process.exitCode = 1;
@@ -106,6 +110,23 @@ async function run() {
     const status = await getSetupStatus({ root });
     output(status);
     if (!imageConnectionPassed(status)) process.exitCode = 1;
+    return;
+  }
+  if (command === 'configure-video') {
+    const clipboard = args.length === 2 && args[1] === '--key-from-clipboard';
+    if (args.length !== 1 && !clipboard) throw new Error(usage());
+    const payload = await readPrivatePayload(args[0], { channel: 'video', publicFieldsOnly: clipboard });
+    if (clipboard) payload.video = { ...payload.video, apiKey: await readApiKeyFromClipboard('H3 视频 API') };
+    const result = await saveAndCheckVideoConfig(payload, { root });
+    output(result);
+    if (!result.check.metadataReachable) process.exitCode = 1;
+    return;
+  }
+  if (command === 'check-video') {
+    if (args.length) throw new Error(usage());
+    const result = await verifyVideoApi({ root });
+    output(result);
+    if (!result.metadataReachable) process.exitCode = 1;
     return;
   }
   throw new Error(usage());

@@ -5,6 +5,12 @@ import path from 'node:path';
 import { dataRoot } from '../canvas/client.mjs';
 
 const DEFAULT_IMAGE = Object.freeze({ baseUrl: '', model: '', apiKey: '' });
+export const VIDEO_PROVIDER = Object.freeze({
+  baseUrl: 'https://api.osodm.com',
+  model: 'minimax_h3',
+  apiFormat: 'openai',
+});
+const DEFAULT_VIDEO = Object.freeze({ apiKey: '' });
 
 function configError(code, message) {
   const error = new Error(message);
@@ -32,7 +38,13 @@ function isInside(parent, candidate) {
 }
 
 function emptyRecord() {
-  return { schemaVersion: 1, revision: 1, image: { ...DEFAULT_IMAGE } };
+  return {
+    schemaVersion: 1,
+    revision: 1,
+    imageRevision: 1,
+    image: { ...DEFAULT_IMAGE },
+    video: { ...DEFAULT_VIDEO },
+  };
 }
 
 function normalizeImage(value) {
@@ -55,6 +67,16 @@ function normalizeImage(value) {
     }
   }
   return { baseUrl, model, apiKey };
+}
+
+function normalizeVideo(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some((key) => key !== 'apiKey')) {
+    throw configError('ERR_CONFIG_INVALID', 'H3 视频配置只允许本机 API Key');
+  }
+  const apiKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : '';
+  if (apiKey.length > 5000) throw configError('ERR_CONFIG_INVALID', '视频 API Key 长度超出限制');
+  return { apiKey };
 }
 
 function normalizePublicEndpoint(value, label) {
@@ -114,19 +136,26 @@ export function validateCompanyDefaults(value) {
 
 function normalizeRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).some((key) => !['schemaVersion', 'revision', 'image'].includes(key))
+    || Object.keys(value).some((key) => !['schemaVersion', 'revision', 'imageRevision', 'image', 'video'].includes(key))
     || value.schemaVersion !== 1 || !Number.isInteger(value.revision) || value.revision < 1) {
-    throw configError('ERR_CONFIG_CORRUPT', '图片模型配置文件无效');
+    throw configError('ERR_CONFIG_CORRUPT', '本机服务配置文件无效');
   }
   if (!value.image || typeof value.image !== 'object' || Array.isArray(value.image)
     || Object.keys(value.image).some((key) => !['baseUrl', 'model', 'apiKey'].includes(key))
     || ['baseUrl', 'model', 'apiKey'].some((key) => typeof value.image[key] !== 'string')) {
-    throw configError('ERR_CONFIG_CORRUPT', '图片模型配置文件无效');
+    throw configError('ERR_CONFIG_CORRUPT', '本机图片服务配置无效');
   }
+  const imageRevision = value.imageRevision ?? value.revision;
+  if (!Number.isInteger(imageRevision) || imageRevision < 1) throw configError('ERR_CONFIG_CORRUPT', '本机图片配置版本无效');
+  let video;
+  try { video = normalizeVideo(value.video ?? DEFAULT_VIDEO); }
+  catch { throw configError('ERR_CONFIG_CORRUPT', '本机视频服务配置无效'); }
   return {
     schemaVersion: 1,
     revision: value.revision,
+    imageRevision,
     image: normalizeImage(value.image),
+    video,
   };
 }
 
@@ -217,29 +246,67 @@ async function releaseLock(lock) {
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
 
-/** Read the private image-only record. Blank keys are never returned from publicConfig. */
+/** Read the private local service record. Keys are omitted from publicConfig. */
 export async function readConfigRecord({ root } = {}) {
   return readRecord(root);
 }
 
-/** Internal image config for the shared local Canvas. */
+/** Internal provider configuration for the shared local Canvas server. */
 export async function readConfig({ root } = {}) {
   const record = await readRecord(root);
-  return { revision: record.revision, image: { ...record.image } };
+  return {
+    revision: record.revision,
+    imageRevision: record.imageRevision,
+    image: { ...record.image },
+    video: { ...VIDEO_PROVIDER, ...record.video },
+  };
 }
 
 export function publicConfig(record) {
   return {
     revision: record.revision,
+    imageRevision: record.imageRevision ?? record.revision,
     image: {
       baseUrl: record.image.baseUrl,
       model: record.image.model,
       apiKeyConfigured: Boolean(record.image.apiKey),
     },
+    video: {
+      ...VIDEO_PROVIDER,
+      apiKeyConfigured: Boolean(record.video?.apiKey),
+    },
   };
 }
 
-/** Save the image API with revision CAS; an empty key preserves the saved secret. */
+async function saveRecord(expectedRevision, update, root, label) {
+  const directory = await ensureContainedDirectory(root);
+  const lock = await takeLock(directory);
+  let temporary;
+  try {
+    const previous = await readRecord(root);
+    if (previous.revision !== expectedRevision) {
+      const error = configError('ERR_CONFIG_REVISION_CONFLICT', `${label}配置已更新，请重新读取`);
+      error.expectedRevision = expectedRevision;
+      error.actualRevision = previous.revision;
+      throw error;
+    }
+    const next = normalizeRecord(update(previous));
+    const destination = configPath(root);
+    temporary = path.join(directory, `.studio-${crypto.randomUUID()}.tmp`);
+    const handle = await fs.open(temporary, 'wx', 0o600);
+    try { await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`); await handle.sync(); }
+    finally { await handle.close(); }
+    await fs.chmod(temporary, 0o600);
+    await fs.rename(temporary, destination);
+    temporary = null;
+    return next;
+  } finally {
+    if (temporary) await fs.rm(temporary, { force: true }).catch(() => {});
+    await releaseLock(lock);
+  }
+}
+
+/** Save the image API with file CAS and an image-only revision; a blank key preserves it. */
 export async function saveConfig(input, { root } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw configError('ERR_CONFIG_INVALID', '配置输入无效');
   if (Object.keys(input).some((key) => !['expectedRevision', 'image', 'clearKeys'].includes(key))) {
@@ -261,39 +328,52 @@ export async function saveConfig(input, { root } = {}) {
   if (!Array.isArray(clearKeys) || clearKeys.some((key) => key !== 'image')) {
     throw configError('ERR_CONFIG_INVALID', 'clearKeys 只能包含 image');
   }
-
-  const directory = await ensureContainedDirectory(root);
-  const lock = await takeLock(directory);
-  let temporary;
-  try {
-    const previous = await readRecord(root);
-    if (previous.revision !== input.expectedRevision) {
-      const error = configError('ERR_CONFIG_REVISION_CONFLICT', '图片配置已更新，请重新读取');
-      error.expectedRevision = input.expectedRevision;
-      error.actualRevision = previous.revision;
-      throw error;
-    }
+  return saveRecord(input.expectedRevision, (previous) => {
     const candidate = { ...previous.image };
     if (Object.hasOwn(input.image, 'baseUrl')) candidate.baseUrl = input.image.baseUrl;
     if (Object.hasOwn(input.image, 'model')) candidate.model = input.image.model;
     if (typeof input.image.apiKey === 'string' && input.image.apiKey.trim()) candidate.apiKey = input.image.apiKey;
     if (clearKeys.includes('image')) candidate.apiKey = '';
-    const next = {
+    return {
       schemaVersion: 1,
       revision: previous.revision + 1,
+      imageRevision: previous.imageRevision + 1,
       image: normalizeImage(candidate),
+      video: previous.video,
     };
-    const destination = configPath(root);
-    temporary = path.join(directory, `.studio-${crypto.randomUUID()}.tmp`);
-    const handle = await fs.open(temporary, 'wx', 0o600);
-    try { await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`); await handle.sync(); }
-    finally { await handle.close(); }
-    await fs.chmod(temporary, 0o600);
-    await fs.rename(temporary, destination);
-    temporary = null;
-    return next;
-  } finally {
-    if (temporary) await fs.rm(temporary, { force: true }).catch(() => {});
-    await releaseLock(lock);
+  }, root, '图片');
+}
+
+/** Save the fixed H3 provider key in the same private file without changing imageRevision. */
+export async function saveVideoConfig(input, { root } = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || Object.keys(input).some((key) => !['expectedRevision', 'video', 'clearKeys'].includes(key))) {
+    throw configError('ERR_CONFIG_INVALID', '视频配置输入无效');
   }
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) {
+    throw configError('ERR_CONFIG_REVISION_REQUIRED', '必须指定正整数 expectedRevision');
+  }
+  if (!input.video || typeof input.video !== 'object' || Array.isArray(input.video)
+    || Object.keys(input.video).some((key) => key !== 'apiKey')) {
+    throw configError('ERR_CONFIG_INVALID', 'H3 视频配置只允许本机 API Key');
+  }
+  if (Object.hasOwn(input.video, 'apiKey') && typeof input.video.apiKey !== 'string') {
+    throw configError('ERR_CONFIG_INVALID', '视频 API Key 必须是文本');
+  }
+  const clearKeys = input.clearKeys ?? [];
+  if (!Array.isArray(clearKeys) || clearKeys.some((key) => key !== 'video')) {
+    throw configError('ERR_CONFIG_INVALID', 'clearKeys 只能包含 video');
+  }
+  return saveRecord(input.expectedRevision, (previous) => {
+    const candidate = { ...previous.video };
+    if (typeof input.video.apiKey === 'string' && input.video.apiKey.trim()) candidate.apiKey = input.video.apiKey;
+    if (clearKeys.includes('video')) candidate.apiKey = '';
+    return {
+      schemaVersion: 1,
+      revision: previous.revision + 1,
+      imageRevision: previous.imageRevision,
+      image: previous.image,
+      video: normalizeVideo(candidate),
+    };
+  }, root, '视频');
 }
