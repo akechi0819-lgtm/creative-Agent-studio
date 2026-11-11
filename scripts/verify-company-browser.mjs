@@ -80,7 +80,18 @@ try {
 
   await page.getByRole('button', { name: '模型与服务', exact: true }).click();
   await page.getByRole('heading', { name: '图片模型', exact: true }).waitFor();
-  assert.equal(await page.locator('.provider-grid input[type=password]').count(), 2, 'base and image credentials are separate in model settings');
+  const providerCards = page.locator('.provider-grid > .provider-card');
+  const baseProvider = providerCards.filter({ hasText: '基础模型' });
+  const imageProvider = providerCards.filter({ hasText: '图片模型' });
+  const videoProvider = page.locator('.provider-grid > .video-provider-card');
+  assert.equal(await baseProvider.count(), 1, 'the base model card is unique');
+  assert.equal(await imageProvider.count(), 1, 'the image model card is unique');
+  assert.equal(await videoProvider.count(), 1, 'the optional video model card is unique');
+  assert.equal(await baseProvider.getByLabel('API 密钥').count(), 1, 'the base API credential belongs to the base model card');
+  assert.equal(await imageProvider.getByLabel('API 密钥').count(), 1, 'the separate image credential belongs to the image model card');
+  const optionalVideoKey = videoProvider.getByLabel('视频 API Key', { exact: true });
+  assert.equal(await optionalVideoKey.count(), 1, 'the optional H3 credential belongs to the video model card');
+  assert.equal(await optionalVideoKey.inputValue(), '', 'an unconfigured video channel leaves the image workflow available');
 
   await page.getByRole('button', { name: '公司连接', exact: true }).click();
   const searchDetails = page.locator('details.company-auxiliary').filter({ hasText: '手动检索公司素材' });
@@ -117,12 +128,13 @@ try {
     personalTeedyCredentials: true,
     fixedServiceAddressesReadOnly: true,
     personalBaseAndImageApiCredentials: true,
+    optionalH3ApiKeyLeftBlank: true,
     credentialRedaction: true,
     candidatePreviewViaLocalProxy: true,
     searchDoesNotDownloadOriginals: downloads === 0,
     pageErrors: errors,
   }, null, 2));
-  console.log('公司版浏览器隔离回归通过：首次引导、固定服务地址、个人 Teedy 与双模型配置、脱敏、候选只读预览及窄屏渲染。未连接真实公司服务或付费模型。');
+  console.log('公司版浏览器隔离回归通过：首次引导、固定服务地址、个人 Teedy、基础与图片凭据及可留空的视频凭据、脱敏、候选只读预览及窄屏渲染。未连接真实公司服务或付费模型。');
 } finally {
   await browser.close();
   await server.close();
