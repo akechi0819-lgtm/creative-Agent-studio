@@ -1,6 +1,6 @@
 # Creative Agent Studio
 
-把创作需求变成海报、多页图文和可交付文件的本机工作台。它运行在你的电脑上；GitHub 仓库不是在线服务。
+把创作需求变成海报、多页图文、标识适配、独立短片和可交付文件的本机工作台。它运行在你的电脑上；GitHub 仓库不是在线服务。
 
 ## 选择版本
 
@@ -8,18 +8,20 @@
 
 **公司版**面向公司授权员工，使用公司现有 Teedy 素材库和与个人版相同的本地 Canvas，属于独立配置与接入路径。入口见 [codex/company-edition 分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/codex/company-edition)。公司版不是下方个人版成品包。
 
+**极简版**使用当前宿主对话与共享 Canvas MCP，按源代码方式安装，不带完整工作台或任务账本。入口见 [codex/company-lite 分支](https://github.com/akechi0819-lgtm/creative-Agent-studio/tree/codex/company-lite)。
+
 ## 个人版成品下载
 
-首次安装进度、防重复启动及控制台闪窗修正版 p5-startup.1 已完成 Mac 与 Windows 原生构建，下载包已完成完整性校验。Windows 2025 GUI 已通过真实 VBS 入口完成首次配置及停止、重启流程；原报错员工电脑仍待复测，验证边界见 [修复记录](docs/Windows首次启动修复.md)。
+当前候选版本为 **media-workflow.2**，包含质量参数、短指令改图、机械成品采用、透明标识与独立 H3 视频。Mac 与 Windows 已通过[原生构建及归档搬移检查](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958998296)；表中产品 SHA-256 来自 CI 打包与解压核验结果。真实图文／视频复测范围见[实施记录](docs/标识适配与图视分轨-实施记录.md)，历史 Windows GUI 记录见[修复记录](docs/Windows首次启动修复.md)。
 
 目前没有正式 GitHub Release。以下为 Actions 临时候选 artifact，下载可能要求 GitHub 登录。Artifact 容器内含产品 ZIP 和 SHA-256 sidecar；请解压容器后核对 sidecar。表中摘要对应产品 ZIP。
 
 | 平台 | Actions 成品 | 产品 ZIP SHA-256 | 到期时间（北京时间） |
 | --- | --- | --- | --- |
-| Apple 芯片 Mac（arm64） | [下载 Mac artifact 12330891582](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39567555684/artifacts/12330891582) | 19fc30584f8da9087e987fa1348982d196e6635e097ca5a19cfb77b943b105a9 | 2026-11-04 16:18:11 |
-| Windows 64 位（x64） | [下载 Windows artifact 12331153368](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39567555684/artifacts/12331153368) | a779b8dbf18fb9cb079561d9734d54837cb9e7647c4ccb1428568a1f26aab691 | 2026-11-04 16:30:56 |
+| Apple 芯片 Mac（arm64） | [下载 Mac artifact 13827534636](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958998296/artifacts/13827534636) | 02b8c5c02323756cc4b5333620758529fca215197712a9d7ef1fd1ea0a64f426 | 2026-11-25 12:29:35 |
+| Windows 64 位（x64） | [下载 Windows artifact 13829350893](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958998296/artifacts/13829350893) | 7cee9972d2b009e2b7c4223b7b2d075226175865640d6af5ffd3458cbf0e2237 | 2026-11-25 12:39:25 |
 
-Mac 成品包含 AppTranslocation 隔离启动修复；原报错 Mac 设备仍待实际双击复测。当前包未完成 Developer ID 签名与公证，macOS 可能显示系统安全提示。Windows GUI 流程已在 Windows 2025 按真实 VBS 入口通过首次配置及停止、重启；原报错员工电脑仍待复测。Windows 包也没有 Authenticode 签名。
+Mac 成品包含 AppTranslocation 隔离启动修复；原报错 Mac 和员工 Windows 设备仍待新包实机复测。当前包未完成 Developer ID 签名／公证或 Windows Authenticode 签名，系统可能显示安全提示。
 
 ## 安装并首次启动成品包
 
@@ -30,7 +32,7 @@ Mac 成品包含 AppTranslocation 隔离启动修复；原报错 Mac 设备仍�
 
 成品包已包含 Node、网页、Canvas、DSH 和 Node 依赖，无需手动安装 npm 或编译。首次启动需要联网检查并准备 Python、OCR／Office 依赖及 OCR 模型；这些文件放在用户数据目录，不会修改系统默认 Python。首次准备可能需要一些时间。工作台在本机浏览器运行，成品包默认使用 http://127.0.0.1:4310。
 
-## 配置两类 API
+## 配置模型与可选视频
 
 首次进入工作台后打开“模型与服务”：
 
@@ -38,6 +40,7 @@ Mac 成品包含 AppTranslocation 隔离启动修复；原报错 Mac 设备仍�
 | --- | --- |
 | 基础 API | Web 对话、工具、读图和素材 AI 清洗 |
 | 生图 API | Canvas 图片生成 |
+| 可选视频 API | 独立 MiniMax H3 文生视频；当前使用 `api.osodm.com` 渠道，未接入参考素材 URL |
 
 如果同一家服务提供两种能力，可以复用服务地址和密钥，并分别选择适用的模型。连接或模型列表检查不会自动生成图片；保存配置也不等于已经验证所有上游能力。API 设置保存在本机，请勿上传配置或备份到公开仓库。
 
