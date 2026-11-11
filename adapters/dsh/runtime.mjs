@@ -32,7 +32,34 @@ const SHA256_PATTERN = /^[a-f\d]{64}$/i;
 const CHAT_IMAGE_MAX_BYTES = 128 * 1024;
 const CHAT_IMAGE_MAX_PIXELS = 1024 * 1024;
 const CHAT_IMAGE_TOTAL_BYTES = 1536 * 1024;
+const WORKBUDDY_REJECTION_MESSAGE = 'WorkBuddy 对话请求被上游拒绝（request illegal）；请换用其他已配置渠道，先核对任务状态。';
 const sourceImageMarker = (sourceId, file) => `素材图索引：sourceId=${encodeURIComponent(sourceId)};fileOrder=${file.order};sha256=${file.sha256}`;
+
+function hasWorkBuddyRequestRejection(error) {
+  const visited = new Set();
+  for (let current = error; current && typeof current === 'object' && !visited.has(current); current = current.cause) {
+    visited.add(current);
+    if (current.code === 'PI_AI_ERROR'
+      && typeof current.message === 'string'
+      && /request illegal|请求被拦截/iu.test(current.message)) return true;
+  }
+  return false;
+}
+
+function isWorkBuddyModel(source, model) {
+  return (source === 'workbuddy-intl' && typeof model === 'string' && model.startsWith('workbuddy/'))
+    || (source === 'workbuddy-cn' && typeof model === 'string' && model.startsWith('buddy/'));
+}
+
+export function mapStudioAgentError(error, { source, model } = {}) {
+  if (isWorkBuddyModel(source, model) && hasWorkBuddyRequestRejection(error)) {
+    const mapped = new Error(WORKBUDDY_REJECTION_MESSAGE, { cause: error });
+    mapped.code = 'ERR_WORKBUDDY_UPSTREAM_REJECTED';
+    mapped.safeMessage = WORKBUDDY_REJECTION_MESSAGE;
+    return mapped;
+  }
+  return Object.assign(new Error('模型处理未完成；请检查模型配置与当前任务状态后重试。', { cause: error }), { code: 'ERR_STUDIO_AGENT' });
+}
 
 function availableEditPageRecords(task) {
   const byPage = new Map();
@@ -812,7 +839,7 @@ export function createStudioAgent({root,readConfig}) {
       if(signal?.aborted)throw signal.reason ?? error;
       // Provider response bodies/headers and credentials never cross into UI/logs.
       if(['ERR_MODEL_CONFIG','ERR_TASK_REVISION_CONFLICT'].includes(error.code))throw error;
-      throw Object.assign(new Error('模型处理未完成；请检查模型配置与当前任务状态后重试。'),{code:'ERR_STUDIO_AGENT',cause:error});
+      throw mapStudioAgentError(error, { source: savedConfig.source, model: selectedModel });
     }finally{
       if(abort)signal?.removeEventListener('abort',abort);
       await handle?.dispose().catch(()=>{});
