@@ -1,0 +1,182 @@
+name: Promote existing native release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: Release edition
+        required: true
+        type: choice
+        options: [personal, company]
+      source_run_id:
+        description: Successful native package run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EDITION: ${{ inputs.edition }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      REPOSITORY: ${{ github.repository }}
+      DOWNLOAD_ROOT: ${{ runner.temp }}/release-artifacts
+    steps:
+      - name: Check out the promotion validator from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Validate the successful source run and native jobs
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo '::error::Promotion workflow must be dispatched from main.'
+            exit 1
+          fi
+          python3 scripts/promote_release.py validate-run \
+            --edition "$EDITION" \
+            --repository "$REPOSITORY" \
+            --run-id "$SOURCE_RUN_ID" \
+            --output "$GITHUB_OUTPUT"
+
+      - name: Download the selected native macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.edition == 'company' && 'company-release-darwin-arm64' || 'release-darwin-arm64' }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/release-artifacts/darwin
+
+      - name: Download the selected native Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.edition == 'company' && 'company-release-win32-x64' || 'release-win32-x64' }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/release-artifacts/windows
+
+      - name: Verify ZIP sidecars, manifests, and license gates
+        id: packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/promote_release.py verify-artifacts \
+            --edition "$EDITION" \
+            --darwin-dir "$DOWNLOAD_ROOT/darwin" \
+            --windows-dir "$DOWNLOAD_ROOT/windows" \
+            --output "$GITHUB_OUTPUT"
+
+      - name: Create the tag and a draft Release
+        id: draft
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.source.outputs.head_sha }}
+          VERSION: ${{ steps.packages.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$REPOSITORY/git/ref/tags/$VERSION" >/dev/null 2>&1; then
+            echo '::error::A tag with this package version already exists.'
+            exit 1
+          fi
+          if gh api "repos/$REPOSITORY/releases/tags/$VERSION" >/dev/null 2>&1; then
+            echo '::error::A Release with this package version already exists.'
+            exit 1
+          fi
+          gh api --method POST "repos/$REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$VERSION" \
+            -f "sha=$HEAD_SHA" >/dev/null
+          TAG_SHA="$(gh api "repos/$REPOSITORY/git/ref/tags/$VERSION" --jq '.object.sha')"
+          if [[ "$TAG_SHA" != "$HEAD_SHA" ]]; then
+            echo '::error::The created tag does not point to the selected source run commit.'
+            exit 1
+          fi
+          if [[ "$EDITION" == 'company' ]]; then
+            TITLE="Creative Agent Studio Company $VERSION"
+            EDITION_LABEL='公司版'
+          else
+            TITLE="Creative Agent Studio $VERSION"
+            EDITION_LABEL='个人版'
+          fi
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          trap 'rm -f "$NOTES_FILE"' EXIT
+          cat > "$NOTES_FILE" <<EOF
+          Creative Agent Studio ${EDITION_LABEL} ${VERSION}
+
+          - 包含图文编辑、标识制作与 H3 视频工作流。
+          - 提供 macOS arm64 和 Windows x64 完整运行包。
+          - 首次启动可能需要联网准备 Python、OCR、Office 组件和模型。
+          - macOS 应用未签名、未公证；Windows 运行包未签名。
+          - 构建来源：[GitHub Actions run](https://github.com/${REPOSITORY}/actions/runs/${SOURCE_RUN_ID})
+          EOF
+          gh release create "$VERSION" \
+            --verify-tag \
+            --draft \
+            --title "$TITLE" \
+            --notes-file "$NOTES_FILE"
+          RELEASE_ID="$(gh api "repos/$REPOSITORY/releases/tags/$VERSION" --jq '.id')"
+          printf 'release_id=%s\n' "$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the four verified Release assets
+        env:
+          VERSION: ${{ steps.packages.outputs.version }}
+          DARWIN_ARCHIVE: ${{ steps.packages.outputs.darwin_archive }}
+          DARWIN_SIDECAR: ${{ steps.packages.outputs.darwin_sidecar }}
+          WINDOWS_ARCHIVE: ${{ steps.packages.outputs.windows_archive }}
+          WINDOWS_SIDECAR: ${{ steps.packages.outputs.windows_sidecar }}
+        run: |
+          set -euo pipefail
+          gh release upload "$VERSION" \
+            "$DARWIN_ARCHIVE" "$DARWIN_SIDECAR" \
+            "$WINDOWS_ARCHIVE" "$WINDOWS_SIDECAR"
+
+      - name: Verify all uploaded assets before publishing
+        env:
+          VERSION: ${{ steps.packages.outputs.version }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          DARWIN_ARCHIVE: ${{ steps.packages.outputs.darwin_archive }}
+          DARWIN_SIDECAR: ${{ steps.packages.outputs.darwin_sidecar }}
+          WINDOWS_ARCHIVE: ${{ steps.packages.outputs.windows_archive }}
+          WINDOWS_SIDECAR: ${{ steps.packages.outputs.windows_sidecar }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/release-draft.json"
+          python3 - "$RUNNER_TEMP/release-draft.json" "$VERSION" "$DARWIN_ARCHIVE" "$DARWIN_SIDECAR" "$WINDOWS_ARCHIVE" "$WINDOWS_SIDECAR" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          release = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          version, *paths = sys.argv[2:]
+          expected = {Path(path).name: Path(path).stat().st_size for path in paths}
+          assets = release.get('assets', [])
+          actual = {asset['name']: asset['size'] for asset in assets}
+          if (release.get('tag_name') != version or release.get('draft') is not True
+                  or len(assets) != 4 or actual != expected):
+              raise SystemExit('Draft Release assets or tag do not match the verified package set.')
+          print('Draft Release contains exactly the four verified package assets.')
+          PY
+
+      - name: Publish the verified Release
+        env:
+          VERSION: ${{ steps.packages.outputs.version }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$EDITION" == 'personal' ]]; then
+            gh release edit "$VERSION" --draft=false --latest
+          else
+            gh release edit "$VERSION" --draft=false --latest=false
+          fi
+          gh api "repos/$REPOSITORY/releases/$RELEASE_ID" --jq '{tag_name,draft,make_latest}'
