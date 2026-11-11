@@ -1,46 +1,37 @@
 # Creative Agent Studio 公司版
 
-更新使用最新公司分支源码或下列平台候选包，见[员工源码更新提示词](docs/员工源码更新提示词.md)和[代理宿主使用](docs/代理宿主使用.md)。更新前备份独立的配置与任务，新包实机启动通过后再清理旧程序入口。
+面向公司员工的本机创作工作台，可讨论并制作图文、适配透明标识、生成独立短视频、处理文件、审核和导出成品。GitHub 仓库不是在线工作台。
 
-基于 P5 桌面工作台，提供对话创作、公司历史素材参考、图文制作、标识适配、独立短片、文件处理、审核与素材包导出。Web／DSH 与代理宿主共用任务核心；Canvas 执行图片／视频生成和机械工具。
+## 下载与安装
 
-公司版预配公司 Teedy 地址，Canvas 与个人版一样在本机运行。每位同事首次使用填写自己的素材库账号密码；对话来源与生图配置分别选择，Kilo 对话无需个人 API 密钥；模型配置保存本机。素材访问继续受 Teedy 账号及 ACL 控制，包内没有共享账号、密码或模型钥匙。
+当前版本：**company-media.2**。完整文件与校验值见 [GitHub Release](https://github.com/akechi0819-lgtm/creative-Agent-studio/releases/tag/company-media.2)。
 
-## 当前成品下载
+| 平台 | 下载 |
+| --- | --- |
+| Apple 芯片 Mac | [Creative Agent Studio Company（macOS arm64）](https://github.com/akechi0819-lgtm/creative-Agent-studio/releases/download/company-media.2/Creative-Agent-Studio-Company-company-media.2-macOS-arm64.zip) |
+| Windows 64 位 | [Creative Agent Studio Company（Windows x64）](https://github.com/akechi0819-lgtm/creative-Agent-studio/releases/download/company-media.2/Creative-Agent-Studio-Company-company-media.2-Windows-x64.zip) |
 
-当前候选版本为 **company-media.2**，从当前公司源码直接构建，包含共享图文、标识与 H3 视频修复。两平台已通过[原生构建及归档搬移检查](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958996532)；产品 SHA-256 来自 CI 打包与解压核验结果。公司自检和真实调用边界见[公司版自检](docs/公司版自检.md)及[实施记录](docs/标识适配与图视分轨-实施记录.md)，历史 Windows GUI 记录见[修复记录](docs/Windows首次启动修复.md)。
+下载对应平台的 ZIP 并完整解压到本机目录：
 
-以下是 Actions 候选成品，尚非正式长期 Release。Artifact 容器内含产品 ZIP 和校验文件，下载需要 GitHub 登录；SHA-256 是产品 ZIP 的摘要，可与 sidecar 核对。
+- **Mac：**打开 `Creative Agent Studio Company.app`。
+- **Windows：**在解压后的完整目录中打开 `Start-Company.vbs`。请保留该目录中的其他文件。
 
-| 设备 | 版本 | 下载 | 产品 ZIP SHA-256 | 到期时间（北京时间） |
-| --- | --- | --- | --- | --- |
-| Apple 芯片 Mac | company-media.2 | [Mac artifact 13828850759](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958996532/artifacts/13828850759) | 0d89e7367c8ad08697ca3d82b72e3c1b98953babd7f5f482002d7d32b4e318bb | 2026-11-25 12:31:08 |
-| Windows 64 位 | company-media.2 | [Windows artifact 13828594531](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958996532/artifacts/13828594531) | 7d8590995a1826eaf43632c2069c404c7069928276f06ed9844a181c480c60c3 | 2026-11-25 12:40:59 |
+运行包不要求安装 npm 或编译。当前 Mac 包未做 Developer ID 签名与公证，Windows 包未做 Authenticode 签名，系统可能显示安全提示；请按公司 IT 的分发流程处理。首次启动可能需要联网准备 Python、OCR／Office 依赖及模型文件，可能比之后启动更久；本产品不是完全离线安装包。
 
-两平台均为本地 Canvas 版。Mac 尚无 Developer ID 签名与公证，Windows 尚无 Authenticode 签名；原报错 Mac 与员工 Windows 设备、真实 Teedy 账号与 ACL、付费图片生成仍待分别验证。历史版本仅在Git保留记录，员工端不保留可启动旧版本。
+工作台在本机浏览器打开，默认地址为 `127.0.0.1:4311`。公司版使用独立本机数据目录：Mac 为 `~/Library/Application Support/Creative Agent Studio Company`，Windows 为 `%LOCALAPPDATA%/Creative Agent Studio Company`。请勿与个人版混用数据目录。
 
-## 普通同事使用
+## 首次配置与使用
 
-获取公司版对应平台的成品 ZIP，完整解压到可写目录：
+1. 按引导填写**本人**的 Teedy 账号和密码。公司素材库地址已由管理员预置，素材检索为只读，实际访问仍受个人账号和 ACL 限制。
+2. 按管理员提供的接入方式选择对话服务，并单独配置图片生成服务。若需要填写 API 密钥，请只使用获准的个人或公司凭据；配置保存在本机，不要分享配置文件、日志或备份。
+3. 可选配置独立的 MiniMax H3 视频服务。它用于从文字生成独立短视频；当前不支持把已有图片作为视频参考来生成。
+4. 在左侧讨论需求、选择并确认参考与方案；在右侧查看结果。确认后可审核并导出交付文件。
 
-- Apple 芯片 Mac：双击公司版 `.app`。
-- Windows 64 位：双击 `Start-Company.vbs`。
+从 Teedy 检索到的候选不会自动用于创作；只有选择保留后，原件才会下载并冻结到该任务。任务、原图、生成结果和导出保存在本机公司数据目录。备份也可能包含个人配置，请作为私密文件保存。Logo 变体会进入本机素材库草稿，清洗并经人工确认后才可作为正式素材使用；不会写回 Teedy。
 
-运行包携带 Node、生产依赖与已构建 Web／DSH／Canvas 文件，无需员工运行 npm 安装或编译。首次启动会独立检查 Python、OCR／Office 依赖和模型，缺少时可能联网准备；已有健康环境复用。继承 P5 的这项交付边界，不宣传为完全离线安装包。
+## 使用说明
 
-按个人版相同的模型配置方式选择对话来源，并独立配置图片模型；Kilo 对话不要求个人 API 密钥。填写个人素材库账号后，保存后在左侧讨论需求、选择参考并确认方案。右侧展示参考原图与成品。明确确认执行／交付继续绑定当前版本和图片 SHA，保留人工最终判断。
-
-公司数据使用独立 `Creative Agent Studio Company` 目录，默认本机端口 4311。素材库只读检索，人工保留后才下载原件并冻结正文、附件顺序和 SHA-256。画布、原图、任务回收图与导出保存到本机公司数据目录，并纳入本机备份。旧远端浏览器画布不自动迁移。
-
-## 管理员与开发者
-
-公司分支为 `codex/company-edition`。公司部署 JSON 从源码外注入运行包，不写公开仓库；只含 Teedy 地址，不允许员工接口改写。配置格式、构建与验证边界见 [公司版接入](docs/公司版接入.md)。本地 Canvas 与个人版共用实现，无需更新远端画布；旧 Teedy 挂靠、服务器与 ACL 保持原样。
-
-源码开发入口仍为 `Start.command`／`Start.cmd`，与普通同事成品包入口分开。代理宿主 使用 [项目 Skill](.agents/skills/creative-studio/SKILL.md) 和 [共享 CLI](docs/代理宿主使用.md)，不启动 DSH；公司素材搜索用 `node scripts/company.mjs search @payload.json`。
-
-P5 通用版基线通过范围见 [最终独立复验](docs/P5最终独立复验.md)。公司新增范围的进度与证据见 [工程进度](docs/工程进度.md)和[公司版自检](docs/公司版自检.md)，不把通用版通过冒充公司现网或员工设备验证。未签名提示与普通设备双击体验按实际证据记录。
-
-
-## 项目与文档
-
-个人版源码与成品入口见 [默认main分支](https://github.com/akechi0819-lgtm/creative-Agent-studio)。公司版继续使用当前分支及上表公司包，不使用个人版包替代。共享修复已收拢，工作树与当前验证边界见 [项目收尾](docs/项目收尾.md)；其他说明见 [文档导航](docs/README.md)。
+- [公司版接入与首次配置](docs/公司版接入.md)：员工配置、素材权限与管理员服务预配。
+- [本地 Web 使用与维护](docs/本地Web交付.md)：启动、备份、更新与维护。
+- [代理宿主创作入口](docs/代理宿主使用.md)：在 Codex 等代理宿主中使用共享 CLI 与本地 Canvas。
+- [全部文档导航](docs/README.md)：其他用户说明与项目资料。
