@@ -165,42 +165,6 @@ export async function copyAllowlistedFiles(sourceRoot, destinationRoot, sourceFi
   return selected;
 }
 
-/** Overlay allowlisted current sources onto an existing, checksum-verified package tree. */
-export async function overlayAllowlistedFiles(sourceRoot, destinationRoot, sourceFiles, { profile = 'general' } = {}) {
-  const source = path.resolve(sourceRoot);
-  const destination = path.resolve(destinationRoot);
-  if (destination === source || destination.startsWith(`${source}${path.sep}`)) {
-    throw new Error('运行包目录必须位于源码目录之外。');
-  }
-  const destinationInfo = await lstat(destination);
-  if (!destinationInfo.isDirectory() || destinationInfo.isSymbolicLink()) throw new Error('运行包目录必须是普通目录。');
-  const selected = selectReleaseFiles(sourceFiles, profile);
-  if (!selected.length) throw new Error('Company allowlist 没有匹配到任何当前源文件。');
-  for (const relative of selected) {
-    const from = await regularFile(source, relative);
-    const to = path.join(destination, relative);
-    const relativeDestination = path.relative(destination, to);
-    if (relativeDestination.startsWith(`..${path.sep}`) || relativeDestination === '..' || path.isAbsolute(relativeDestination)) {
-      throw new Error(`运行包目标路径越界：${relative}`);
-    }
-    let parent = path.dirname(to);
-    const ancestors = [];
-    while (parent !== destination && pathWithin(destination, parent)) {
-      ancestors.push(parent);
-      parent = path.dirname(parent);
-    }
-    for (const directory of ancestors.reverse()) {
-      const info = await lstat(directory).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
-      if (info?.isSymbolicLink() || (info && !info.isDirectory())) throw new Error(`运行包中存在不安全的目录路径：${relative}`);
-      if (!info) await mkdir(directory);
-    }
-    const existing = await lstat(to).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
-    if (existing && (!existing.isFile() || existing.isSymbolicLink())) throw new Error(`运行包目标不是普通文件：${relative}`);
-    await copyFile(from, to);
-  }
-  return selected;
-}
-
 export async function hashFile(file) {
   const digest = createHash('sha256');
   const content = await readFile(file);

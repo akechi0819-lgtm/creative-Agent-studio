@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  RELEASE_TARGETS, assertCleanStatus, assertNativeTarget, copyAllowlistedFiles, overlayAllowlistedFiles,
+  RELEASE_TARGETS, assertCleanStatus, assertNativeTarget, copyAllowlistedFiles,
   hashFile, isReleasePathAllowed, materializeBundleSymlinks, normalizeTargetId,
   writeBundleManifest,
 } from '../src/launcher/distribution.mjs';
@@ -28,16 +28,14 @@ test('release workflow builds only Apple silicon macOS and Windows x64 and expec
   assert.doesNotMatch(workflow, /darwin-x64|macos-15-intel/);
 });
 
-test('Company release workflow reuses pinned P5 artifacts and uploads private build artifacts without publishing a Release', async () => {
+test('Company release workflow builds the current source natively and uploads artifacts without publishing a Release', async () => {
   const workflow = await readFile(new URL('../.github/workflows/company-release.yml', import.meta.url), 'utf8');
   assert.match(workflow, /workflow_dispatch:/);
-  assert.match(workflow, /actions: read/);
-  assert.match(workflow, /actions\/download-artifact@v4/);
-  assert.match(workflow, /run-id: 39001846741/);
-  assert.match(workflow, /release-\$\{\{ matrix\.target \}\}/);
   assert.match(workflow, /--profile company/);
   assert.match(workflow, /STUDIO_COMPANY_SERVICES_JSON/);
   assert.match(workflow, /actions\/upload-artifact@v4/);
+  assert.doesNotMatch(workflow, /actions\/download-artifact|39001846741|--base-package|BASE_ARCHIVE/);
+  assert.doesNotMatch(workflow, /npm ci|npm run .*build/);
   assert.doesNotMatch(workflow, /gh release create|contents: write/);
 });
 
@@ -60,27 +58,28 @@ test('source allowlist includes runtime helpers and excludes user/company/develo
   assert.equal(isReleasePathAllowed('../secrets.txt'), false);
 });
 
-test('Company profile overlays only its allowlist into a verified existing bundle', async t => {
+test('Company profile stages shared runtime and company sources from one native-build source tree', async t => {
   const fixture = await temporaryDirectory();
   t.after(() => rm(fixture, { recursive: true, force: true }));
   const source = path.join(fixture, 'source');
-  const destination = path.join(fixture, 'bundle');
+  const destination = path.join(fixture, 'stage');
   await mkdir(path.join(source, 'src/company'), { recursive: true });
-  await mkdir(path.join(source, 'web/dist/assets'), { recursive: true });
   await mkdir(path.join(source, 'company'), { recursive: true });
-  await mkdir(path.join(destination, 'src/company'), { recursive: true });
-  await mkdir(path.join(destination, 'web/dist/assets'), { recursive: true });
+  await mkdir(path.join(source, 'scripts'), { recursive: true });
   await writeFile(path.join(source, 'src/company/config.mjs'), 'export const company = true;');
-  await writeFile(path.join(source, 'web/dist/assets/app.js'), 'company UI');
+  await writeFile(path.join(source, 'src/company/risk-lexicon.json'), '{"terms":[]}');
   await writeFile(path.join(source, 'company/private.json'), '{"secret":true}');
-  await writeFile(path.join(destination, 'src/company/config.mjs'), 'old source');
-  await writeFile(path.join(destination, 'web/dist/index.html'), '<!doctype html>');
-  const selected = await overlayAllowlistedFiles(source, destination, [
-    'src/company/config.mjs', 'web/dist/assets/app.js', 'company/private.json',
+  for (const file of ['package.json', 'package-lock.json', 'scripts/web.mjs', 'release/launcher.mjs']) {
+    await mkdir(path.dirname(path.join(source, file)), { recursive: true });
+    await writeFile(path.join(source, file), 'safe');
+  }
+  const selected = await copyAllowlistedFiles(source, destination, [
+    'package.json', 'package-lock.json', 'scripts/web.mjs', 'release/launcher.mjs',
+    'src/company/config.mjs', 'src/company/risk-lexicon.json', 'company/private.json',
   ], { profile: 'company' });
-  assert.deepEqual(selected, ['src/company/config.mjs', 'web/dist/assets/app.js']);
+  assert.deepEqual(selected, ['package-lock.json', 'package.json', 'release/launcher.mjs', 'scripts/web.mjs', 'src/company/config.mjs', 'src/company/risk-lexicon.json']);
   assert.equal(await readFile(path.join(destination, 'src/company/config.mjs'), 'utf8'), 'export const company = true;');
-  assert.equal(await readFile(path.join(destination, 'web/dist/assets/app.js'), 'utf8'), 'company UI');
+  assert.equal(await readFile(path.join(destination, 'src/company/risk-lexicon.json'), 'utf8'), '{"terms":[]}');
   await assert.rejects(readFile(path.join(destination, 'company/private.json')));
 });
 
@@ -270,11 +269,13 @@ test('Company bundle has its own identity, service profile, data root and port',
   assert.match(launcher, /webArgs\.push\('--port', '4311'\)/);
   assert.match(client, /Creative Agent Studio Company/);
   assert.match(client, /creative-agent-studio-company/);
-  assert.match(packager, /COMPANY_BASE_PACKAGE/);
+  assert.match(packager, /copyAllowlistedFiles\(source, stage, trackedFiles\(source\), \{ profile \}\)/);
+  assert.match(packager, /writeBundleManifest\(runtimeRoot, targetId, options\.version, \{ profile \}\)/);
   assert.match(packager, /writeCompanyServicesFile/);
   assert.match(packager, /companyRiskLexicon/);
   assert.match(packager, /relocatedRuntimeSmoke\(runtimeRoot, target, \{ profile: 'company' \}\)/);
   assert.match(packager, /Company 运行包未按要求绑定本机 4311 端口/);
+  assert.doesNotMatch(packager, /COMPANY_BASE_PACKAGE|--base-package|overlayAllowlistedFiles|function buildCompany/u);
   assert.doesNotMatch(packager, /https:\/\/teedy\.apinova\.cn|https:\/\/image\.apinova\.cn/);
 });
 

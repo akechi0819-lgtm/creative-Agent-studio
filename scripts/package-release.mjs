@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  assertCleanWorkingTree, assertNativeTarget, copyAllowlistedFiles, overlayAllowlistedFiles,
+  assertCleanWorkingTree, assertNativeTarget, copyAllowlistedFiles,
   hashFile, materializeBundleSymlinks, normalizeTargetId, pathWithin, pruneBuildState,
   trackedFiles, writeBundleManifest,
 } from '../src/launcher/distribution.mjs';
@@ -18,30 +18,12 @@ import { assembleMacApp, resolveRuntimeRoot, sealMacAppBundle, verifyMacAppBundl
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NODE_VERSION = '22.23.3';
 const REQUIRED_NODE_VERSION = `v${NODE_VERSION}`;
-const COMPANY_BASE_PACKAGE = Object.freeze({
-  'darwin-arm64': Object.freeze({
-    filename: 'Creative-Agent-Studio-p5-pr.1.9-macOS-arm64.zip',
-    sha256: 'f85a18f3603f956e1d9f63fbe44f4f4392e0f46a38da59be765ce4a7e5bb2b25',
-    rootName: 'Creative-Agent-Studio-p5-pr.1.9-darwin-arm64',
-  }),
-  'win32-x64': Object.freeze({
-    filename: 'Creative-Agent-Studio-p5-pr.1.9-Windows-x64.zip',
-    sha256: '157c83865925573fd15f62d95e6f3dc1552ba6d37afc461a9065d05032a17064',
-    rootName: 'Creative-Agent-Studio-p5-pr.1.9-win32-x64',
-  }),
-});
-const COMPANY_UI_OUTPUTS = Object.freeze([
-  'web/dist/index.html',
-  'third_party/canvas/web/dist/index.html',
-  'third_party/canvas/canvas-agent/dist/index.js',
-  'adapters/dsh/lib/client.js',
-]);
 
 function parseArguments(args) {
   const options = {};
   for (let index = 0; index < args.length; index += 1) {
     const name = args[index];
-    if (!['--profile', '--target', '--version', '--output', '--base-package', '--company-services-file'].includes(name)) throw new Error(`未知参数：${name}`);
+    if (!['--profile', '--target', '--version', '--output', '--company-services-file'].includes(name)) throw new Error(`未知参数：${name}`);
     const value = args[++index];
     if (!value || value.startsWith('--')) throw new Error(`${name} 需要一个值。`);
     options[name.slice(2)] = value;
@@ -52,8 +34,8 @@ function parseArguments(args) {
   if (!options.version) throw new Error('必须指定 --version。');
   if (!/^[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}$/.test(options.version)) throw new Error('版本号格式无效。');
   if (!options.output) throw new Error('必须指定源码树外的 --output 目录。');
-  if (options.profile === 'company' && !options['base-package']) throw new Error('Company profile 必须指定已校验的 --base-package。');
-  if (options.profile === 'general' && (options['base-package'] || options['company-services-file'])) {
+  if (options.profile === 'company' && !options['company-services-file']) throw new Error('Company profile 必须指定 --company-services-file。');
+  if (options.profile === 'general' && options['company-services-file']) {
     throw new Error('Company 专用参数只能用于 --profile company。');
   }
   return options;
@@ -451,32 +433,6 @@ function companyArchiveName(version, target) {
   return `Creative-Agent-Studio-Company-${version}-${labels[target]}.zip`;
 }
 
-async function collectRegularFiles(root, relative = '', output = []) {
-  for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
-    const child = relative ? `${relative}/${entry.name}` : entry.name;
-    const info = await lstat(path.join(root, child));
-    if (info.isSymbolicLink()) throw new Error(`Company UI 构建产物不允许包含符号链接：${child}`);
-    if (info.isDirectory()) await collectRegularFiles(root, child, output);
-    else if (info.isFile()) output.push(child);
-    else throw new Error(`Company UI 构建产物包含不支持的文件：${child}`);
-  }
-  return output;
-}
-
-async function companyUiFiles(source) {
-  const outputs = [];
-  for (const relative of ['web/dist', 'third_party/canvas/web/dist', 'third_party/canvas/canvas-agent/dist', 'adapters/dsh/lib']) {
-    const files = await collectRegularFiles(source, relative).catch(error => {
-      if (error.code === 'ENOENT') throw new Error(`缺少 Company 前端构建产物：${relative}。请先构建本地 Canvas 与工作台 UI。`);
-      throw error;
-    });
-    outputs.push(...files);
-  }
-  const missing = COMPANY_UI_OUTPUTS.filter(file => !outputs.includes(file));
-  if (missing.length) throw new Error(`Company 前端构建产物不完整：${missing.join('、')}`);
-  return outputs;
-}
-
 async function writeCompanyLicenseInventory(stage) {
   const licenseFile = path.join(stage, 'licenses/xhs-ad-workbench-MIT.txt');
   const sourceNote = path.join(stage, 'licenses/xhs-ad-workbench-risk-source.md');
@@ -532,83 +488,6 @@ async function verifyCompanyArchive(archivePath, extractionRoot, rootName, targe
   if (target.platform === 'win32') await access(path.join(runtimeRoot, 'Start-Company.vbs'));
   await relocatedRuntimeSmoke(runtimeRoot, target, { profile: 'company' });
   if (target.platform === 'darwin') verifyMacAppSeal(path.join(extracted, 'Creative Agent Studio Company.app'));
-}
-
-async function buildCompany(options) {
-  const targetId = normalizeTargetId(options.target);
-  const target = assertNativeTarget(targetId);
-  const source = path.resolve(SOURCE_ROOT);
-  const outputRoot = path.resolve(options.output);
-  if (pathWithin(source, outputRoot)) throw new Error('Release 输出目录必须位于源码工作树之外。');
-  assertCleanWorkingTree(source);
-
-  const base = COMPANY_BASE_PACKAGE[targetId];
-  const baseArchive = path.resolve(options['base-package']);
-  if (path.basename(baseArchive) !== base.filename) throw new Error(`Company base 必须是已验收的 ${base.filename}。`);
-  const actualHash = await hashFile(baseArchive);
-  if (actualHash !== base.sha256) throw new Error(`P5 Company base SHA-256 校验失败：${targetId}`);
-  const sidecar = (await readFile(`${baseArchive}.sha256`, 'utf8')).trim().split(/\s+/u);
-  if (sidecar[0] !== base.sha256 || sidecar.at(-1) !== base.filename) throw new Error('P5 Company base 的 .sha256 文件与固定清单不符。');
-
-  const parent = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cas-company-release-')));
-  const extraction = path.join(parent, 'p5-base');
-  await mkdir(extraction);
-  const rootName = `Creative-Agent-Studio-Company-${options.version}-${targetId}`;
-  let stage = path.join(extraction, base.rootName);
-  let relocatedRoot;
-  try {
-    await extractArchive(baseArchive, extraction, target);
-    const baseManifest = JSON.parse(await readFile(path.join(stage, 'release-manifest.json'), 'utf8'));
-    if (baseManifest.product !== 'Creative Agent Studio' || baseManifest.target !== targetId) {
-      throw new Error('P5 base package manifest 与 Company 构建目标不符。');
-    }
-
-    const generated = await companyUiFiles(source);
-    // Replace complete build trees so obsolete P5 chunks cannot survive the overlay.
-    for (const relative of ['web/dist', 'third_party/canvas/web/dist', 'third_party/canvas/canvas-agent/dist', 'adapters/dsh/lib']) {
-      await rm(path.join(stage, relative), { recursive: true, force: true });
-    }
-    const inputs = [...trackedFiles(source), ...generated];
-    const selected = await overlayAllowlistedFiles(source, stage, inputs, { profile: 'company' });
-    process.stdout.write(`按 Company allowlist 更新 ${selected.length} 个源码和 UI 文件。\n`);
-    await writeCompanyServicesFile(source, stage, options['company-services-file']);
-    await writeFile(path.join(stage, 'START-HERE.txt'), `Creative Agent Studio 公司版
-
-请完整解压后启动：
-Apple 芯片 Mac：双击 Creative Agent Studio Company.app。
-Windows 64 位：双击 Start-Company.vbs。
-
-公司素材库地址已预配，画布使用随包提供的本机版本。素材检索使用本人的 Teedy 账号密码。对话可选 Kilo 等托管来源，无需个人 API 密钥；选择自用 API 时填写对话服务配置。生图服务与对话独立配置，图片密钥只供生图。
-Node、程序依赖和界面已经随包准备好。首次启动可能联网准备 Python、OCR／Office 依赖及模型，健康环境直接复用。
-任务和个人配置保存在本机 Creative Agent Studio Company 数据目录。
-包内没有共享账号、密码或模型钥匙。
-`, 'utf8');
-    await writeCompanyLicenseInventory(stage);
-    if (target.platform === 'win32') await makeWindowsEntry(stage, { profile: 'company' });
-    else await rm(path.join(stage, 'Creative Agent Studio.app'), { recursive: true, force: true });
-    await rm(path.join(stage, 'release-manifest.json'), { force: true });
-    await materializeBundleSymlinks(stage);
-    if (target.platform === 'darwin') await assembleMacApp(stage, target, { profile: 'company' });
-    relocatedRoot = await realpath(await mkdtemp(path.join(parent, 'relocated-')));
-    const relocatedStage = path.join(relocatedRoot, rootName);
-    await rename(stage, relocatedStage);
-    stage = relocatedStage;
-    const runtimeRoot = resolveRuntimeRoot(stage, target, { profile: 'company' });
-    const manifest = await writeBundleManifest(runtimeRoot, targetId, options.version, { profile: 'company' });
-    if (target.platform === 'darwin') sealMacAppBundle(path.join(stage, 'Creative Agent Studio Company.app'));
-    await mkdir(outputRoot, { recursive: true });
-    const filename = companyArchiveName(options.version, targetId);
-    const archivePath = path.join(outputRoot, filename);
-    await access(archivePath).then(() => { throw new Error(`输出文件已存在：${archivePath}`); }, error => { if (error.code !== 'ENOENT') throw error; });
-    await makeArchive(stage, archivePath);
-    const archiveCheck = await mkdtemp(path.join(relocatedRoot, 'archive-check-'));
-    await verifyCompanyArchive(archivePath, archiveCheck, rootName, target);
-    const checksum = await hashFile(archivePath);
-    await writeFile(`${archivePath}.sha256`, `${checksum}  ${filename}\n`, { flag: 'wx' });
-    process.stdout.write(JSON.stringify({ profile: 'company', target: targetId, version: options.version, archive: archivePath, sha256: checksum, files: manifest.files.length }, null, 2) + '\n');
-  } finally {
-    await rm(parent, { recursive: true, force: true });
-  }
 }
 
 async function makeArchive(stage, archivePath) {
@@ -727,6 +606,8 @@ async function verifyArchiveAfterExtraction(archivePath, extractionRoot, rootNam
 }
 
 async function buildGeneral(options) {
+  const profile = options.profile ?? 'general';
+  const isCompany = profile === 'company';
   const targetId = normalizeTargetId(options.target);
   const target = assertNativeTarget(targetId);
   const source = path.resolve(SOURCE_ROOT);
@@ -734,13 +615,14 @@ async function buildGeneral(options) {
   if (pathWithin(source, outputRoot)) throw new Error('Release 输出目录必须位于源码工作树之外。');
   assertCleanWorkingTree(source);
 
-  const parent = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cas-release-')));
-  const rootName = `Creative-Agent-Studio-${options.version}-${targetId}`;
+  const parent = await realpath(await mkdtemp(path.join(os.tmpdir(), isCompany ? 'cas-company-release-' : 'cas-release-')));
+  const productPrefix = isCompany ? 'Creative-Agent-Studio-Company' : 'Creative-Agent-Studio';
+  const rootName = `${productPrefix}-${options.version}-${targetId}`;
   let stage = path.join(parent, rootName);
   let relocationRoot;
   try {
-    const selected = await copyAllowlistedFiles(source, stage, trackedFiles(source));
-    process.stdout.write(`按 allowlist 复制 ${selected.length} 个已跟踪源文件。\n`);
+    const selected = await copyAllowlistedFiles(source, stage, trackedFiles(source), { profile });
+    process.stdout.write(`按 ${profile} allowlist 复制 ${selected.length} 个已跟踪源文件。\n`);
     const nodePath = await downloadPinnedNode(target, stage);
     const env = environmentWithoutSystemPython(stage, nodePath);
     const originalPath = process.env.PATH;
@@ -786,34 +668,50 @@ async function buildGeneral(options) {
     const { ensureLibreOfficeKitWindowsPathFix } = await import(pathToFileURL(path.join(stage, 'src/launcher/prepare.mjs')).href);
     await ensureLibreOfficeKitWindowsPathFix(stage);
     await packageNodeRuntime(nodePath, stage);
+    if (isCompany) {
+      await writeCompanyServicesFile(source, stage, options['company-services-file']);
+      await writeFile(path.join(stage, 'START-HERE.txt'), `Creative Agent Studio 公司版
+
+请完整解压后启动：
+Apple 芯片 Mac：双击 Creative Agent Studio Company.app。
+Windows 64 位：双击 Start-Company.vbs。
+
+公司素材库地址已预配，画布使用随包提供的本机版本。素材检索使用本人的 Teedy 账号密码。对话可选 Kilo 等托管来源，无需个人 API 密钥；选择自用 API 时填写对话服务配置。生图服务与对话独立配置，图片密钥只供生图。
+Node、程序依赖和界面已经随包准备好。首次启动可能联网准备 Python、OCR／Office 依赖及模型，健康环境直接复用。
+任务和个人配置保存在本机 Creative Agent Studio Company 数据目录。
+包内没有共享账号、密码或模型钥匙。
+`, 'utf8');
+    }
     await writeLicenseInventory(stage, target, nodePath);
-    if (target.platform === 'win32') await makeWindowsEntry(stage);
+    if (isCompany) await writeCompanyLicenseInventory(stage);
+    if (target.platform === 'win32') await makeWindowsEntry(stage, { profile });
     await pruneBuildState(stage);
     await materializeBundleSymlinks(stage);
-    if (target.platform === 'darwin') await assembleMacApp(stage, target);
+    if (target.platform === 'darwin') await assembleMacApp(stage, target, { profile });
     relocationRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cas-release-moved-')));
     const relocatedStage = path.join(relocationRoot, rootName);
     await rename(stage, relocatedStage);
     stage = relocatedStage;
-    const runtimeRoot = resolveRuntimeRoot(stage, target);
-    const manifest = await writeBundleManifest(runtimeRoot, targetId, options.version);
+    const runtimeRoot = resolveRuntimeRoot(stage, target, { profile });
+    const manifest = await writeBundleManifest(runtimeRoot, targetId, options.version, { profile });
     if (manifest.pythonRuntime?.bundled !== false || manifest.pythonRuntime?.preparedOnFirstStart !== true
         || manifest.files.some(file => file.path.startsWith('.venv-ocr/')
           || file.path.startsWith('.studio-runtime/python/')
           || file.path.startsWith('.studio-runtime/rapidocr-models/'))) {
       throw new Error('主运行包必须排除 Python/OCR 首次准备资源，并保留首次准备元数据。');
     }
-    if (target.platform === 'darwin') sealMacAppBundle(path.join(stage, 'Creative Agent Studio.app'));
+    if (target.platform === 'darwin') sealMacAppBundle(path.join(stage, isCompany ? 'Creative Agent Studio Company.app' : 'Creative Agent Studio.app'));
     await mkdir(outputRoot, { recursive: true });
-    const filename = archiveName(options.version, targetId);
+    const filename = isCompany ? companyArchiveName(options.version, targetId) : archiveName(options.version, targetId);
     const archivePath = path.join(outputRoot, filename);
     await access(archivePath).then(() => { throw new Error(`输出文件已存在：${archivePath}`); }, error => { if (error.code !== 'ENOENT') throw error; });
     await makeArchive(stage, archivePath);
     const extractionRoot = await mkdtemp(path.join(relocationRoot, 'archive-smoke-'));
-    await verifyArchiveAfterExtraction(archivePath, extractionRoot, rootName, target);
+    if (isCompany) await verifyCompanyArchive(archivePath, extractionRoot, rootName, target);
+    else await verifyArchiveAfterExtraction(archivePath, extractionRoot, rootName, target);
     const checksum = await hashFile(archivePath);
     await writeFile(`${archivePath}.sha256`, `${checksum}  ${filename}\n`, { flag: 'wx' });
-    process.stdout.write(JSON.stringify({ target: targetId, version: options.version, archive: archivePath, sha256: checksum, files: manifest.files.length, licenses: 'THIRD-PARTY-LICENSES.json' }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ profile, target: targetId, version: options.version, archive: archivePath, sha256: checksum, files: manifest.files.length, licenses: 'THIRD-PARTY-LICENSES.json' }, null, 2) + '\n');
   } finally {
     if (relocationRoot) await rm(relocationRoot, { recursive: true, force: true });
     await rm(parent, { recursive: true, force: true });
@@ -822,8 +720,7 @@ async function buildGeneral(options) {
 
 try {
   const options = parseArguments(process.argv.slice(2));
-  if (options.profile === 'company') await buildCompany(options);
-  else await buildGeneral(options);
+  await buildGeneral(options);
 } catch (error) {
   process.stderr.write(`${error?.message ?? 'Release 打包失败'}\n`);
   process.exitCode = 1;
