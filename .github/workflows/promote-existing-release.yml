@@ -28,7 +28,6 @@ jobs:
       EDITION: ${{ inputs.edition }}
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
       REPOSITORY: ${{ github.repository }}
-      DOWNLOAD_ROOT: ${{ runner.temp }}/release-artifacts
     steps:
       - name: Check out the promotion validator from main
         uses: actions/checkout@v4
@@ -76,8 +75,8 @@ jobs:
           set -euo pipefail
           python3 scripts/promote_release.py verify-artifacts \
             --edition "$EDITION" \
-            --darwin-dir "$DOWNLOAD_ROOT/darwin" \
-            --windows-dir "$DOWNLOAD_ROOT/windows" \
+            --darwin-dir "$RUNNER_TEMP/release-artifacts/darwin" \
+            --windows-dir "$RUNNER_TEMP/release-artifacts/windows" \
             --output "$GITHUB_OUTPUT"
 
       - name: Create the tag and a draft Release
