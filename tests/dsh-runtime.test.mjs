@@ -9,9 +9,9 @@ import {createTask,readTask,confirmInputs,setSheet,confirmSheet,attachTaskFiles,
 import {cleanAsset,confirmAsset,importAsset} from '../src/assets/library.mjs';
 import {createAssistantMessage,createSystemMessage,createToolResultMessage,createUserMessage} from '../adapters/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js';
 import {createDshContext,createStudioAgent,mapStudioAgentError} from '../adapters/dsh/runtime.mjs';
-import {writeVideoPlan} from '../src/creative/video.mjs';
+import {confirmVideoPlan,writeVideoPlan} from '../src/creative/video.mjs';
 
-async function fixture(t,{fail=false,slow=false,duplicateReview=false,askQuestions=false,searchQuery=null,duplicateSearch=false,videoPlan=false,maxRequestBytes}={}){
+async function fixture(t,{fail=false,slow=false,duplicateReview=false,askQuestions=false,searchQuery=null,duplicateSearch=false,videoPlan=false,readTaskTool=false,maxRequestBytes}={}){
   const root=await mkdtemp(os.tmpdir()+'/studio-p3-dsh-');
   const requests=[];
   const requestSizes=[];
@@ -29,12 +29,13 @@ async function fixture(t,{fail=false,slow=false,duplicateReview=false,askQuestio
     const ask=askQuestions&&body.tools.some(x=>x.function.name==='studio_ask_questions');
     const search=Boolean(searchQuery)&&body.tools.some(x=>x.function.name==='studio_search_assets');
     const writeVideo=videoPlan&&body.tools.some(x=>x.function.name==='studio_write_video_plan');
+    const readTask=readTaskTool&&body.tools.some(x=>x.function.name==='studio_read_task');
     res.writeHead(200,{'content-type':'text/event-stream'});
     const payload=review?{decision:'revise',notes:{文字:'测试替身固定返回待核，未模拟通过',可读性:'不可判断，需修改',一致性:'待核',主题:'待核',修改位置:'整页'}}:{audience:'亲子家庭',format:'三页图文',topic:'阅读指南'};
     const questionPayload={questions:[{id:'audience',question:'内容主要面向谁？',options:[{id:'parents',label:'家长'},{id:'students',label:'学生'}],allowOther:true}]};
-    const toolName=check?'studio_connection_probe':review?'studio_record_image_review':ask?'studio_ask_questions':search?'studio_search_assets':writeVideo?'studio_write_video_plan':'studio_update_brief';
+    const toolName=check?'studio_connection_probe':review?'studio_record_image_review':ask?'studio_ask_questions':search?'studio_search_assets':writeVideo?'studio_write_video_plan':readTask?'studio_read_task':'studio_update_brief';
     const videoPlanValue={prompt:'由窗口移向桌面，手翻开书页',seconds:6,ratio:'16:9',resolution:'1080p'};
-    const argumentsValue=check?JSON.stringify({colors:'绿色背景、红色方块'}):search?JSON.stringify({query:searchQuery}):writeVideo?JSON.stringify(videoPlanValue):JSON.stringify({payload:JSON.stringify(ask?questionPayload:payload)});
+    const argumentsValue=check?JSON.stringify({colors:'绿色背景、红色方块'}):search?JSON.stringify({query:searchQuery}):writeVideo?JSON.stringify(videoPlanValue):readTask?JSON.stringify({}):JSON.stringify({payload:JSON.stringify(ask?questionPayload:payload)});
     const delta=resultSeen?{content:ask?'请在上方点选回答即可。':'已整理需求，请在工作台检查后确认。'}:{tool_calls:[{index:0,id:'mock-call-1',type:'function',function:{name:toolName,arguments:argumentsValue}}]};
     if(duplicateSearch&&search&&!resultSeen)delta.tool_calls.push({...structuredClone(delta.tool_calls[0]),index:1,id:'mock-call-2'});
     if(duplicateReview&&review&&!resultSeen){delta.tool_calls.push({...structuredClone(delta.tool_calls[0]),index:1,id:'mock-call-2'});}
@@ -134,6 +135,52 @@ test('DSH video tool only writes a pending storyboard; host callback records H3 
   assert.ok(registered.includes('studio_write_video_plan'));
   assert.equal(registered.some(name=>/video.*(?:confirm|execute|review|approve|export)/iu.test(name)),false);
   assert.equal(typeof result.text,'string');
+});
+
+test('DSH task context and studio_read_task expose completed video output facts without internal identifiers or paths',async t=>{
+  const f=await fixture(t,{readTaskTool:true});
+  let task=await createTask({title:'视频状态上下文夹具',brief:'读取已完成视频的真实规格'},f.root);
+  task=await writeVideoPlan(task.id,{prompt:'桌面灯下翻阅一本书',seconds:6,ratio:'16:9',resolution:'1080p'},
+    {root:f.root,expectedRevision:task.revision,model:'studio-video::minimax_h3',providerFingerprint:'a'.repeat(64)});
+  task=await confirmVideoPlan(task.id,{version:1,by:'测试用户',note:'隔离夹具确认'}, {root:f.root,expectedRevision:task.revision});
+  task=await withTask(task.id,draft=>{
+    draft.video.execution.status='succeeded';
+    draft.video.execution.submitted=true;
+    draft.video.execution.submissionIntentAt='2026-11-11T03:49:26.936Z';
+    draft.video.execution.completedAt='2026-11-11T03:54:09.000Z';
+    draft.video.execution.videoTaskId='REMOTE-VIDEO-TASK-MUST-NOT-REACH-MODEL';
+    draft.video.execution.target={projectId:'private-project',instanceId:'private-instance',clientId:'private-client'};
+    draft.video.execution.output={
+      relativePath:'videos/v1/private-output.mp4',sha256:'b'.repeat(64),mimeType:'video/mp4',size:987654,
+      width:1920,height:1088,durationMs:6580,nodeId:'PRIVATE-CANVAS-NODE',videoTaskId:'REMOTE-VIDEO-TASK-MUST-NOT-REACH-MODEL',
+      storageKey:'video:PRIVATE-STORAGE-KEY',
+    };
+    draft.video.reviews=[{version:1,sha256:'b'.repeat(64),decision:'pass',reviewer:'测试审核人',notes:'PRIVATE REVIEW NOTE',reviewedAt:'2026-11-11T03:55:00.000Z'}];
+    draft.video.approval={version:1,sha256:'b'.repeat(64),by:'测试批准人',note:'PRIVATE APPROVAL NOTE',approvedAt:'2026-11-11T03:56:00.000Z'};
+  },{root:f.root,expectedRevision:task.revision});
+
+  await f.agent.chat({taskId:task.id,text:'读取一下这段视频的实际规格和完成状态，不要重新生成或修改。',expectedRevision:task.revision});
+  const initialContext=f.requests[0].messages.map(message=>typeof message.content==='string'?message.content:JSON.stringify(message.content)).join('\n');
+  assert.ok(initialContext.includes('"video"'));
+  assert.ok(initialContext.includes('"status":"succeeded"'));
+  assert.ok(initialContext.includes('"submitted":true'));
+  assert.ok(initialContext.includes('"seconds":6'), 'the requested duration remains separate from result metadata');
+  assert.ok(initialContext.includes('"resolution":"1080p"'));
+  assert.ok(initialContext.includes('"width":1920'));
+  assert.ok(initialContext.includes('"height":1088'));
+  assert.ok(initialContext.includes('"durationMs":6580'), 'actual duration is supplied from execution.output, not the plan');
+  assert.ok(initialContext.includes('"decision":"pass"'));
+  assert.ok(initialContext.includes('"approved":true'));
+  for(const forbidden of ['REMOTE-VIDEO-TASK-MUST-NOT-REACH-MODEL','PRIVATE-CANVAS-NODE','PRIVATE-STORAGE-KEY','private-output.mp4','PRIVATE REVIEW NOTE','PRIVATE APPROVAL NOTE','private-client','private-instance','private-project']) {
+    assert.equal(initialContext.includes(forbidden),false,`model context must omit ${forbidden}`);
+  }
+  assert.equal(initialContext.includes('a'.repeat(64)),false,'provider fingerprint is not needed in chat context');
+
+  const readTaskResult=f.requests.flatMap(request=>request.messages).find(message=>message.role==='tool');
+  assert.ok(readTaskResult);
+  const readTaskContent=typeof readTaskResult.content==='string'?readTaskResult.content:JSON.stringify(readTaskResult.content);
+  assert.ok(readTaskContent.includes('"durationMs":6580'));
+  assert.equal(readTaskContent.includes('REMOTE-VIDEO-TASK-MUST-NOT-REACH-MODEL'),false);
 });
 
 test('DSH canvas tool schema exposes only the selected logo and frozen reference fields',async t=>{

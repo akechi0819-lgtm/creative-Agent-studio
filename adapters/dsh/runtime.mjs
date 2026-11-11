@@ -83,6 +83,51 @@ function availableEditPages(task) {
   return availableEditPageRecords(task).map(({ page, version, sha256 }) => ({ page, version, sha256 }));
 }
 
+function videoForPrompt(video) {
+  if (!video || !Number.isSafeInteger(video.version) || video.version < 1) return null;
+  const plan = Array.isArray(video.plans) ? video.plans.find(item => item?.version === video.version) : null;
+  const execution = video.execution?.version === video.version ? video.execution : null;
+  const savedOutput = execution?.output && typeof execution.output === 'object' ? execution.output : null;
+  const output = savedOutput && savedOutput.mimeType === 'video/mp4'
+    && Number.isSafeInteger(savedOutput.size) && savedOutput.size > 0
+    && Number.isSafeInteger(savedOutput.width) && savedOutput.width > 0
+    && Number.isSafeInteger(savedOutput.height) && savedOutput.height > 0
+    && Number.isFinite(savedOutput.durationMs) && savedOutput.durationMs > 0
+    && SHA256_PATTERN.test(savedOutput.sha256 || '')
+    ? {
+      mimeType: savedOutput.mimeType,
+      bytes: savedOutput.size,
+      width: savedOutput.width,
+      height: savedOutput.height,
+      durationMs: savedOutput.durationMs,
+      sha256: savedOutput.sha256.toLowerCase(),
+    }
+    : null;
+  const latestReview = output && Array.isArray(video.reviews)
+    ? [...video.reviews].reverse().find(item => item?.version === video.version && item.sha256 === output.sha256)
+    : null;
+  const approval = video.approval?.version === video.version && output && video.approval.sha256 === output.sha256;
+  return {
+    version: video.version,
+    plan: plan ? {
+      prompt: typeof plan.prompt === 'string' ? plan.prompt : '',
+      model: typeof plan.model === 'string' ? plan.model : null,
+      seconds: Number.isInteger(plan.seconds) ? plan.seconds : null,
+      ratio: typeof plan.ratio === 'string' ? plan.ratio : null,
+      resolution: typeof plan.resolution === 'string' ? plan.resolution : null,
+      confirmed: Boolean(plan.confirmedAt),
+    } : null,
+    execution: execution ? {
+      status: typeof execution.status === 'string' ? execution.status : null,
+      submitted: execution.submitted === true,
+      completedAt: typeof execution.completedAt === 'string' ? execution.completedAt : null,
+      output,
+    } : null,
+    latestReview: latestReview ? { decision: latestReview.decision, reviewedAt: latestReview.reviewedAt } : null,
+    approved: Boolean(approval),
+  };
+}
+
 function currentAttachmentImages(task) {
   const available = [];
   const seen = new Set();
@@ -135,6 +180,7 @@ function modelTask(current) {
       status: current.execution.status,
       pages: (Array.isArray(current.execution.pages) ? current.execution.pages : []).map(({ page, status }) => ({ page, status })),
     } : null,
+    video: videoForPrompt(current.video),
     availableEditPages: availableEditPages(current),
     availableUploadedImages: currentAttachmentImages(current),
     reviews: (Array.isArray(current.reviews) ? current.reviews : []).map(({ version, page, sha256, decision, reviewer, reviewedAt }) => ({ version, page, sha256, decision, reviewer, reviewedAt })),
