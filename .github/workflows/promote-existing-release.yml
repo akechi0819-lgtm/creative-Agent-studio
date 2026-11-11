@@ -121,12 +121,12 @@ jobs:
           - macOS 应用未签名、未公证；Windows 运行包未签名。
           - 构建来源：[GitHub Actions run](https://github.com/${REPOSITORY}/actions/runs/${SOURCE_RUN_ID})
           EOF
-          gh release create "$VERSION" \
-            --verify-tag \
-            --draft \
-            --title "$TITLE" \
-            --notes-file "$NOTES_FILE"
-          RELEASE_ID="$(gh api "repos/$REPOSITORY/releases/tags/$VERSION" --jq '.id')"
+          RELEASE_ID="$(gh api --method POST "repos/$REPOSITORY/releases" \
+            -f "tag_name=$VERSION" \
+            -f "name=$TITLE" \
+            -F draft=true \
+            -F "body=@$NOTES_FILE" \
+            --jq '.id')"
           printf 'release_id=%s\n' "$RELEASE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Upload the four verified Release assets
