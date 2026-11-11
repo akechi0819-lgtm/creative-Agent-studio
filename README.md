@@ -1,21 +1,21 @@
 # Creative Agent Studio 公司版
 
-内测更新使用最新公司分支源码，见[员工源码更新提示词](docs/员工源码更新提示词.md)和[代理宿主使用](docs/代理宿主使用.md)。下列历史候选包不包含 2026-10-23 返修；新版验证通过后删除员工端旧程序及旧入口，保留独立的配置与任务。
+更新使用最新公司分支源码或下列平台候选包，见[员工源码更新提示词](docs/员工源码更新提示词.md)和[代理宿主使用](docs/代理宿主使用.md)。更新前备份独立的配置与任务，新包实机启动通过后再清理旧程序入口。
 
-基于已独立复验的 P5 桌面工作台，提供对话创作、公司历史素材参考、图文制作、文件处理、审核与素材包导出。Web／DSH 与 代理宿主 共用任务核心；Canvas 只执行绘图和图片工具。
+基于 P5 桌面工作台，提供对话创作、公司历史素材参考、图文制作、标识适配、独立短片、文件处理、审核与素材包导出。Web／DSH 与代理宿主共用任务核心；Canvas 执行图片／视频生成和机械工具。
 
 公司版预配公司 Teedy 地址，Canvas 与个人版一样在本机运行。每位同事首次使用填写自己的素材库账号密码；对话来源与生图配置分别选择，Kilo 对话无需个人 API 密钥；模型配置保存本机。素材访问继续受 Teedy 账号及 ACL 控制，包内没有共享账号、密码或模型钥匙。
 
 ## 当前成品下载
 
-公司首次准备与控制台闪窗修正版 company-p5.1.4 已完成 macOS 和 Windows 原生构建，两个成品均已下载并完成文件完整性校验。Windows 2025 GUI 已通过真实 VBS 入口完成首次配置及停止、重启流程；原报错员工电脑仍待复测，验证边界见 [修复记录](docs/Windows首次启动修复.md)。
+当前候选版本为 **company-media.2**，从当前公司源码直接构建，包含共享图文、标识与 H3 视频修复。两平台已通过[原生构建及归档搬移检查](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958996532)；产品 SHA-256 来自 CI 打包与解压核验结果。公司自检和真实调用边界见[公司版自检](docs/公司版自检.md)及[实施记录](docs/标识适配与图视分轨-实施记录.md)，历史 Windows GUI 记录见[修复记录](docs/Windows首次启动修复.md)。
 
 以下是 Actions 候选成品，尚非正式长期 Release。Artifact 容器内含产品 ZIP 和校验文件，下载需要 GitHub 登录；SHA-256 是产品 ZIP 的摘要，可与 sidecar 核对。
 
 | 设备 | 版本 | 下载 | 产品 ZIP SHA-256 | 到期时间（北京时间） |
 | --- | --- | --- | --- | --- |
-| Apple 芯片 Mac | company-p5.1.4 | [Mac artifact 12330321033](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478/artifacts/12330321033) | 026704ab119b41d105a8c8b4f0a544ec4da5b6559f8cfd2774d366014c8babf0 | 2026-11-04 15:59:52 |
-| Windows 64 位 | company-p5.1.4 | [Windows artifact 12329329237](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/39565191478/artifacts/12329329237) | d98b7daeedd319ff70595a2fbef383138fef60cfc72b97746fee336b60ca30ce | 2026-11-04 16:02:51 |
+| Apple 芯片 Mac | company-media.2 | [Mac artifact 13828850759](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958996532/artifacts/13828850759) | 0d89e7367c8ad08697ca3d82b72e3c1b98953babd7f5f482002d7d32b4e318bb | 2026-11-25 12:31:08 |
+| Windows 64 位 | company-media.2 | [Windows artifact 13828594531](https://github.com/akechi0819-lgtm/creative-Agent-studio/actions/runs/42958996532/artifacts/13828594531) | 7d8590995a1826eaf43632c2069c404c7069928276f06ed9844a181c480c60c3 | 2026-11-25 12:40:59 |
 
 两平台均为本地 Canvas 版。Mac 尚无 Developer ID 签名与公证，Windows 尚无 Authenticode 签名；原报错 Mac 与员工 Windows 设备、真实 Teedy 账号与 ACL、付费图片生成仍待分别验证。历史版本仅在Git保留记录，员工端不保留可启动旧版本。
 
