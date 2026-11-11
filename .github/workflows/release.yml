@@ -9,7 +9,7 @@ on:
       version:
         description: Release package version
         required: true
-        default: media-workflow.1
+        default: media-workflow.2
         type: string
 
 permissions:
