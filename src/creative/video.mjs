@@ -154,6 +154,10 @@ function sameTarget(left, right) {
     && left.instanceId === right.instanceId && left.clientId === right.clientId;
 }
 
+function sameCanvasInstance(left, right) {
+  return left && right && left.projectId === right.projectId && left.instanceId === right.instanceId;
+}
+
 function edgeList(state) {
   if (!Array.isArray(state?.nodes)) throw new Error('Canvas 状态缺少节点列表');
   const edges = Array.isArray(state.connections) && state.connections.length
@@ -314,7 +318,13 @@ function assertExecutionDependencies({ config, providerFingerprint, getHealth, t
     throw new Error('视频执行必须使用 Canvas manager 的 videoExecutionOptions');
   }
   const target = validateTarget(config, providerFingerprint, plan);
-  if (execution.target && !sameTarget(execution.target, target)) throw new Error('恢复目标与原视频 Canvas 不一致；拒绝跨目标查询');
+  if (execution.target && !sameTarget(execution.target, target)) {
+    const refreshedClient = sameCanvasInstance(execution.target, target)
+      && execution.submitted === true
+      && typeof execution.videoTaskId === 'string'
+      && Boolean(execution.videoTaskId.trim());
+    if (!refreshedClient) throw new Error('恢复目标与原视频 Canvas 不一致；拒绝跨目标查询');
+  }
   return target;
 }
 
@@ -365,7 +375,16 @@ export async function executeVideoTask(id, {
       const state = submitted
         ? await tool('canvas_get_state', {}, config, { signal })
         : await ensureVideoNodes(plan, execution, tool, config, signal);
-      if (submitted) validateVideoNodes(state, plan, execution);
+      if (submitted) {
+        validateVideoNodes(state, plan, execution);
+        const children = relatedVideoNodes(state, execution.configNodeId);
+        if (children.length === 1 && execution.videoTaskId
+          && children[0].metadata?.videoTaskId === execution.videoTaskId
+          && execution.target && execution.target.clientId !== target.clientId) {
+          execution.target = target;
+          await save();
+        }
+      }
 
       if (!submitted) {
         execution.status = 'prepared';

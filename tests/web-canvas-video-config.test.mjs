@@ -44,6 +44,7 @@ test('video recover uses fragmented MP4 movie presentation duration from a Media
   const instanceId = crypto.randomUUID();
   const clientId = `fixture-client-${task.id}`;
   const storageKey = `video:${crypto.randomUUID()}`;
+  let targetClientIds = [clientId];
   const videoNode = {
     id: 'fixture-video-node',
     type: 'video',
@@ -73,7 +74,7 @@ test('video recover uses fragmented MP4 movie presentation duration from a Media
     if (request.method === 'GET' && request.url === '/health') {
       response.end(JSON.stringify({
         instanceId,
-        targets: [{ hasCanvas: true, projectId: task.id, clientId }],
+        targets: targetClientIds.map((currentClientId) => ({ hasCanvas: true, projectId: task.id, clientId: currentClientId })),
       }));
       return;
     }
@@ -122,7 +123,14 @@ test('video recover uses fragmented MP4 movie presentation duration from a Media
     bridgeHealth: async () => ({ instanceId, targets: [{ hasCanvas: true, projectId: task.id, clientId }] }),
   });
   t.after(() => manager.stop());
-  const execution = await manager.videoExecutionOptions(task.id);
+  const execution = await manager.videoExecutionOptions(task.id, { target: { clientId: 'expired-client-after-refresh' } });
+  assert.equal(execution.config.clientId, clientId, 'a single current task Canvas can replace the vanished browser client');
+  targetClientIds = ['ambiguous-client-a', 'ambiguous-client-b'];
+  await assert.rejects(
+    manager.videoExecutionOptions(task.id, { target: { clientId: 'expired-client-after-refresh' } }),
+    (error) => error.code === 'ERR_CANVAS_AMBIGUOUS',
+  );
+  targetClientIds = [clientId];
   const destination = path.join(taskDirectory(task.id, root), 'videos', 'recovered.mp4');
   const recovered = await execution.recover(videoNode.id, destination, execution.config);
   assert.equal(recovered.durationMs, 4005);

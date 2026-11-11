@@ -252,6 +252,48 @@ test('pending resume queries the fixed config node and does not submit twice', a
   assert.equal(current.video.execution.status, 'succeeded');
 });
 
+test('submitted video can rebind after a browser refresh only on the same Canvas instance and saved remote task', async t => {
+  const { root, id, task } = await setup(t);
+  const canvas = fakeCanvas('loading');
+  await assert.rejects(execute(id, root, task, canvas, { timeoutMs: 5, pollMs: 2 }), /超时/);
+  let current = await readTask(id, root);
+  const originalVideoTaskId = current.video.execution.videoTaskId;
+  assert.equal(originalVideoTaskId, 'provider-task-1');
+
+  canvas.config.clientId = 'fixture-client-after-refresh';
+  canvas.setStatus('success');
+  current = await execute(id, root, current, canvas);
+  assert.equal(canvas.runCount(), 1, 'refresh recovery must not submit a second generation');
+  assert.equal(current.video.execution.videoTaskId, originalVideoTaskId, 'recovery must keep the original provider task');
+  assert.equal(current.video.execution.target.clientId, 'fixture-client-after-refresh', 'the validated current client is saved after node identity matches');
+  assert.equal(current.video.execution.status, 'succeeded');
+});
+
+test('submitted video rejects refresh targets from another project or Canvas instance', async t => {
+  const { root, id, task } = await setup(t);
+  const canvas = fakeCanvas('loading');
+  await assert.rejects(execute(id, root, task, canvas, { timeoutMs: 5, pollMs: 2 }), /超时/);
+  const current = await readTask(id, root);
+  const changedProject = { ...canvas, config: { ...canvas.config, projectId: 'another-project' } };
+  const changedInstance = { ...canvas, config: { ...canvas.config, instanceId: 'another-instance' } };
+  await assert.rejects(execute(id, root, current, changedProject), /恢复目标与原视频 Canvas 不一致/);
+  await assert.rejects(execute(id, root, current, changedInstance), /恢复目标与原视频 Canvas 不一致/);
+  assert.equal(canvas.runCount(), 1);
+  assert.equal((await readTask(id, root)).revision, current.revision, 'rejected targets leave the existing task unchanged');
+});
+
+test('refreshed client must expose the same connected child and provider task id', async t => {
+  const { root, id, task } = await setup(t);
+  const canvas = fakeCanvas('loading');
+  await assert.rejects(execute(id, root, task, canvas, { timeoutMs: 5, pollMs: 2 }), /超时/);
+  const current = await readTask(id, root);
+  canvas.config.clientId = 'fixture-client-after-refresh';
+  canvas.nodes.find(node => node.type === 'video').metadata.videoTaskId = 'different-provider-task';
+  await assert.rejects(execute(id, root, current, canvas), /原视频任务标识变化/);
+  assert.equal(canvas.runCount(), 1);
+  assert.equal((await readTask(id, root)).video.execution.target.clientId, 'fixture-client');
+});
+
 test('completed Canvas video with loading status and stored media is recoverable', async t => {
   const { root, id, task } = await setup(t);
   const canvas = fakeCanvas('loading+content');
