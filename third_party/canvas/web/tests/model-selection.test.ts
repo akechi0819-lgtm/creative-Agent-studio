@@ -18,9 +18,10 @@ afterAll(() => {
     else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-const { defaultConfig, resolveModelForCapability, useConfigStore } = await import("../src/stores/use-config-store");
+const { defaultConfig, resolveModelForCapability, STUDIO_H3_VIDEO_DEFAULTS, STUDIO_H3_VIDEO_MODEL, videoNodeModelSelectionPatch, useConfigStore } = await import("../src/stores/use-config-store");
 const { buildGenerationConfig } = await import("../src/lib/canvas/canvas-generation-helpers");
 const { CanvasNodeType } = await import("../src/types/canvas");
+const { h3VideoRatioOptions, h3VideoResolutionOptions, h3VideoSecondsRange } = await import("../src/components/video-settings-panel");
 
 const config: AiConfig = {
     ...defaultConfig,
@@ -97,4 +98,11 @@ test("unavailable explicit selections are preserved for every generation capabil
     for (const capability of ["image", "video", "text", "audio"] as ModelCapability[]) {
         expect(resolveModelForCapability(config, `removed::${capability}`, capability)).toBe(`removed::${capability}`);
     }
+});
+
+test("MiniMax H3 selection uses only supported defaults and settings", () => {
+    expect(videoNodeModelSelectionPatch(STUDIO_H3_VIDEO_MODEL)).toEqual({ model: STUDIO_H3_VIDEO_MODEL, ...STUDIO_H3_VIDEO_DEFAULTS });
+    expect(h3VideoResolutionOptions.map((item) => item.value)).toEqual(["768", "1080p", "2K", "4K"]);
+    expect(h3VideoRatioOptions.map((item) => item.value)).toEqual(["1:1", "3:4", "4:3", "16:9", "9:16", "21:9"]);
+    expect(h3VideoSecondsRange).toEqual({ min: 4, max: 15 });
 });

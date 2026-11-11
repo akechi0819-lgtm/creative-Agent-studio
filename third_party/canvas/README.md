@@ -1,6 +1,8 @@
 # Creative Agent Studio 内置 Canvas
 
-本目录保留上游 Infinite Canvas 的画布前端，并裁剪为 Creative Agent Studio 使用的纯绘图副本。上游作者为 basketikun；固定基线为 `basketikun/infinite-canvas@3a6b64b602ad062b29fac66902ed18a7ef5fd9dc`。许可证、版本和历史变更见 [LICENSE](LICENSE)、[VERSION](VERSION) 和 [CHANGELOG.md](CHANGELOG.md)。
+本目录保留上游 Infinite Canvas 的画布前端，并裁剪为 Creative Agent Studio 使用的纯绘图副本。上游作者为 basketikun；当前同步到 `basketikun/infinite-canvas@9cd3deacbcc598361807afc16c059a80dd18b6f9`，本次比较基线为 `3a6b64b602ad062b29fac66902ed18a7ef5fd9dc`。许可证、版本和历史变更见 [LICENSE](LICENSE)、[VERSION](VERSION) 和 [CHANGELOG.md](CHANGELOG.md)。
+
+从比较基线到当前上游提交没有画布或桥接功能变化；差异是 v0.20.0 变更记录的发行标题，以及上游 README 新增的赞助商介绍和对应标志。本副本保留标志资源，不引入赞助展示；Studio 定制仍提供任务隔离的 HTTP/SSE 绘图桥接，并移除 Agent、Codex、Claude、全局 MCP 和代理部署入口。
 
 ## 启动
 

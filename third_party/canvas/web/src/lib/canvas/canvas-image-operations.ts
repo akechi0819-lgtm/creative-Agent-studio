@@ -7,6 +7,7 @@ import {
     type ImageStitchParams,
     type ImageSplitParams,
     type ImageUpscaleParams,
+    type ImageLogoAdaptation,
 } from "@/lib/canvas/canvas-image-data";
 
 export type CanvasImageOperationRequest =
@@ -15,12 +16,14 @@ export type CanvasImageOperationRequest =
     | ({ operation: "resample"; nodeId: string } & ImageUpscaleParams)
     | ({ operation: "stitch"; nodeIds: string[] } & ImageStitchParams)
     | { operation: "compose"; nodeId: string; layers: Array<Omit<ImageComposeLayer, "source"> & { nodeId: string }> }
+    | ({ operation: "adapt-logo"; nodeId: string } & ImageLogoAdaptation)
     | { operation: "import"; nodeId: string; title: string; dataUrl: string };
 
-export type CanvasImageOperationImage = { nodeId: string; width: number; height: number };
+export type CanvasImageOperationImage = { nodeId: string; width: number; height: number; padding?: number };
 export type CanvasImageOperationResult =
     | { operation: "crop" | "split" | "resample"; sourceNodeId: string; images: CanvasImageOperationImage[] }
     | { operation: "stitch" | "compose"; sourceNodeId: string; sourceNodeIds: string[]; images: CanvasImageOperationImage[] }
+    | { operation: "adapt-logo"; sourceNodeId: string; images: CanvasImageOperationImage[] }
     | { operation: "import"; sourceNodeId: string; images: CanvasImageOperationImage[] };
 
 export type CanvasImageDataOperation =

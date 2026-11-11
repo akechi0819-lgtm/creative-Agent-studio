@@ -117,6 +117,50 @@ test("tool call targets its explicit client and canvas_read_image reaches the br
     assert.deepEqual(await result, { dataUrl: "data:image/png;base64,aW1hZ2U=", naturalWidth: 1200, naturalHeight: 600 });
 });
 
+test("canvas_read_video reaches the explicitly targeted browser and returns its bytes metadata", async (t) => {
+    const session = new CanvasSession("instance-1");
+    const first = connect(session, "client-1");
+    const second = connect(session, "client-2");
+    t.after(() => { first.close(); second.close(); });
+    session.updateState("project-1", "client-2", { projectId: "project-1", clientId: "client-2", nodes: [], connections: [], selectedNodeIds: [] });
+
+    const result = session.callTool("canvas_read_video", { nodeId: "video-42" }, { projectId: "project-1", clientId: "client-2" });
+    const call = second.event("tool_call");
+    assert.equal(first.event("tool_call"), undefined);
+    assert.equal(call?.name, "canvas_read_video");
+    assert.deepEqual(call?.input, { nodeId: "video-42" });
+    const video = { nodeId: "video-42", dataUrl: "data:video/mp4;base64,bXA0", mimeType: "video/mp4", bytes: 3, width: 1280, height: 720, durationMs: 6000, sha256: "a".repeat(64), storageKey: "video:fixture" };
+    session.resolveResult("project-1", "client-2", { requestId: call?.requestId, result: video });
+    assert.deepEqual(await result, video);
+});
+
+test("canvas_adapt_logo validates bounded variants and forwards the request to the browser", async (t) => {
+    const session = new CanvasSession("instance-1");
+    const client = connect(session, "client-1");
+    t.after(() => client.close());
+    session.updateState("project-1", "client-1", { projectId: "project-1", clientId: "client-1", nodes: [], connections: [], selectedNodeIds: [] });
+
+    const input = { nodeId: "logo-1", foreground: "#208040", outline: { color: "#ffffff", width: 2 }, plate: { color: "#00ff0080", padding: 8, radius: 12 } };
+    const result = session.callTool("canvas_adapt_logo", input, { projectId: "project-1", clientId: "client-1" });
+    const call = client.event("tool_call");
+    assert.equal(call?.name, "canvas_adapt_logo");
+    assert.deepEqual(call?.input, input);
+    const output = { operation: "adapt-logo", sourceNodeId: "logo-1", images: [{ nodeId: "adapted-1", width: 24, height: 24, padding: 10 }] };
+    session.resolveResult("project-1", "client-1", { requestId: call?.requestId, result: output });
+    assert.deepEqual(await result, output);
+
+    const toolCallCount = client.events.filter((event) => event.type === "tool_call").length;
+    for (const invalid of [
+        { nodeId: "logo-1" },
+        { nodeId: "logo-1", foreground: "#ffffff80" },
+        { nodeId: "logo-1", outline: { color: "#fff", width: 2 } },
+        { nodeId: "logo-1", plate: { color: "#00ff00", padding: 2, radius: 9000 } },
+    ]) {
+        await assert.rejects(session.callTool("canvas_adapt_logo", invalid, { projectId: "project-1", clientId: "client-1" }), (error) => error instanceof BridgeError && error.statusCode === 400);
+    }
+    assert.equal(client.events.filter((event) => event.type === "tool_call").length, toolCallCount);
+});
+
 test("pixel tools validate inputs and forward only their bounded operation arguments", async (t) => {
     const session = new CanvasSession("instance-1");
     const client = connect(session, "client-1");

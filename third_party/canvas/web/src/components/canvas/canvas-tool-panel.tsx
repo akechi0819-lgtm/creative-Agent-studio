@@ -7,6 +7,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
 import { imageToDataUrl } from "@/services/image-storage";
+import { getMediaBlob } from "@/services/file-storage";
 import { createCanvasConnectionRecovery } from "@/lib/canvas/canvas-connection";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasImageOperationRequest } from "@/lib/canvas/canvas-image-operations";
@@ -67,7 +68,7 @@ export function CanvasToolPanel() {
             onConnectionRecovered: () => setConnectionError(""),
             onToolCall: event => {
                 const call = JSON.parse(event.data) as ToolCall;
-                if (confirmRef.current && ["canvas_apply_ops", "canvas_run_generation", "canvas_crop_image", "canvas_split_image", "canvas_resample_image", "canvas_stitch_images", "canvas_compose_images", "canvas_import_image", "workbench_image_generate"].includes(call.name)) {
+                if (confirmRef.current && ["canvas_apply_ops", "canvas_run_generation", "canvas_crop_image", "canvas_split_image", "canvas_resample_image", "canvas_stitch_images", "canvas_compose_images", "canvas_adapt_logo", "canvas_import_image", "workbench_image_generate"].includes(call.name)) {
                     if (pendingRef.current) { void post("/canvas/result", {requestId:call.requestId,error:"已有待确认操作"}).catch(() => {}); return; }
                     pendingRef.current=call; setPending(call);
                 } else void runRef.current?.(call);
@@ -113,7 +114,30 @@ export function CanvasToolPanel() {
                         if (!node || node.type !== "image") throw new Error("图片节点不存在");
                         const dataUrl = await imageToDataUrl({storageKey:node.metadata?.storageKey, url:node.metadata?.content});
                         result = {nodeId:node.id, dataUrl, width:node.metadata?.naturalWidth, height:node.metadata?.naturalHeight};
-                    } else if (call.name === "canvas_crop_image" || call.name === "canvas_split_image" || call.name === "canvas_resample_image" || call.name === "canvas_stitch_images" || call.name === "canvas_compose_images" || call.name === "canvas_import_image") {
+                    } else if (call.name === "canvas_read_video") {
+                        const node = context.getSnapshot().nodes.find(n => n.id === call.input?.nodeId);
+                        if (!node || node.type !== "video" || node.metadata?.status !== "success") throw new Error("仅能读取已成功完成的视频节点");
+                        const storageKey = node.metadata.storageKey;
+                        if (!storageKey || !storageKey.startsWith("video:")) throw new Error("视频节点没有已保存的本机视频字节");
+                        const blob = await getMediaBlob(storageKey);
+                        if (!blob || blob.size === 0) throw new Error("本机视频文件不存在或为空");
+                        const mimeType = blob.type || node.metadata.mimeType || "";
+                        if (!mimeType.toLowerCase().startsWith("video/")) throw new Error("本机文件不是可读取的视频格式");
+                        const bytes = await blob.arrayBuffer();
+                        const digest = await crypto.subtle.digest("SHA-256", bytes);
+                        const sha256 = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+                        result = {
+                            nodeId: node.id,
+                            dataUrl: await blobToDataUrl(blob),
+                            mimeType,
+                            bytes: blob.size,
+                            width: node.metadata.naturalWidth,
+                            height: node.metadata.naturalHeight,
+                            durationMs: node.metadata.durationMs,
+                            sha256,
+                            storageKey,
+                        };
+                    } else if (call.name === "canvas_crop_image" || call.name === "canvas_split_image" || call.name === "canvas_resample_image" || call.name === "canvas_stitch_images" || call.name === "canvas_compose_images" || call.name === "canvas_adapt_logo" || call.name === "canvas_import_image") {
                         result = await context.runImageOperation(toCanvasImageOperationRequest(call));
                         await context.persistCurrentSnapshot();
                         await connection.writeState(context.getSnapshot());
@@ -176,10 +200,28 @@ function toCanvasImageOperationRequest(call: ToolCall): CanvasImageOperationRequ
     if (call.name === "canvas_compose_images") {
         return { operation: "compose", nodeId: String(input.nodeId || ""), layers: Array.isArray(input.layers) ? input.layers as Extract<CanvasImageOperationRequest, { operation: "compose" }>['layers'] : [] };
     }
+    if (call.name === "canvas_adapt_logo") {
+        return {
+            operation: "adapt-logo",
+            nodeId: String(input.nodeId || ""),
+            ...(typeof input.foreground === "string" ? { foreground: input.foreground } : {}),
+            ...(input.outline && typeof input.outline === "object" ? { outline: input.outline as Extract<CanvasImageOperationRequest, { operation: "adapt-logo" }>['outline'] } : {}),
+            ...(input.plate && typeof input.plate === "object" ? { plate: input.plate as Extract<CanvasImageOperationRequest, { operation: "adapt-logo" }>['plate'] } : {}),
+        };
+    }
     return { operation: "import", nodeId: String(input.nodeId || ""), title: String(input.title || ""), dataUrl: String(input.dataUrl || "") };
 }
 
 function confirmationInput(call: ToolCall) {
     if (call.name !== "canvas_import_image" || !call.input?.dataUrl) return call.input;
     return { ...call.input, dataUrl: "[base64 image payload omitted]" };
+}
+
+function blobToDataUrl(blob: Blob) {
+    return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("无法读取本机视频文件"));
+        reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("本机视频编码结果无效"));
+        reader.readAsDataURL(blob);
+    });
 }

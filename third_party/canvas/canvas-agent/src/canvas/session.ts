@@ -44,7 +44,9 @@ const DIRECT_CANVAS_TOOLS = new Set<ToolName>([
     "canvas_resample_image",
     "canvas_stitch_images",
     "canvas_compose_images",
+    "canvas_adapt_logo",
     "canvas_import_image",
+    "canvas_read_video",
 ]);
 
 /** 管理共享本机工作空间中的多个网页项目连接和绘图工具请求。 */
