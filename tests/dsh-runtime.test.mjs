@@ -8,7 +8,7 @@ import path from 'node:path';
 import {createTask,readTask,confirmInputs,setSheet,confirmSheet,attachTaskFiles,setSources,setReferences,withTask} from '../src/creative/tasks.mjs';
 import {cleanAsset,confirmAsset,importAsset} from '../src/assets/library.mjs';
 import {createAssistantMessage,createSystemMessage,createToolResultMessage,createUserMessage} from '../adapters/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js';
-import {createDshContext,createStudioAgent} from '../adapters/dsh/runtime.mjs';
+import {createDshContext,createStudioAgent,mapStudioAgentError} from '../adapters/dsh/runtime.mjs';
 import {writeVideoPlan} from '../src/creative/video.mjs';
 
 async function fixture(t,{fail=false,slow=false,duplicateReview=false,askQuestions=false,searchQuery=null,duplicateSearch=false,videoPlan=false,maxRequestBytes}={}){
@@ -385,6 +385,32 @@ test('DSH errors are safe and do not mark task confirmed',async t=>{
   const task=await createTask({title:'模型失败',brief:'示例'},f.root);
   await assert.rejects(f.agent.chat({taskId:task.id,text:'开始'}),e=>e.code==='ERR_STUDIO_AGENT'&&!e.message.includes('mock-secret-key'));
   assert.equal((await readTask(task.id,f.root)).revision,task.revision);
+});
+
+test('only explicit WorkBuddy request-illegal PI_AI_ERROR gets fixed safe guidance',()=>{
+  const upstream=Object.assign(new Error('workbuddy: 请求被拦截，请重新发送 request illegal fixture-secret-key'),{code:'PI_AI_ERROR'});
+  const wrapper=Object.assign(new Error('provider completion failed'),{cause:upstream});
+  const mapped=mapStudioAgentError(wrapper,{source:'workbuddy-intl',model:'workbuddy/deepseek-v4.1-flash'});
+  const safe='WorkBuddy 对话请求被上游拒绝（request illegal）；请换用其他已配置渠道，先核对任务状态。';
+  assert.equal(mapped.code,'ERR_WORKBUDDY_UPSTREAM_REJECTED');
+  assert.equal(mapped.message,safe);
+  assert.equal(mapped.safeMessage,safe);
+  assert.equal(mapped.cause,wrapper,'original exception remains available only as a private cause');
+  assert.equal(JSON.stringify(mapped).includes('fixture-secret-key'),false);
+  assert.equal(mapped.message.includes('fixture-secret-key'),false);
+
+  const unknownCode=mapStudioAgentError(Object.assign(new Error('request illegal'),{code:'SERVER'}),{source:'workbuddy-intl',model:'workbuddy/gpt-6.1-sol'});
+  assert.equal(unknownCode.code,'ERR_STUDIO_AGENT');
+  assert.equal(unknownCode.message,'模型处理未完成；请检查模型配置与当前任务状态后重试。');
+  assert.equal(unknownCode.message.includes('request illegal'),false);
+
+  const unknownSource=mapStudioAgentError(upstream,{source:'custom',model:'custom/model'});
+  assert.equal(unknownSource.code,'ERR_STUDIO_AGENT');
+  assert.equal(unknownSource.message,'模型处理未完成；请检查模型配置与当前任务状态后重试。');
+
+  const unknownMessage=mapStudioAgentError(Object.assign(new Error('upstream unavailable'),{code:'PI_AI_ERROR'}),{source:'workbuddy-intl',model:'workbuddy/gpt-6.1-sol'});
+  assert.equal(unknownMessage.code,'ERR_STUDIO_AGENT');
+  assert.equal(unknownMessage.message,'模型处理未完成；请检查模型配置与当前任务状态后重试。');
 });
 
 test('DSH in-flight cancellation reaches loop and leaves draft unchanged',async t=>{
