@@ -19,11 +19,11 @@ description: 在本仓库使用共享 CLI 完成经用户确认的图文、机�
 
 ### 已有图片的局部修改
 
-用户明确要求修改已有图片时，使用 `edit-pages TASK_ID @payload.json`，不重写全量制作单、不重置素材决定、不要求再次完整确认。payload 为 `{expectedRevision,requestId,instruction:用户本次明确修改原话,edits:[{page,instruction,copy?,stylePages?:[page]}]}`。只写本次短指令，不追加整段历史提示词；原图和指定风格页由共享核心实际读图校验并传入 Canvas，不携带无关旧参考。省略 copy 时保留原文记录供导出，并让模型保留图中文字；不是把原文再次注入生图。未改页的成品与审核保留。仅讨论方案或询问能力时不得调用。
+用户明确要求修改已有图片时，使用 `edit-pages TASK_ID @payload.json`，不重写全量制作单、不重置素材决定、不要求再次完整确认。payload 为 `{expectedRevision,requestId,instruction:用户本次明确修改原话,edits:[{page,instruction,copy?,size?,stylePages?:[page]}]}`。只写本次短指令，不追加整段历史提示词；原图和指定风格页由共享核心实际读图校验并传入 Canvas，不携带无关旧参考。仅在用户明确提出尺寸或比例时提供 `size`；省略时已有成品沿用原尺寸。省略 `copy` 时保留原文记录供导出，并让模型保留未被本次指令明确要求修改的图中文字；不是把原文再次注入生图。未改页的成品与审核保留。仅讨论方案或询问能力时不得调用。
 
 新画面仍需将要绘制的准确文案交给模型，prompt 写构图、媒材、光影、字体气质及参考关系；不要默认扁平、纯色或禁止渐变。每页可选 quality，默认 auto；auto 在原生图片请求中省略 quality 由服务决定，显式质量按页记录，不自动提高到 high。
 
-上传已有图片改图时可传 `mode:'uploaded-images'`，条目为 `{page,image:{sourceId,fileOrder},instruction,styleImages?:[{sourceId,fileOrder}],copy?}`，只使用用户实际上传且未排除的本任务图片；不伪造生成历史、不自动确认来源或入库。`restore-page TASK_ID @payload.json` 接收 `{expectedRevision,page}`，恢复本页旧图与文案，不发起生图。
+上传已有图片改图时可传 `mode:'uploaded-images'`，条目为 `{page,image:{sourceId,fileOrder},instruction,styleImages?:[{sourceId,fileOrder}],copy?,size?}`，只使用用户实际上传且未排除的本任务图片；不伪造生成历史、不自动确认来源或入库。只有用户明确提出尺寸或比例时才提供 `size`；省略时使用 Canvas 的 `auto` 尺寸选择，不固定为 3:4，也不保证严格复现原图比例。`restore-page TASK_ID @payload.json` 接收 `{expectedRevision,page}`，恢复本页旧图与文案，不发起生图。
 
 这些操作保留后台派生版本和用户指令，`sheetConfirmation` 不伪造成全量人工确认；后续仍需实际查看修改后的图片、审核并由用户最终批准。完整新创作继续遵守以下确认合同。具体边界见 `docs/P3对话局部改图.md`。
 

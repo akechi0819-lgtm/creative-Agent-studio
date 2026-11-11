@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import { createCanvas } from '@napi-rs/canvas';
 import { mkdtemp, mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,7 +46,10 @@ function canvas({ failAt } = {}) {
           if (operation.type === 'add_node') nodes.push({ id: operation.id, type: operation.nodeType, title: operation.title, metadata: operation.metadata });
           else if (operation.type === 'update_node') {
             const node = nodes.find(item => item.id === operation.id);
-            if (node) Object.assign(node, operation.patch);
+            if (node) {
+              if (operation.patch) Object.assign(node, operation.patch);
+              if (operation.metadata) node.metadata = { ...node.metadata, ...operation.metadata };
+            }
           }
           else if (operation.type === 'connect_nodes') connections.push({ fromNodeId: operation.fromNodeId, toNodeId: operation.toNodeId });
         }
@@ -320,8 +324,8 @@ test('连续两次局部改图只发送本次指令；省略文案时保留成�
   const originalDefinition = baseline.sheets.at(-1).pages[1];
   const firstInstruction = '第一次修改：把背景调成暖色';
   const first = await editTaskPages(id, {
-    edits: [{ page: 2, instruction: firstInstruction }],
-    authorization: { requestId: 'successive-edit-001', text: '请第一次把第2页背景调成暖色。' },
+    edits: [{ page: 2, instruction: firstInstruction, size: '16:9' }],
+    authorization: { requestId: 'successive-edit-001', text: '请第一次把第2页背景调成暖色，并改为16:9。' },
     expectedRevision: baseline.revision,
     root,
     config,
@@ -330,6 +334,7 @@ test('连续两次局部改图只发送本次指令；省略文案时保留成�
   });
   const firstDefinition = first.sheets.at(-1).pages[1];
   assert.equal(firstDefinition.prompt, firstInstruction);
+  assert.equal(firstDefinition.size, '16:9');
   assert.equal(firstDefinition.copy, originalDefinition.copy, '沿用原始准确文案供任务追溯与导出');
   assert.equal(firstDefinition.copyMode, 'preserve-source-text');
   assert.deepEqual(firstDefinition.referenceImages, [], '不再携带基线制作单的旧参考图');
@@ -337,6 +342,9 @@ test('连续两次局部改图只发送本次指令；省略文案时保留成�
   assert.match(firstText, /第一次修改：把背景调成暖色/);
   assert.doesNotMatch(firstText, new RegExp(originalDefinition.prompt));
   assert.doesNotMatch(firstText, new RegExp(originalDefinition.copy));
+  assert.match(firstText, /保留原图中未被本次指令明确要求修改、删除或替换的文字/);
+  assert.doesNotMatch(firstText, /保留输入原图中的全部文字，不改写、删除或新增文字/);
+  assert.equal(fixture.nodes.find(node => node.id === first.execution.pages.find(page => page.page === 2).nodeId).metadata.size, '16:9');
 
   const secondInstruction = '第二次修改：将背景改成夜景';
   const second = await editTaskPages(id, {
@@ -352,6 +360,7 @@ test('连续两次局部改图只发送本次指令；省略文案时保留成�
   assert.equal(secondDefinition.prompt, secondInstruction);
   assert.equal(secondDefinition.copy, originalDefinition.copy, '无新文案时仍保留成品的原始准确文案记录');
   assert.equal(secondDefinition.copyMode, 'preserve-source-text');
+  assert.equal(secondDefinition.size, '16:9', '未提供新的尺寸时沿用当前成品尺寸');
   assert.deepEqual(secondDefinition.referenceImages, []);
   const secondText = fixture.nodes.find(node => node.id === second.execution.pages.find(page => page.page === 2).textNodeId).metadata.content;
   assert.match(secondText, /第二次修改：将背景改成夜景/);
@@ -379,6 +388,71 @@ test('连续两次局部改图只发送本次指令；省略文案时保留成�
   assert.deepEqual(JSON.parse(await readFile(path.join(exportDirectory, 'copy.json'), 'utf8')).pages.map(page => page.copy), [
     '基线文案 1', originalDefinition.copy, '基线文案 3',
   ], '省略新文案时导出仍保留原成品准确文案');
+});
+
+test('横版上传图默认自动选尺寸；用户明确给出比例时上传图改图接受该比例', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'studio-upload-size-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bannerPath = path.join(root, 'banner-1903x887.png');
+  await writeFile(bannerPath, createCanvas(1903, 887).toBuffer('image/png'));
+
+  async function uploadedTask(title) {
+    let task = await createTask({ title, brief: { topic: '横幅尺寸回归' } }, root);
+    task = await attachTaskFiles(task.id, {
+      files: [{ path: bannerPath, name: 'banner-1903x887.png', mimeType: 'image/png' }],
+      title: '横版头部横幅',
+    }, { root, expectedRevision: task.revision });
+    return task;
+  }
+
+  const automaticTask = await uploadedTask('横版上传图自动尺寸');
+  const automaticCanvas = canvas();
+  const automatic = await editTaskPages(automaticTask.id, {
+    mode: 'uploaded-images',
+    edits: [{ page: 1, image: { sourceId: automaticTask.sources[0].id, fileOrder: 1 }, instruction: '优化横幅视觉。' }],
+    authorization: { requestId: 'upload-size-auto', text: '优化这张横版banner，保持宽幅。' },
+    expectedRevision: automaticTask.revision,
+    root, config, getHealth, ...automaticCanvas,
+  });
+  assert.equal(automatic.sheets.at(-1).pages[0].size, 'auto');
+  assert.equal(automaticCanvas.nodes.find(node => node.type === 'config').metadata.size, 'auto');
+
+  const explicitTask = await uploadedTask('横版上传图明确比例');
+  const explicitCanvas = canvas();
+  const explicit = await editTaskPages(explicitTask.id, {
+    mode: 'uploaded-images',
+    edits: [{ page: 1, image: { sourceId: explicitTask.sources[0].id, fileOrder: 1 }, instruction: '优化横幅视觉。', size: '1903:887' }],
+    authorization: { requestId: 'upload-size-ratio', text: '优化这张横幅，输出比例1903:887。' },
+    expectedRevision: explicitTask.revision,
+    root, config, getHealth, ...explicitCanvas,
+  });
+  assert.equal(explicit.sheets.at(-1).pages[0].size, '1903:887');
+  assert.equal(explicitCanvas.nodes.find(node => node.type === 'config').metadata.size, '1903:887');
+});
+
+test('上传图文字保护允许按本次明确指令删除指定文字', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'studio-upload-text-edit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const imagePath = path.join(root, 'source.png');
+  await writeFile(imagePath, png);
+  let task = await createTask({ title: '上传图文字改动', brief: { topic: '局部文字删除' } }, root);
+  task = await attachTaskFiles(task.id, {
+    files: [{ path: imagePath, name: 'source.png', mimeType: 'image/png' }], title: '原图',
+  }, { root, expectedRevision: task.revision });
+  const fixture = canvas();
+  const instruction = '只优化头部banner；删除“新东方教育科技集团”和“产品中心”，保留其余原图文字。';
+  const edited = await editTaskPages(task.id, {
+    mode: 'uploaded-images',
+    edits: [{ page: 1, image: { sourceId: task.sources[0].id, fileOrder: 1 }, instruction }],
+    authorization: { requestId: 'upload-text-delete', text: instruction },
+    expectedRevision: task.revision,
+    root, config, getHealth, ...fixture,
+  });
+  const page = edited.execution.pages[0];
+  const prompt = fixture.nodes.find(node => node.id === page.textNodeId).metadata.content;
+  assert.ok(prompt.includes(instruction));
+  assert.match(prompt, /保留原图中未被本次指令明确要求修改、删除或替换的文字/);
+  assert.doesNotMatch(prompt, /保留输入原图中的全部文字，不改写、删除或新增文字/);
 });
 
 test('机械采用成品可直接进入局部改图并在后续编辑和恢复中保留机械谱系', async t => {
@@ -962,7 +1036,7 @@ test('相同页码的其他普通制作单历史不混入已选成功基线分�
   assert.equal(edited.execution.pages.find(page => page.page === 1).image.sha256, firstImages.get(1).sha256);
 });
 
-test('上传图片局部改图使用真实附件字节，不确认整单并保留原图文字；可继续编辑成功结果', async t => {
+test('上传图片局部改图使用真实附件字节、不确认整单；可继续编辑成功结果', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'studio-upload-edit-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const aPath = path.join(root, 'uploaded-a.png');

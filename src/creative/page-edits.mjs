@@ -34,6 +34,7 @@ function normalizeOutputEdits(value) {
     seen.add(item.page);
     const instruction = text(item.instruction, `第 ${item.page} 页改图指令`);
     const copy = item.copy === undefined ? undefined : text(item.copy, `第 ${item.page} 页准确文案`);
+    const size = item.size === undefined ? undefined : text(item.size, `第 ${item.page} 页图片尺寸`, 40);
     const stylePages = item.stylePages === undefined ? [] : item.stylePages;
     if (!Array.isArray(stylePages) || stylePages.some((page) => !Number.isInteger(page) || page < 1)) {
       throw new Error(`第 ${item.page} 页风格参考页码无效`);
@@ -42,7 +43,7 @@ function normalizeOutputEdits(value) {
       throw new Error(`第 ${item.page} 页风格参考不能重复或包含待改页自身`);
     }
     assertNoCredentials([instruction, ...(copy === undefined ? [] : [copy])], `第 ${item.page} 页改图内容`);
-    return { page: item.page, instruction, ...(copy === undefined ? {} : { copy }), stylePages: [...stylePages] };
+    return { page: item.page, instruction, ...(copy === undefined ? {} : { copy }), ...(size === undefined ? {} : { size }), stylePages: [...stylePages] };
   });
   edits.sort((a, b) => a.page - b.page);
   return edits;
@@ -65,6 +66,7 @@ function normalizeUploadedEdits(value) {
     seen.add(item.page);
     const instruction = text(item.instruction, `第 ${item.page} 页改图指令`);
     const image = normalizeUploadReference(item.image, `第 ${item.page} 页原图`);
+    const size = item.size === undefined ? undefined : text(item.size, `第 ${item.page} 页图片尺寸`, 40);
     const styleImages = item.styleImages === undefined ? [] : item.styleImages;
     if (!Array.isArray(styleImages) || styleImages.length > 11) throw new Error(`第 ${item.page} 页风格参考最多 11 张`);
     const normalizedStyles = styleImages.map((reference, index) => normalizeUploadReference(reference, `第 ${item.page} 页风格参考 ${index + 1}`));
@@ -73,7 +75,7 @@ function normalizeUploadedEdits(value) {
     if (new Set(styleKeys).size !== styleKeys.length || styleKeys.includes(imageKey)) throw new Error(`第 ${item.page} 页原图和风格参考不能重复`);
     const copy = item.copy === undefined ? undefined : text(item.copy, `第 ${item.page} 页准确文案`);
     assertNoCredentials([instruction, ...(copy === undefined ? [] : [copy])], `第 ${item.page} 页改图内容`);
-    return { page: item.page, image, styleImages: normalizedStyles, instruction, ...(copy === undefined ? {} : { copy }) };
+    return { page: item.page, image, styleImages: normalizedStyles, instruction, ...(copy === undefined ? {} : { copy }), ...(size === undefined ? {} : { size }) };
   });
   edits.sort((a, b) => a.page - b.page);
   return edits;
@@ -341,10 +343,10 @@ async function createUploadedEdit(id, task, { authorization, edits, root }) {
     if (1 + edit.styleImages.length > 12) throw new Error(`第 ${edit.page} 页参考图片超过 12 张`);
     pages.push({
       page: edit.page,
-      copy: edit.copy ?? '保留原图文字',
+      copy: edit.copy ?? '保留未被本次指令明确要求修改的原图文字',
       ...(edit.copy === undefined ? { copyMode: 'preserve-source-text' } : {}),
       prompt: edit.instruction,
-      size: '3:4',
+      size: edit.size ?? 'auto',
       sourceIds: [edit.image.sourceId, ...edit.styleImages.map((item) => item.sourceId)],
       referenceImages: [],
     });
@@ -438,6 +440,7 @@ async function createOutputEdit(id, task, { authorization, edits, baseVersion, r
       }
       page.prompt = edit.instruction;
       page.referenceImages = [];
+      if (edit.size !== undefined) page.size = edit.size;
       if (edit.copy !== undefined) {
         page.copy = edit.copy;
         delete page.copyMode;
