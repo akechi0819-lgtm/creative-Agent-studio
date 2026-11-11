@@ -64,16 +64,16 @@ async function fixture(t,{toolArguments={edits:[{page:1,instruction:'只调整�
 }
 
 test('已有成功历史成品可由局部工具定向修改且模型只看到无路径短摘要',async t=>{
-  const f=await fixture(t,{baselinePages:[1,2],toolArguments:{edits:[{page:1,instruction:'只调整标题留白和强调色。',copy:'周末亲子阅读指南',stylePages:[2]}]}});
+  const f=await fixture(t,{baselinePages:[1,2],toolArguments:{edits:[{page:1,instruction:'只调整标题留白和强调色。',copy:'周末亲子阅读指南',size:'16:9',stylePages:[2]}]}});
   let callbackArgs;
-  const result=await f.agent.chat({taskId:f.task.id,text:'把第1页标题留白拉开，并替换为周末亲子阅读指南。',expectedRevision:f.task.revision,
+  const result=await f.agent.chat({taskId:f.task.id,text:'把第1页标题留白拉开，改为16:9，并替换为周末亲子阅读指南。',expectedRevision:f.task.revision,
     editPages:async args=>{
       callbackArgs=args;
       return withTask(f.task.id,draft=>{
         draft.execution={version:5,status:'succeeded',pages:[{page:1,status:'succeeded',image:{path:'/private/SECRET-EDIT-OUTPUT-PATH.png',sha256:'b'.repeat(64)}}]};
       },{root:f.root,expectedRevision:args.expectedRevision});
     }});
-  assert.deepEqual(callbackArgs,{edits:[{page:1,instruction:'只调整标题留白和强调色。',copy:'周末亲子阅读指南',stylePages:[2]}],expectedRevision:f.task.revision});
+  assert.deepEqual(callbackArgs,{edits:[{page:1,instruction:'只调整标题留白和强调色。',copy:'周末亲子阅读指南',size:'16:9',stylePages:[2]}],expectedRevision:f.task.revision});
   const requestText=JSON.stringify(f.requests);
   const systemPrompt=f.requests[0].messages.find(message=>message.role==='system').content;
   assert.ok(requestText.includes('availableEditPages'));
@@ -82,6 +82,8 @@ test('已有成功历史成品可由局部工具定向修改且模型只看到�
   for(const forbidden of ['SECRET-HISTORY-IMAGE-PATH','SECRET-HISTORY-BASE64','SECRET-EDIT-OUTPUT-PATH','executionHistory','image.path']) assert.equal(requestText.includes(forbidden),false,`model context must omit ${forbidden}`);
   const schema=f.requests[0].tools.find(tool=>tool.function.name==='studio_edit_pages').function.parameters;
   assert.deepEqual(Object.keys(schema.properties).sort(),['edits','mode']);
+  assert.equal(schema.properties.edits.items.properties.size.type,'string');
+  assert.match(f.requests[0].tools.find(tool=>tool.function.name==='studio_edit_pages').function.description,/仅在用户明确提出图片尺寸或比例时提供 size/);
   assert.equal(schema.additionalProperties,false,'the model-facing root schema must reject CLI-only keys');
   assert.match(f.requests[0].tools.find(tool=>tool.function.name==='studio_edit_pages').function.description,/根参数只能是 mode 与 edits/);
   assert.match(f.requests[0].tools.find(tool=>tool.function.name==='studio_edit_pages').function.description,/禁止传 expectedRevision、requestId/);
@@ -169,6 +171,7 @@ test('uploaded-images 无成功输出基线也可使用本任务上传图，且�
     page:2,
     image:{sourceId:'replace-with-current-upload',fileOrder:2},
     instruction:'保留第二张的主体，把画风改得接近第一张。',
+    size:'1903:887',
     styleImages:[{sourceId:'replace-with-current-upload',fileOrder:1}],
     copy:'周末阅读指南',
   }]}});
@@ -176,7 +179,7 @@ test('uploaded-images 无成功输出基线也可使用本任务上传图，且�
   assert.ok(source);
   f.requests.length=0;
   const captured=[];
-  const result=await f.agent.chat({taskId:f.task.id,text:'把第二张按第一张的画风改，不要整理完整制作单。',expectedRevision:f.task.revision,editPages:async args=>{
+  const result=await f.agent.chat({taskId:f.task.id,text:'把第二张按第一张的画风改，输出1903:887比例，不要整理完整制作单。',expectedRevision:f.task.revision,editPages:async args=>{
     captured.push(args);
     return withTask(f.task.id,draft=>{draft.execution={version:null,status:'running',pages:[{page:2,status:'pending'}]};},{root:f.root,expectedRevision:args.expectedRevision});
   }});
@@ -184,6 +187,7 @@ test('uploaded-images 无成功输出基线也可使用本任务上传图，且�
     page:2,
     image:{sourceId:source.id,fileOrder:2},
     instruction:'保留第二张的主体，把画风改得接近第一张。',
+    size:'1903:887',
     styleImages:[{sourceId:source.id,fileOrder:1}],
     copy:'周末阅读指南',
   }],expectedRevision:f.task.revision}]);
@@ -199,6 +203,7 @@ test('uploaded-images 无成功输出基线也可使用本任务上传图，且�
   const call=f.requests[0].tools.find(tool=>tool.function.name==='studio_edit_pages');
   assert.ok(call);
   assert.deepEqual(Object.keys(call.function.parameters.properties).sort(),['edits','mode']);
+  assert.equal(call.function.parameters.properties.edits.items.properties.size.type,'string');
 });
 
 test('uploaded-images 拒绝被排除附件和不存在的图片索引',async t=>{

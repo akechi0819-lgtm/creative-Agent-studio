@@ -148,12 +148,16 @@ function validatePageEdits(edits, availablePages) {
   const seen = new Set();
   return edits.map((edit, index) => {
     if (!edit || typeof edit !== 'object' || Array.isArray(edit)) throw new Error(`第 ${index + 1} 项局部修改必须是对象。`);
-    if (Object.keys(edit).some(key => !['page', 'instruction', 'copy', 'stylePages'].includes(key))) throw new Error(`第 ${index + 1} 项局部修改包含不支持的字段。`);
+    if (Object.keys(edit).some(key => !['page', 'instruction', 'copy', 'stylePages', 'size'].includes(key))) throw new Error(`第 ${index + 1} 项局部修改包含不支持的字段。`);
     if (!Number.isInteger(edit.page) || edit.page < 1 || !available.has(edit.page)) throw new Error(`第 ${index + 1} 项的页码没有可用的已生成成品。`);
     if (seen.has(edit.page)) throw new Error(`局部修改不能重复指定第 ${edit.page} 页。`);
     seen.add(edit.page);
     if (typeof edit.instruction !== 'string' || !edit.instruction.trim() || edit.instruction.length > 20000) throw new Error(`第 ${edit.page} 页 instruction 必须是 1 到 20000 字的文本。`);
     const result = { page: edit.page, instruction: edit.instruction.trim() };
+    if (Object.hasOwn(edit, 'size')) {
+      if (typeof edit.size !== 'string' || !edit.size.trim() || edit.size.length > 40) throw new Error(`第 ${edit.page} 页 size 必须是 1 到 40 字的文本。`);
+      result.size = edit.size.trim();
+    }
     if (Object.hasOwn(edit, 'copy')) {
       if (typeof edit.copy !== 'string' || edit.copy.length > 20000) throw new Error(`第 ${edit.page} 页 copy 必须是不超过 20000 字的文本。`);
       result.copy = edit.copy;
@@ -183,11 +187,15 @@ function validateUploadedImageEdits(edits, task) {
   };
   return edits.map((edit,index)=>{
     if (!edit || typeof edit !== 'object' || Array.isArray(edit)
-      || Object.keys(edit).some(key=>!['page','image','instruction','styleImages','copy'].includes(key))) throw new Error(`第 ${index+1} 项上传图片修改包含不支持的字段。`);
+      || Object.keys(edit).some(key=>!['page','image','instruction','styleImages','copy','size'].includes(key))) throw new Error(`第 ${index+1} 项上传图片修改包含不支持的字段。`);
     if (!Number.isInteger(edit.page) || edit.page < 1 || edit.page > 5 || seenPages.has(edit.page)) throw new Error(`第 ${index+1} 项必须指定 1 到 5 之间且不重复的输出页码。`);
     seenPages.add(edit.page);
     if (typeof edit.instruction !== 'string' || !edit.instruction.trim() || edit.instruction.length > 20000) throw new Error(`第 ${edit.page} 页 instruction 必须是 1 到 20000 字的文本。`);
     const result={page:edit.page,image:normalizeImageReference(edit.image,`第 ${edit.page} 页 image`),instruction:edit.instruction.trim()};
+    if (Object.hasOwn(edit,'size')) {
+      if (typeof edit.size !== 'string' || !edit.size.trim() || edit.size.length > 40) throw new Error(`第 ${edit.page} 页 size 必须是 1 到 40 字的文本。`);
+      result.size=edit.size.trim();
+    }
     if (Object.hasOwn(edit,'copy')) {
       if (typeof edit.copy !== 'string' || edit.copy.length > 20000) throw new Error(`第 ${edit.page} 页 copy 必须是不超过 20000 字的文本。`);
       result.copy=edit.copy;
@@ -649,6 +657,7 @@ export function createStudioAgent({root,readConfig}) {
             edits:{type:'array',required:true,description:'要局部修改的 1 到 5 项。已有成品模式用 stylePages；上传图片模式用 image 和 styleImages。',items:{type:'object',additionalProperties:false,properties:{
               page:{type:'integer',required:true,description:'要修改或生成的目标页码'},
               instruction:{type:'string',required:true,description:'仅针对该页的修改要求'},
+              size:{type:'string',description:'仅在用户明确提出图片尺寸或比例时填写；省略时已有成品沿用原尺寸，上传图片由模型自动决定尺寸，不要自行套用3:4。'},
               copy:{type:'string',description:'需要替换或使用的准确文案'},
               stylePages:{type:'array',description:'已有成功成品的页码，作为风格参考',items:{type:'integer'}},
               image:{type:'object',additionalProperties:false,description:'uploaded-images 模式下要修改的底图索引',properties:{
@@ -661,7 +670,7 @@ export function createStudioAgent({root,readConfig}) {
               }}},
             }}},
           };
-          tool('studio_edit_pages','Web 局部修改工具。根参数只能是 mode 与 edits：已有成品省略 mode，使用 {edits:[{page,instruction,copy?,stylePages?:[page]}]}；本次上传图片使用 {mode:"uploaded-images",edits:[{page,image:{sourceId,fileOrder},instruction,styleImages?:[{sourceId,fileOrder}],copy?}]}。禁止传 expectedRevision、requestId、根 instruction 或其他字段；任务版本、请求标识和授权由 Web 宿主管理。已有输出模式只允许修改已生成成功页。上传模式的 image 是底图，styleImages 只参考画风；上传图片不自动保留来源、不确认需求、不整理完整制作单。只改指定页面，不要把局部修改改成全量创作。',{
+          tool('studio_edit_pages','Web 局部修改工具。根参数只能是 mode 与 edits：已有成品省略 mode，使用 {edits:[{page,instruction,copy?,size?,stylePages?:[page]}]}；本次上传图片使用 {mode:"uploaded-images",edits:[{page,image:{sourceId,fileOrder},instruction,copy?,size?,styleImages?:[{sourceId,fileOrder}]}]}。仅在用户明确提出图片尺寸或比例时提供 size；省略时已有成品沿用原尺寸，上传图片由模型自动决定尺寸，不要自行套用3:4。禁止传 expectedRevision、requestId、根 instruction 或其他字段；任务版本、请求标识和授权由 Web 宿主管理。已有输出模式只允许修改已生成成功页。上传模式的 image 是底图，styleImages 只参考画风；上传图片不自动保留来源、不确认需求、不整理完整制作单。只改指定页面，不要把局部修改改成全量创作。',{
             ...pageEditParameters,
           },async(args)=>{
             localEditRequested=true;

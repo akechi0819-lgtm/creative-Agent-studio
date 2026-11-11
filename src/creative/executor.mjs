@@ -138,7 +138,7 @@ async function ensurePageNodes({ page, sheet, record, images, model, call }) {
   const composerContent = composerTokens.join(' ');
   const imageRoles = images.some(image => image.role) ? '\n\n本次图片用途（图片编号与实际传入顺序一致）：\n' + images.map((image, index) => `图片${index + 1}：${image.role === 'edit-base' ? '待修改原图' : image.role === 'style' ? '仅供画风参考，不替换原图主体或引入品牌、文字' : image.role === 'content' ? '仅参考内容与信息，不照搬视觉风格；事实以确认文案为准' : '已保留的内容与风格参考图片'}${image.kind === 'output' ? `（任务第${image.page}页）` : ''}`).join('\n') : '';
   const textContent = (page.copyMode === 'preserve-source-text'
-    ? `${page.prompt}\n保留输入原图中的全部文字，不改写、删除或新增文字。`
+    ? `${page.prompt}\n保留原图中未被本次指令明确要求修改、删除或替换的文字；仅按本次指令处理涉及的文字，不添加其他文字。`
     : `${page.prompt}\n以下是必须准确呈现的全部文字：\n${page.copy}`) + imageRoles;
   const textNode = nodes.find(node => node.id === record.textNodeId);
   const configNode = nodes.find(node => node.id === record.nodeId);
@@ -223,8 +223,11 @@ async function ensurePageNodes({ page, sheet, record, images, model, call }) {
         quality,
       },
     });
-  } else if (configNode.metadata?.quality !== quality) {
-    operations.push({ type: 'update_node', id: record.nodeId, metadata: { quality } });
+  } else {
+    const metadata = {};
+    if (configNode.metadata?.quality !== quality) metadata.quality = quality;
+    if (configNode.metadata?.size !== page.size) metadata.size = page.size;
+    if (Object.keys(metadata).length) operations.push({ type: 'update_node', id: record.nodeId, metadata });
   }
   const inputNodeIds = [record.textNodeId, ...(record.referenceNodes || []).map(reference => reference.nodeId)];
   for (const fromNodeId of inputNodeIds) {
